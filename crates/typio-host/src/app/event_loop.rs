@@ -388,6 +388,31 @@ impl App {
                     let scale = frontend.state().buffer_scale;
                     let owner = frontend.state().panel_coord().visible_owner();
 
+                    let mut anchor_ready = frontend.state().panel_coord().anchor_ready();
+
+                    // Manage surface ownership before the mutable panel
+                    // borrow. Candidates claim the surface when shown
+                    // (superseding a visible indicator, so its auto-hide
+                    // cannot later kill the candidate list); they release
+                    // it when empty unless an overlay is borrowing it.
+                    {
+                        let coord = frontend.state_mut().panel_coord_mut();
+                        if candidates.is_empty() {
+                            if owner != UiOwner::Indicator && owner != UiOwner::Voice {
+                                coord.hide(UiOwner::Candidate);
+                            }
+                        } else {
+                            if !anchor_ready {
+                                let decision = coord.decide_positioned_flush(UiOwner::Candidate, "candidate");
+                                if decision == crate::panel_coordinator::FlushDecision::Show {
+                                    anchor_ready = true;
+                                }
+                            } else {
+                                coord.claim(UiOwner::Candidate);
+                            }
+                        }
+                    }
+
                     // Frame throttle. flux presents synchronously on this
                     // thread (the async present thread was dropped from flux
                     // because Mesa's Wayland WSI dispatches wl_display
@@ -402,24 +427,13 @@ impl App {
                     // rate, so the swapchain never exhausts free images and
                     // present never blocks. Hides are never throttled — they
                     // detach the buffer and cannot block.
+                    //
+                    // We also throttle if the anchor is not ready, to avoid
+                    // committing a popup buffer before the compositor has
+                    // sent a text_input_rectangle.
                     let throttled = !candidates.is_empty()
-                        && frontend.state_mut().panel_present_blocked();
+                        && (frontend.state_mut().panel_present_blocked() || !anchor_ready);
 
-                    // Manage surface ownership before the mutable panel
-                    // borrow. Candidates claim the surface when shown
-                    // (superseding a visible indicator, so its auto-hide
-                    // cannot later kill the candidate list); they release
-                    // it when empty unless an overlay is borrowing it.
-                    {
-                        let coord = frontend.state_mut().panel_coord_mut();
-                        if candidates.is_empty() {
-                            if owner != UiOwner::Indicator && owner != UiOwner::Voice {
-                                coord.hide(UiOwner::Candidate);
-                            }
-                        } else {
-                            coord.claim(UiOwner::Candidate);
-                        }
-                    }
                     let (result, presented, hid) = if throttled {
                         tracing::trace!(
                             target: "typio.panel.host",
@@ -506,6 +520,13 @@ impl App {
                     );
                     if owner == UiOwner::Indicator {
                         self.render_indicator_banner(&label, now);
+                    } else if owner == UiOwner::Candidate {
+                        // The anchor probe timed out, and the caret fallback was armed.
+                        // Mark the panel dirty so it redraws with the fallback anchor
+                        // on the next iteration.
+                        if let Some(frontend) = self.frontend.as_mut() {
+                            frontend.state_mut().mark_panel_dirty();
+                        }
                     }
                 }
                 // UiOwner::Voice is reserved for a future chunk; the flush
