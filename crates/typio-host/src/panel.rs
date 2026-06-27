@@ -31,7 +31,7 @@ use flux_sys::{
 };
 use flux_text_sys::{
     flux_text, flux_text_create, flux_text_desc, flux_text_destroy, flux_text_draw,
-    flux_text_family, flux_text_metrics, flux_text_style,
+    flux_text_family, flux_text_metrics,
 };
 use wayland_sys::{
     client::{wl_proxy, wl_proxy_marshal_array},
@@ -601,14 +601,14 @@ impl FluxPanel {
             let number_color = flux_color_rgba(145, 145, 152, 255);
             let highlight = flux_color_rgba(56, 84, 160, 255);
 
-            let style = flux_text_style {
+            let style = flux_text_sys::flux_text_style {
                 size_px: CANDIDATE_FONT_SIZE,
                 weight: 400.0,
                 color: text_color,
                 family: FontFamily::FLUX_TEXT_FAMILY_DEFAULT,
                 italic: false,
             };
-            let number_style = flux_text_style {
+            let number_style = flux_text_sys::flux_text_style {
                 size_px: CANDIDATE_NUMBER_FONT_SIZE,
                 weight: 400.0,
                 color: number_color,
@@ -1059,7 +1059,7 @@ impl FluxPanel {
             }
 
             let text_color = flux_color_rgba(240, 240, 240, 255);
-            let style = flux_text_style {
+            let style = flux_text_sys::flux_text_style {
                 size_px: BANNER_FONT_SIZE,
                 weight: 400.0,
                 color: text_color,
@@ -1111,7 +1111,7 @@ impl FluxPanel {
     /// after a candidate-panel showing the swapchain typically reuses the
     /// existing quantum without any `vkDeviceWaitIdle`.
     pub fn ensure_banner_size(&mut self, label: &str) {
-        let style = flux_text_style {
+        let style = flux_text_sys::flux_text_style {
             size_px: BANNER_FONT_SIZE,
             weight: 400.0,
             // Colour is irrelevant for `flux_text_measure`; provide one to
