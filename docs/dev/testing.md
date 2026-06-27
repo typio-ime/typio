@@ -16,13 +16,13 @@ Build or refresh sibling dependencies first. These commands run from the
 
 ```bash
 cargo build --release --manifest-path ../libtypio/Cargo.toml
-meson compile -C ../../flux/build    # first time: meson setup ../../flux/build ../../flux
+meson compile -C ../../optics/build    # first time: meson setup ../../optics/build ../../optics
 ```
 
 Run the full Rust suite:
 
 ```bash
-export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../flux/build:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../optics/build:${LD_LIBRARY_PATH}"
 cargo test -p typio-host
 ```
 
@@ -39,8 +39,8 @@ cargo test -p typio-host -- --nocapture
 ```
 
 If `cargo test` reports an undefined `flux_*` symbol, Cargo loaded a stale
-or system `libflux.so`. Rebuild `../../flux`, then confirm
-`LD_LIBRARY_PATH` includes `../../flux/build`.
+or system `libflux.so`. Rebuild `../../optics`, then confirm
+`LD_LIBRARY_PATH` includes `../../optics/build`.
 
 ## Cargo Coverage
 

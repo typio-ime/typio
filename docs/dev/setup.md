@@ -8,15 +8,15 @@ All commands in this document run from the `typio-linux` repository root
 unless a block says otherwise.
 
 ```bash
-# one-time per flux checkout:
-meson setup ../../optics/flux/build ../../optics/flux
-meson compile -C ../../optics/flux/build
+# one-time per optics checkout:
+meson setup ../../optics/build ../../optics -Dtext=true
+meson compile -C ../../optics/build
 
 # point flux-sys at the freshly built libflux (every shell that runs
 # cargo build/test/run, or drop the two exports into ~/.bashrc / a local
 # .envrc — the repo ships no committed copy):
-export FLUX_BUILD_DIR="$PWD/../../optics/flux/build"
-export FLUX_SOURCE_DIR="$PWD/../../optics/flux"
+export FLUX_BUILD_DIR="$PWD/../../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../../optics/libs/flux"
 
 cargo build -p typio-host
 cargo test -p typio-host
@@ -62,9 +62,9 @@ projects/
 │   ├── typio-engine-mozc/        # Meson: Mozc-based Japanese keyboard
 │   └── typio-linux/              # run typio-linux commands here
 └── optics/
-    ├── flux/                     # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
-    ├── flux-rs/                  # Rust bindings; published as git crate v0.1.0
-    ├── iris/, lens/, …           # other optics components, not consumed by typio-linux
+    ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
+    ├── bindings/flux-rs/         # Rust bindings; published as git crate v0.1.0
+    ├── libs/iris/, libs/lens/, … # other optics components, not consumed by typio-linux
 ```
 
 `typio-linux` resolves `libtypio` and `flux-sys` / `flux-text-sys` as git
@@ -84,11 +84,11 @@ build tree. `meson setup` is one-time per checkout; `meson compile` rebuilds
 on demand:
 
 ```bash
-meson setup ../../optics/flux/build ../../optics/flux
-meson compile -C ../../optics/flux/build
+meson setup ../../optics/build ../../optics -Dtext=true
+meson compile -C ../../optics/build
 
-export FLUX_BUILD_DIR="$PWD/../../optics/flux/build"
-export FLUX_SOURCE_DIR="$PWD/../../optics/flux"   # optional: bindgen from this checkout
+export FLUX_BUILD_DIR="$PWD/../../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../../optics/libs/flux"   # optional: bindgen from this checkout
 ```
 
 `flux-sys` prepends the build tree's `meson-uninstalled/` to
@@ -96,8 +96,8 @@ export FLUX_SOURCE_DIR="$PWD/../../optics/flux"   # optional: bindgen from this 
 `libflux.so` at runtime with no `LD_LIBRARY_PATH` and no `meson install`.
 Keep the two exports set in any shell that runs `cargo build` / `test` /
 the daemon; `FLUX_BUILD_DIR` is what selects the in-tree library. If Cargo
-reports an undefined `flux_*` symbol, rebuild flux (`meson compile -C
-../../optics/flux/build`) and re-run.
+reports an undefined `flux_*` symbol, rebuild optics (`meson compile -C
+../../optics/build`) and re-run.
 
 **Installed (optional).** If you prefer a system-wide flux, `meson install`
 into a prefix on `PKG_CONFIG_PATH` and unset `FLUX_BUILD_DIR` (or set

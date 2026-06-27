@@ -130,14 +130,14 @@ Before committing non-trivial host changes:
 
 ```bash
 ( cd ../libtypio && cargo build --release )
-( cd ../../flux && meson setup build && meson compile -C build )
+( cd ../../optics && meson setup build && meson compile -C build )
 
-export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../flux/build:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../optics/build:${LD_LIBRARY_PATH}"
 cargo build --release -p typio-host --bin typio
 cargo test -p typio-host
 ```
 
-`flux` is still a native C library with a Meson build tree; that is a
+`optics` is a native C monorepo with a Meson build tree; `flux` is a
 sibling-repo build prerequisite, not typio-linux's build system.
 
 ## 8. Repo Layout and Cross-Repo Work
@@ -164,7 +164,7 @@ repo. When touching a sibling repo:
 | Symptom | Wrong reaction | Right reaction |
 |---|---|---|
 | `$EDITOR` opens during git | Try pager flags | Supply `-m` to the git command |
-| Cargo test loads old `libflux.so` | Patch around missing symbols | Rebuild `../../flux` and check `LD_LIBRARY_PATH` / RUNPATH |
+| Cargo test loads old `libflux.so` | Patch around missing symbols | Rebuild `../../optics` and check `LD_LIBRARY_PATH` / RUNPATH |
 | Unsure whether a version bump is patch or minor | Default to minor | Default to patch unless behavior changes |
 | Missing project fact | Guess | Run the pre-flight and inspect current files |
 
