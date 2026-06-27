@@ -574,14 +574,28 @@ mod tests {
 
     #[test]
     fn label_prefers_live_mode_over_cached() {
-        let l = compose_label(Some("en"), Some("Rime"), Some("rime"), Some("Live"), Some("Cached")).unwrap();
+        let l = compose_label(
+            Some("en"),
+            Some("Rime"),
+            Some("rime"),
+            Some("Live"),
+            Some("Cached"),
+        )
+        .unwrap();
         assert_eq!(l, "EN · Rime · Live");
     }
 
     #[test]
     fn label_empty_mode_falls_through_to_cached() {
         // Empty string is the same as None for the live mode.
-        let l = compose_label(Some("en"), Some("Rime"), Some("rime"), Some(""), Some("Cached")).unwrap();
+        let l = compose_label(
+            Some("en"),
+            Some("Rime"),
+            Some("rime"),
+            Some(""),
+            Some("Cached"),
+        )
+        .unwrap();
         assert_eq!(l, "EN · Rime · Cached");
     }
 
@@ -783,7 +797,9 @@ mod tests {
         let m = quiet("中/A");
         let base = t0();
         ind.record_key_activity(base);
-        let label = ind.show_for_state_change(base, Some(&m), &cfg, &src).unwrap();
+        let label = ind
+            .show_for_state_change(base, Some(&m), &cfg, &src)
+            .unwrap();
         assert_eq!(label, "中 · Rime · 中/A");
     }
 
@@ -795,7 +811,9 @@ mod tests {
 
         // First show with a live mode — populates the cache.
         let m = notable("中/A");
-        let _ = ind.show_for_state_change(t0(), Some(&m), &cfg, &src).unwrap();
+        let _ = ind
+            .show_for_state_change(t0(), Some(&m), &cfg, &src)
+            .unwrap();
 
         // Second show with no live mode — falls back to the cached label.
         let label = ind.show_for_state_change(t0(), None, &cfg, &src).unwrap();
@@ -811,7 +829,9 @@ mod tests {
         };
         let src = Sources::new().lang("zh").engine("rime", "Rime");
         let m = notable("中/A");
-        assert!(ind.show_for_state_change(t0(), Some(&m), &cfg, &src).is_none());
+        assert!(ind
+            .show_for_state_change(t0(), Some(&m), &cfg, &src)
+            .is_none());
     }
 
     // -- show_on_summon --

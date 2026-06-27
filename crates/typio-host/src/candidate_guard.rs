@@ -564,13 +564,7 @@ mod tests {
     fn classify_returns_none_when_no_candidates() {
         // No candidates to navigate → fall through to engine.
         assert_eq!(
-            classify_host_selection(
-                true,
-                XKB_KEY_UP,
-                0,
-                0,
-                HostSelectionFlags::NAVIGATE
-            ),
+            classify_host_selection(true, XKB_KEY_UP, 0, 0, HostSelectionFlags::NAVIGATE),
             None
         );
     }
@@ -579,13 +573,7 @@ mod tests {
     fn classify_navigate_press_moves_highlight() {
         // Down at index 0 with NAVIGATE flag → Navigate(1).
         assert_eq!(
-            classify_host_selection(
-                true,
-                XKB_KEY_DOWN,
-                5,
-                0,
-                HostSelectionFlags::NAVIGATE
-            ),
+            classify_host_selection(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::NAVIGATE),
             Some(HostSelectionAction::Navigate(1))
         );
         // Up at index 3 → Navigate(2).

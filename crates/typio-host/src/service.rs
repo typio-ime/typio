@@ -183,7 +183,6 @@ impl std::error::Error for SvcError {}
 
 #[derive(Debug, Clone, Default)]
 pub enum InvokeOutcome {
-
     #[default]
     Ok,
     /// `TYPIO_ERROR_NOT_FOUND`.
@@ -1534,7 +1533,10 @@ mod tests {
         svc.set_state_change_callback(move || *f.borrow_mut() = true);
         let r = dispatch(&mut svc, "language.use", json!({"tag": "en"}));
         assert!(!r.is_error());
-        assert!(*fired.borrow(), "state-change callback must fire on language.use");
+        assert!(
+            *fired.borrow(),
+            "state-change callback must fire on language.use"
+        );
     }
 
     #[test]

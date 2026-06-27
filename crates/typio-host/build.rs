@@ -36,7 +36,7 @@ fn main() {
             panic!("meson compile failed");
         }
     }
-    
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     // Version from Cargo package metadata.

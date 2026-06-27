@@ -537,7 +537,9 @@ impl InputMethodState {
                 self.xkb_state = Some(xkb_state);
                 tracing::debug!(target: "typio.wayland.keymap", "XKB state ready");
             }
-            None => tracing::warn!(target: "typio.wayland.keymap", "xkb_keymap_new_from_string failed"),
+            None => {
+                tracing::warn!(target: "typio.wayland.keymap", "xkb_keymap_new_from_string failed")
+            }
         }
     }
 }

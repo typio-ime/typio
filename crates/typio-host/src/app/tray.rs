@@ -141,7 +141,11 @@ pub(super) fn orphan_keyboard_at_index(instance: *mut TypioInstance, idx: usize)
         .into_iter()
         .filter(|name| {
             reg.engine_info(name)
-                .map(|info| info.effective_languages().iter().all(|l| !known.contains(l)))
+                .map(|info| {
+                    info.effective_languages()
+                        .iter()
+                        .all(|l| !known.contains(l))
+                })
                 .unwrap_or(true)
         })
         .map(str::to_string)

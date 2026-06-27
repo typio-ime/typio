@@ -57,12 +57,36 @@ impl App {
             .unwrap_or(-1);
 
         let mut fds = [
-            libc::pollfd { fd: wl_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: uds_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: repeat_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: inotify_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: cfg_timer_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: indicator_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: wl_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: uds_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: repeat_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: inotify_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: cfg_timer_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: indicator_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
 
         while !self.drain_events() {
@@ -403,7 +427,8 @@ impl App {
                             }
                         } else {
                             if !anchor_ready {
-                                let decision = coord.decide_positioned_flush(UiOwner::Candidate, "candidate");
+                                let decision =
+                                    coord.decide_positioned_flush(UiOwner::Candidate, "candidate");
                                 if decision == crate::panel_coordinator::FlushDecision::Show {
                                     anchor_ready = true;
                                 }

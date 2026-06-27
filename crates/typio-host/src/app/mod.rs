@@ -23,8 +23,8 @@ use clap::Parser;
 use typio::c_api::registry as c_registry;
 use typio::instance::TypioInstance;
 
-use cli::Cli;
 pub use cli::AppOptions;
+use cli::Cli;
 
 use crate::config_watcher::ConfigWatcher;
 use crate::engine_loader::resolve_engine_dirs;
@@ -278,10 +278,7 @@ impl App {
         if restored != typio::TypioResult::TypioOk {
             if let Some(first) = registered_keyboards.first() {
                 if let Ok(c_name) = CString::new(first.as_str()) {
-                    c_registry::typio_registry_set_active_keyboard(
-                        registry,
-                        c_name.as_ptr(),
-                    );
+                    c_registry::typio_registry_set_active_keyboard(registry, c_name.as_ptr());
                     eprintln!("OK:   active keyboard = {first}");
                 }
             }
@@ -309,7 +306,8 @@ impl App {
         // trigger the indicator — rime's own mode/schema switches are silent.
         signals::set_mode_callback_tx(self.event_tx.clone());
         {
-            let raw = self.instance.as_ref().unwrap().as_ref() as *const TypioInstance as *mut TypioInstance;
+            let raw = self.instance.as_ref().unwrap().as_ref() as *const TypioInstance
+                as *mut TypioInstance;
             typio::instance::typio_instance_set_keyboard_mode_changed_callback(
                 raw,
                 signals::mode_changed_trampoline as _,
@@ -683,7 +681,6 @@ fn arm_repeat(timer: &mut RepeatTimer, compositor_info: Option<(i32, i32)>, mods
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

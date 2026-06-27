@@ -397,7 +397,8 @@ mod tests {
                     let _ = writeln!(
                         std::io::stderr(),
                         "dumped {path} ({}x{})",
-                        p.width, p.height
+                        p.width,
+                        p.height
                     );
                 }
             }

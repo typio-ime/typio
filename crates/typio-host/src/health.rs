@@ -221,7 +221,10 @@ mod tests {
 
     #[test]
     fn health_collect_reports_missing_registry() {
-        let v = FakeView { registry: false, ..Default::default() };
+        let v = FakeView {
+            registry: false,
+            ..Default::default()
+        };
         let issues = startup_health_collect(&v);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].severity, StartupIssueSeverity::Error);
@@ -230,7 +233,10 @@ mod tests {
 
     #[test]
     fn health_collect_reports_no_active_keyboard() {
-        let v = FakeView { active_kb: None, ..Default::default() };
+        let v = FakeView {
+            active_kb: None,
+            ..Default::default()
+        };
         let issues = startup_health_collect(&v);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, "no-active-keyboard-engine");

@@ -113,7 +113,8 @@ extern "C" fn on_composition(
 
     let selected = comp.selected.max(0) as usize;
     let cursor_pos = comp.cursor_pos;
-    let host_managed_selection = HostSelectionFlags::from_bits_truncate(comp.host_managed_selection);
+    let host_managed_selection =
+        HostSelectionFlags::from_bits_truncate(comp.host_managed_selection);
 
     if let Ok(mut slot) = PENDING_COMPOSITION.lock() {
         *slot = Some(PendingComposition {
@@ -339,8 +340,7 @@ impl KeyboardRouter {
                     // negative falls back to end) so left/right navigation
                     // inside the preedit actually moves the visible caret
                     // instead of always parking at the right edge.
-                    let cursor =
-                        crate::preedit::resolve_cursor(cursor_pos, preedit_len) as u32;
+                    let cursor = crate::preedit::resolve_cursor(cursor_pos, preedit_len) as u32;
                     // Compare against what we last actually sent to the
                     // compositor. Up/Down candidate navigation is the
                     // canonical case where the engine emits a composition
@@ -487,8 +487,7 @@ impl KeyboardRouter {
             }
             HostSelectionAction::Commit(idx) => {
                 let r = typio::input_context::typio_input_context_commit_candidate(
-                    self.ctx,
-                    idx as i32,
+                    self.ctx, idx as i32,
                 );
                 if r == typio_abi::TypioResult::TypioOk {
                     return Some(true);
@@ -531,7 +530,8 @@ impl KeyboardRouter {
             // Drive the release-triggered switch-chord state machine. It
             // updates `physical_modifiers` and reports whether *this*
             // release completes the Ctrl+Shift switch.
-            let chord_fired = self.track_switch_modifier(bit, state == WL_KEYBOARD_KEY_STATE_PRESSED);
+            let chord_fired =
+                self.track_switch_modifier(bit, state == WL_KEYBOARD_KEY_STATE_PRESSED);
             if chord_fired {
                 self.shortcut_fired = true;
             }

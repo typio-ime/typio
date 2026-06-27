@@ -185,7 +185,11 @@ impl App {
         if mode.display_label.is_null() {
             None
         } else {
-            Some(unsafe { CStr::from_ptr(mode.display_label) }.to_string_lossy().into_owned())
+            Some(
+                unsafe { CStr::from_ptr(mode.display_label) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         }
     }
 
@@ -271,6 +275,9 @@ impl App {
             panel.ensure_banner_size(label);
             heartbeat();
             panel.draw_status_banner(label, &heartbeat, &enter_present);
+        }
+        if let Some(frontend) = self.frontend.as_mut() {
+            frontend.arm_panel_frame_callback();
         }
         if let Some(indicator) = self.indicator.as_mut() {
             indicator.note_shown(now);

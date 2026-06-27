@@ -68,16 +68,7 @@ mod tests {
     #[test]
     fn cli_parses_into_app_options() {
         let cli = Cli::parse_from([
-            "typio",
-            "-c",
-            "/cfg",
-            "--socket",
-            "/sock",
-            "-E",
-            "/e1",
-            "-E",
-            "/e2",
-            "-vv",
+            "typio", "-c", "/cfg", "--socket", "/sock", "-E", "/e1", "-E", "/e2", "-vv",
         ]);
         let opts: AppOptions = cli.into();
         assert_eq!(opts.config_dir, Some("/cfg".to_string()));
