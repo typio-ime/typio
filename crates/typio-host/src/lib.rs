@@ -38,6 +38,7 @@ pub mod language_display;
 pub mod notifier;
 pub mod panel;
 pub mod panel_coordinator;
+pub mod panel_present_gate;
 pub mod panel_scheduler;
 pub mod preedit;
 pub mod protocols;

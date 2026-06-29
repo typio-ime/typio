@@ -16,6 +16,7 @@ use typio::instance::TypioInstance;
 use crate::ipc_bus::IpcBus;
 use crate::keyboard::router::RepeatOutcome;
 use crate::panel_coordinator::UiOwner;
+use crate::panel_present_gate::PresentDecision;
 use crate::panel_scheduler::{self, PanelUpdateResult};
 use crate::session_glue::FocusTransition;
 use crate::watchdog::LoopStage;
@@ -180,6 +181,11 @@ impl App {
                 if let Some(remaining) = state.panel_coord.anchor_deadline_remaining_ms(now) {
                     reduce_timeout(remaining as i32);
                 }
+                if flushable && !state.composition.candidates.is_empty() {
+                    if let Some(remaining) = state.panel_present_wait_remaining_ms(now) {
+                        reduce_timeout(remaining);
+                    }
+                }
                 if let Some(indicator_remaining) = self.indicator_hide_remaining_ms(now) {
                     reduce_timeout(indicator_remaining);
                 }
@@ -249,9 +255,24 @@ impl App {
             //    this only layers the indicator on top.
             if let Some(t) = focus_transition {
                 match t {
-                    FocusTransition::FirstActivate => self.trigger_indicator_focus(),
-                    FocusTransition::Reactivate => self.trigger_indicator_reactivate(),
-                    FocusTransition::Deactivate => self.hide_indicator(),
+                    FocusTransition::FirstActivate => {
+                        if let Some(wd) = self.watchdog.as_ref() {
+                            wd.set_armed(true);
+                        }
+                        self.trigger_indicator_focus();
+                    }
+                    FocusTransition::Reactivate => {
+                        if let Some(wd) = self.watchdog.as_ref() {
+                            wd.set_armed(true);
+                        }
+                        self.trigger_indicator_reactivate();
+                    }
+                    FocusTransition::Deactivate => {
+                        if let Some(wd) = self.watchdog.as_ref() {
+                            wd.set_armed(false);
+                        }
+                        self.hide_indicator();
+                    }
                 }
             }
 
@@ -493,32 +514,50 @@ impl App {
                         }
                     }
 
-                    // Frame throttle. flux presents synchronously on this
+                    // Frame pacing. flux presents synchronously on this
                     // thread (the async present thread was dropped from flux
                     // because Mesa's Wayland WSI dispatches wl_display
                     // events inside vkQueuePresentKHR and races the loop).
-                    // Under compositor back-pressure — the norm during rapid
-                    // candidate paging — a synchronous present blocks until
-                    // the compositor releases a swapchain image, which can
-                    // exceed the watchdog's Present threshold and SIGKILL
-                    // the daemon. Arming wl_surface.frame after each present
-                    // and skipping the next present until the compositor
-                    // acks keeps the present rate at the compositor refresh
-                    // rate, so the swapchain never exhausts free images and
-                    // present never blocks. Hides are never throttled — they
+                    // `wl_surface.frame` is a refresh hint, but not a hard
+                    // lock: if the compositor drops callbacks for an input
+                    // popup, the soft gate wakes on a timer and presents the
+                    // latest coalesced candidates instead of freezing until a
+                    // long watchdog timeout. Hides are never throttled — they
                     // detach the buffer and cannot block.
                     //
-                    // We also throttle if the anchor is not ready, to avoid
-                    // committing a popup buffer before the compositor has
-                    // sent a text_input_rectangle.
-                    let throttled = !candidates.is_empty()
-                        && (frontend.state_mut().panel_present_blocked() || !anchor_ready);
+                    // We still hold candidates if the anchor is not ready, to
+                    // avoid committing a popup buffer before the compositor
+                    // has sent a text_input_rectangle.
+                    let present_decision = if !candidates.is_empty() && anchor_ready {
+                        frontend.state_mut().panel_present_decision(Instant::now())
+                    } else {
+                        PresentDecision::Present
+                    };
+                    let frame_wait_ms = match present_decision {
+                        PresentDecision::Present => None,
+                        PresentDecision::WaitUntil(deadline) => {
+                            Some(crate::panel_present_gate::deadline_remaining_ms(
+                                deadline,
+                                Instant::now(),
+                            ))
+                        }
+                    };
+                    let throttled =
+                        !candidates.is_empty() && (!anchor_ready || frame_wait_ms.is_some());
 
                     let (result, presented, hid) = if throttled {
-                        tracing::trace!(
-                            target: "typio.panel.host",
-                            "panel: skip present reason=frame_throttled"
-                        );
+                        if let Some(wait_ms) = frame_wait_ms {
+                            tracing::trace!(
+                                target: "typio.panel.host",
+                                wait_ms,
+                                "panel: skip present reason=frame_soft_gate"
+                            );
+                        } else {
+                            tracing::trace!(
+                                target: "typio.panel.host",
+                                "panel: skip present reason=anchor_not_ready"
+                            );
+                        }
                         (PanelUpdateResult::Done, false, false)
                     } else if let Some(panel) = frontend.panel_mut() {
                         panel.set_scale(scale);
@@ -563,7 +602,8 @@ impl App {
                     };
                     if throttled {
                         // Leave the schedule dirty so the tick that wakes
-                        // on the frame callback (or the fallback timeout)
+                        // on the frame callback, soft-gate deadline, or
+                        // anchor fallback
                         // re-attempts the present with the latest coalesced
                         // candidates. Do not call complete(): that would
                         // move to Idle and drop the pending frame.

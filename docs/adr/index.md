@@ -17,7 +17,7 @@ Decisions about the framework core (engine ABI, composition contract) live in th
 > recorded in ADR-0022 and ADR-0023. Do not implement new scheduling from the
 > historical `panel_update_pending` or retry-latch descriptions in ADR-0015 /
 > ADR-0022; the active model is ADR-0023's `IDLE` / `DIRTY` / `RETRY`
-> scheduler.
+> scheduler, with ADR-0036's soft present gate for `wl_surface.frame` pacing.
 
 | ADR | Title | Status |
 |-----|-------|--------|
@@ -44,7 +44,7 @@ Decisions about the framework core (engine ABI, composition contract) live in th
 | [ADR-0021](0021-systemd-user-service-daemon-lifecycle.md) | systemd user service for daemon lifecycle | Accepted |
 | [ADR-0022](0022-panel-retry-result-owned-by-update.md) | Panel retry result owned by update | Accepted (amends ADR-0015) |
 | [ADR-0023](0023-panel-scheduler-state-machine.md) | Panel Scheduler State Machine | Accepted (amends ADR-0022) |
-| [ADR-0024](0024-idle-driven-loop-and-demand-gated-watchdog.md) | Idle-driven event loop and demand-gated watchdog | Accepted (amends ADR-0004) |
+| [ADR-0024](0024-idle-driven-loop-and-demand-gated-watchdog.md) | Idle-driven event loop and demand-gated watchdog | Accepted (amends ADR-0004; cadence amended by ADR-0037) |
 | [ADR-0025](0025-engine-discovery-search-path.md) | Engine discovery — ordered search path, no user-level auto-scan | Accepted |
 | [ADR-0026](0026-modality-explicit-engine-control-surface.md) | Modality-explicit engine control surface (`keyboard.*` / `voice.*`) | Accepted (amends ADR-0008) |
 | [ADR-0027](0027-ipc-engine-manifests.md) | IPC Engine Manifests | Superseded by ADR-0030 |
@@ -56,6 +56,8 @@ Decisions about the framework core (engine ABI, composition contract) live in th
 | [ADR-0033](0033-language-led-tray-surface.md) | Language-led tray surface (icon and menu) | Accepted (amends ADR-0031 menu structure and ADR-0032 icon chain) |
 | [ADR-0034](0034-dynamic-engine-capabilities.md) | Dynamic engine capabilities (runtime-mutable language declarations) | Accepted (amends ADR-0031 static-declaration assumption; revises ADR-0033 multi-language menu rule) |
 | [ADR-0035](0035-bilingual-migration-to-rust.md) | Bilingual migration of the host to Rust | Accepted |
+| [ADR-0036](0036-soft-present-gate-for-candidate-panel.md) | Soft Present Gate for the Candidate Panel | Accepted (amends ADR-0010/0023) |
+| [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Accepted (amends ADR-0024) |
 
 ## Looking for something else?
 

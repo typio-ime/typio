@@ -1,6 +1,6 @@
 //! Wayland frontend watchdog — port of `src/wayland/watchdog.c`.
 //!
-//! A background thread samples loop-stage progress at ~1 Hz while armed.
+//! A background thread samples loop-stage progress at ~0.5 Hz while armed.
 //! If the heartbeat, stage, and stage timestamp stay unchanged for a
 //! non-restful stage for longer than the stuck threshold, the daemon is
 //! considered hung and is killed with `SIGKILL`.
@@ -14,7 +14,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// Coarse sample interval (ms). Mirrors `TYPIO_WL_WATCHDOG_SAMPLE_MS`.
-const SAMPLE_MS: u64 = 1000;
+#[cfg(not(test))]
+const SAMPLE_MS: u64 = 2000;
+#[cfg(test)]
+const SAMPLE_MS: u64 = 100;
 /// Default stuck threshold (ms). Mirrors `TYPIO_WL_WATCHDOG_STUCK_MS`.
 const STUCK_MS: u64 = 3000;
 /// Stuck threshold for `LoopStage::Present` (ms). `vkQueuePresentKHR` on
@@ -22,10 +25,11 @@ const STUCK_MS: u64 = 3000;
 /// the compositor falls behind releasing swapchain images, even under
 /// MAILBOX. A single blocking FFI call cannot heartbeat, so the default
 /// threshold kills a recovering panel rather than a deadlocked one. The
-/// panel's `wl_surface.frame` throttle (see `panel_present_blocked`)
-/// keeps the present rate at the compositor refresh rate so this block
-/// should not occur in steady state; 15 s tolerates a residual transient
-/// stall while still catching a genuine present deadlock eventually.
+/// panel's soft present gate (see `panel_present_decision`) keeps the
+/// present rate near compositor refresh rate when callbacks are healthy
+/// and timer-paces updates when callbacks disappear; 15 s tolerates a
+/// residual transient stall while still catching a genuine present deadlock
+/// eventually.
 const PRESENT_STUCK_MS: u64 = 15_000;
 
 /// Loop stage identifiers. The discriminants mirror `TypioWlLoopStage` in

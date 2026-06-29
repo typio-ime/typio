@@ -598,7 +598,6 @@ impl App {
         #[cfg(feature = "wayland")]
         if self.frontend.is_some() && self.router.is_some() && self.repeat_timer.is_some() {
             let watchdog = Watchdog::start();
-            watchdog.set_armed(true);
             self.watchdog = Some(watchdog);
             return self.run_with_wayland(&ipc_bus);
         }

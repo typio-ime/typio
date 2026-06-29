@@ -57,7 +57,7 @@ tick — and an earlier design did, which is *why* the loop used to tick at
    indefinitely on `poll()` is never mistaken for a hang. No liveness tick is
    needed during idle.
 2. The watchdog thread is **armed only while input is focused**. Disarmed, it
-   blocks on a condition variable (zero wakeups); armed, it samples at 1 Hz.
+   blocks on a condition variable (zero wakeups); armed, it samples at 0.5 Hz.
 
 Net result: at idle, both the loop and the watchdog reach ≈ 0 wakeups, while a
 real stall in a work stage is still caught and recovered (SIGKILL → systemd

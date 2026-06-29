@@ -4,20 +4,20 @@
 //! context. Decides whether a key is consumed by the engine or forwarded
 //! to the focused application via the virtual keyboard.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void, CStr};
 use std::sync::Mutex;
 
 use typio_abi::{TypioComposition, TypioEventType, TypioKeyEvent};
 
-use crate::candidate_guard::{HostSelectionAction, HostSelectionFlags, classify_host_selection};
+use crate::candidate_guard::{classify_host_selection, HostSelectionAction, HostSelectionFlags};
 use crate::input_method::{DecodedKeyEvent, InputMethodState};
 use crate::keyboard_policy::{
-    KEY_CAPITAL_V, KEY_V, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
-    WL_KEYBOARD_KEY_STATE_RELEASED, modifier_bit_for_keysym, sync_physical_modifiers,
-    tracking_mark_released_pending, tracking_reset, tracking_reset_generations,
+    effective_modifiers, modifier_bit_for_keysym, tracking_mark_released_pending, tracking_reset,
+    tracking_reset_generations, KeyTrackState, KEY_CAPITAL_V, KEY_V, WL_KEYBOARD_KEY_STATE_PRESSED,
+    WL_KEYBOARD_KEY_STATE_RELEASED,
 };
 use crate::repeat_timer::Modifiers;
-use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
+use crate::text_ui_state::{text_ui_plan_update, PreeditTracking, TextUiPlan};
 
 /// Maximum number of keys tracked for symmetric press/release. Mirrors
 /// `TYPIO_WL_MAX_TRACKED_KEYS` in the C host.
@@ -167,6 +167,13 @@ pub struct KeyboardRouter {
     repeat_mode: RepeatMode,
     /// Physical modifier state tracked from key events.
     pub(crate) physical_modifiers: Modifiers,
+    /// Whether `physical_modifiers` has been seeded from the first xkb
+    /// modifier sample of this grab generation. The compositor does not
+    /// re-report modifiers that were already held when the grab started,
+    /// so without a one-time baseline a Shift or Super held across the
+    /// grab boundary would be invisible to the engine. See
+    /// [`Self::acquire_modifiers_if_needed`].
+    modifiers_acquired: bool,
     /// Current grab epoch. Keys from an older epoch are ignored.
     active_generation: u32,
     /// Per-key tracking state for symmetric press/release.
@@ -258,6 +265,7 @@ impl KeyboardRouter {
             repeat_key: None,
             repeat_mode: RepeatMode::Forward,
             physical_modifiers: Modifiers::NONE,
+            modifiers_acquired: false,
             active_generation: 1,
             key_tracking_states: vec![KeyTrackState::default(); MAX_TRACKED_KEYS],
             key_tracking_generations: vec![0u32; MAX_TRACKED_KEYS],
@@ -398,6 +406,7 @@ impl KeyboardRouter {
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
         self.physical_modifiers = Modifiers::NONE;
+        self.modifiers_acquired = false;
         self.engine_tracked_mods = Modifiers::NONE;
         self.shortcut_saw_non_modifier = false;
         self.chord_full_set_held = false;
@@ -416,6 +425,12 @@ impl KeyboardRouter {
         tracking_reset_generations(&mut self.key_tracking_generations);
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
+        // Drop any physical modifier state: a grab handoff crosses a
+        // focus boundary where the previously held modifiers are no
+        // longer ours to reason about. They get re-seeded from the
+        // first modifier sample of the new generation.
+        self.physical_modifiers = Modifiers::NONE;
+        self.modifiers_acquired = false;
         // Reset the shortcut chord so a grab handoff doesn't carry
         // stale gesture state into the next focus.
         self.shortcut_saw_non_modifier = false;
@@ -545,6 +560,13 @@ impl KeyboardRouter {
         } else {
             WL_KEYBOARD_KEY_STATE_RELEASED
         };
+
+        // Seed physical modifier state from the first xkb sample of this
+        // generation. Done before the per-key tracking below so that any
+        // modifier already held when the grab started (or whose Modifiers
+        // event raced ahead of its Key event) is visible to both the chord
+        // state machine and the engine. Idempotent within a generation.
+        self.acquire_modifiers_if_needed(xkb_mods_depressed);
 
         // Update physical modifier tracking.
         let bit = modifier_bit_for_keysym(key.keysym);
@@ -686,6 +708,75 @@ impl KeyboardRouter {
         self.process_key_engine(key, xkb_mods_depressed, true)
     }
 
+    /// Seed [`Self::physical_modifiers`] from the first xkb-derived
+    /// modifier sample seen in the current grab generation.
+    ///
+    /// The Wayland grab does not replay the modifier state that was
+    /// already held when the grab began, nor does it guarantee that a
+    /// `Modifiers` event arrives before the `Key` event it pertains to.
+    /// Without a baseline, a modifier held across the boundary — or one
+    /// whose `Modifiers` event raced ahead of its `Key` event — would be
+    /// invisible to the engine, causing it to misclassify chords. The
+    /// canonical failure is a lone-Shift mode toggle firing on
+    /// Super+Shift: the Shift release reaches the engine with an empty
+    /// mask because Super was never seeded.
+    ///
+    /// After this one-time seeding, [`Self::track_switch_modifier`]
+    /// keeps `physical_modifiers` correct on its own, transition by
+    /// transition. The `active_generation_owned_keys` argument passed to
+    /// [`effective_modifiers`] is therefore `true`: once seeded we own
+    /// the per-key modifier tracking and should not fold the (now
+    /// possibly-stale) xkb blocking bits back in.
+    fn acquire_modifiers_if_needed(&mut self, xkb_mods_depressed: u32) {
+        if self.modifiers_acquired {
+            return;
+        }
+        self.modifiers_acquired = true;
+        // OR the blocking bits into whatever physical tracking already
+        // recorded (in case an earlier modifier key press in this same
+        // dispatch ran first). Non-blocking bits (locks) stay owned by
+        // xkb and are applied per-event in effective_modifiers.
+        let blocking = Modifiers(
+            Modifiers::SHIFT.0 | Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0,
+        );
+        self.physical_modifiers =
+            Modifiers(self.physical_modifiers.0 | (xkb_mods_depressed & blocking.0));
+    }
+
+    /// Compute the modifier mask the engine should see for `key`.
+    ///
+    /// This is the pure, FFI-free heart of [`Self::process_key_engine`],
+    /// factored out so it can be unit-tested without a live libtypio
+    /// context.
+    ///
+    /// We pass `active_generation_owned_keys = true`: once the first
+    /// event of a generation has seeded physical state (via
+    /// [`Self::acquire_modifiers_if_needed`]) and
+    /// [`Self::track_switch_modifier`] maintains it transition by
+    /// transition, the host's per-key tracking is authoritative for the
+    /// blocking modifiers (Shift/Ctrl/Alt/Super). Folding the xkb-derived
+    /// blocking bits back in here — as the former
+    /// `sync_physical_modifiers` did — would let a stale per-tick xkb
+    /// snapshot erase a still-held sibling modifier. That is the root
+    /// cause of Super+Shift being misread as a lone Shift: the Shift
+    /// release reached the engine carrying no Super bit, so the engine
+    /// toggled mode. `effective_modifiers` with owned=true keeps the
+    /// sibling's bit, so the engine sees the full chord and declines to
+    /// toggle. Locks (Caps/Num) are still taken from xkb.
+    fn engine_modifier_mask(&self, key: &DecodedKeyEvent, xkb_mods_depressed: u32) -> Modifiers {
+        effective_modifiers(
+            self.physical_modifiers,
+            Modifiers(xkb_mods_depressed),
+            true,
+            key.keysym,
+            if key.state == 1 {
+                WL_KEYBOARD_KEY_STATE_PRESSED
+            } else {
+                WL_KEYBOARD_KEY_STATE_RELEASED
+            },
+        )
+    }
+
     /// Shared engine-dispatch core used by both the initial-press and
     /// repeat paths. Builds the `TypioKeyEvent` with the supplied
     /// `is_repeat` flag and forwards it to libtypio.
@@ -695,9 +786,7 @@ impl KeyboardRouter {
         xkb_mods_depressed: u32,
         is_repeat: bool,
     ) -> bool {
-        // Synchronize physical modifiers with xkb-derived state.
-        let effective =
-            sync_physical_modifiers(self.physical_modifiers, Modifiers(xkb_mods_depressed));
+        let effective = self.engine_modifier_mask(key, xkb_mods_depressed);
 
         let event = TypioKeyEvent {
             struct_size: std::mem::size_of::<TypioKeyEvent>(),
@@ -854,6 +943,7 @@ mod tests {
                 repeat_key: None,
                 repeat_mode: RepeatMode::Forward,
                 physical_modifiers: Modifiers::NONE,
+                modifiers_acquired: false,
                 active_generation: 1,
                 key_tracking_states: vec![KeyTrackState::default(); MAX_TRACKED_KEYS],
                 key_tracking_generations: vec![0u32; MAX_TRACKED_KEYS],
@@ -1076,5 +1166,231 @@ mod tests {
         assert!(!router.shortcut_saw_non_modifier);
         assert!(!router.chord_full_set_held);
         assert!(!router.shortcut_already_triggered);
+    }
+
+    // ── engine modifier-mask regression tests ───────────────────────────
+    //
+    // These cover the bug where Super+Shift (or any chord involving a
+    // blocking modifier) was misreported to the engine as a lone Shift,
+    // triggering an unwanted mode toggle. They drive the real
+    // `dispatch_key` path (seeding + track_switch_modifier + mask
+    // computation) and read back the exact mask the engine would receive
+    // via `engine_modifier_mask`, without needing a live libtypio context.
+
+    use crate::keyboard_policy::{KEY_ALT_L, KEY_CONTROL_L, KEY_SHIFT_L, KEY_SUPER_L};
+
+    /// Build a modifier-key press/release event for the given keysym.
+    fn mod_key(keysym: u32, pressed: bool, time: u32) -> DecodedKeyEvent {
+        DecodedKeyEvent {
+            keycode: 0,
+            xkb_keycode: 0,
+            keysym,
+            unicode: "\0".to_string(),
+            state: if pressed { 1 } else { 0 },
+            time,
+        }
+    }
+
+    #[test]
+    fn super_shift_release_carries_super_bit_not_lone_shift() {
+        // Regression: the canonical failing case. Super is held, then
+        // Shift is pressed and released. The Shift *release* must reach
+        // the engine still carrying the Super bit, so the engine sees a
+        // chord (Super+Shift) and does NOT treat it as a lone-Shift
+        // mode toggle.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        // Press Super. xkb snapshot reports Super. Mask must include it.
+        router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
+        assert!(router
+            .engine_modifier_mask(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0)
+            .intersects(Modifiers::SUPER));
+
+        // Press Shift while Super is held.
+        router.dispatch_key(
+            &mod_key(KEY_SHIFT_L, true, 2),
+            Modifiers::SUPER.0 | Modifiers::SHIFT.0,
+        );
+
+        // Release Shift. Simulate the per-tick xkb snapshot having
+        // already dropped Shift (Modifiers event racing ahead of the
+        // Key event) — mods_depressed = Super only. The engine must
+        // STILL see Super on this Shift release.
+        let mask = router.engine_modifier_mask(&mod_key(KEY_SHIFT_L, false, 3), Modifiers::SUPER.0);
+        assert!(
+            mask.intersects(Modifiers::SUPER),
+            "Super must survive onto the Shift release; got mask {:?}",
+            mask
+        );
+        // And the Shift bit must be cleared (this *is* the Shift release).
+        assert!(
+            !mask.intersects(Modifiers::SHIFT),
+            "released modifier's own bit must clear; got mask {:?}",
+            mask
+        );
+    }
+
+    #[test]
+    fn super_shift_release_carries_super_even_when_xkb_snapshot_is_empty() {
+        // Harder variant: the per-tick xkb snapshot reports NO modifiers
+        // at all at release time (worst-case stale snapshot). Because we
+        // seed physical state and track per-key, Super must still be
+        // present on the Shift release.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
+        router.dispatch_key(
+            &mod_key(KEY_SHIFT_L, true, 2),
+            Modifiers::SUPER.0 | Modifiers::SHIFT.0,
+        );
+
+        let mask = router.engine_modifier_mask(&mod_key(KEY_SHIFT_L, false, 3), Modifiers::NONE.0);
+        assert!(
+            mask.intersects(Modifiers::SUPER),
+            "Super must survive even with a stale-empty xkb snapshot; got {:?}",
+            mask
+        );
+    }
+
+    #[test]
+    fn lone_shift_release_has_no_blocking_bits() {
+        // Positive control: a genuinely lone Shift press/release (no
+        // sibling modifier) must reach the engine with an empty blocking
+        // mask. This is the gesture engines DO treat as a mode toggle,
+        // and the fix must not suppress it.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        router.dispatch_key(&mod_key(KEY_SHIFT_L, true, 1), Modifiers::SHIFT.0);
+
+        // Release with a fully-stale xkb snapshot.
+        let mask = router.engine_modifier_mask(&mod_key(KEY_SHIFT_L, false, 2), Modifiers::NONE.0);
+        assert!(
+            !mask.intersects(Modifiers::SUPER),
+            "no Super should be present on a lone Shift release; got {:?}",
+            mask
+        );
+        assert!(
+            !mask.intersects(Modifiers::SHIFT),
+            "Shift's own bit must clear on release; got {:?}",
+            mask
+        );
+        assert!(
+            !mask.intersects(Modifiers::CTRL) && !mask.intersects(Modifiers::ALT),
+            "no other blocking bits expected; got {:?}",
+            mask
+        );
+    }
+
+    #[test]
+    fn alt_shift_release_carries_alt_bit() {
+        // The fix generalises to any blocking sibling, not just Super.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        router.dispatch_key(&mod_key(KEY_ALT_L, true, 1), Modifiers::ALT.0);
+        router.dispatch_key(
+            &mod_key(KEY_SHIFT_L, true, 2),
+            Modifiers::ALT.0 | Modifiers::SHIFT.0,
+        );
+
+        let mask = router.engine_modifier_mask(&mod_key(KEY_SHIFT_L, false, 3), Modifiers::NONE.0);
+        assert!(
+            mask.intersects(Modifiers::ALT),
+            "Alt must survive onto the Shift release; got {:?}",
+            mask
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_chord_still_fires_switch() {
+        // The existing Ctrl+Shift engine-switch chord must keep working
+        // after the mask fix — the chord detection is independent of the
+        // mask reported to the engine.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        // Ctrl down, Shift down, Shift up: chord must fire exactly once.
+        assert!(!router.take_switch_chord_fired());
+        router.dispatch_key(&mod_key(KEY_CONTROL_L, true, 1), Modifiers::CTRL.0);
+        assert!(!router.take_switch_chord_fired());
+        router.dispatch_key(
+            &mod_key(KEY_SHIFT_L, true, 2),
+            Modifiers::CTRL.0 | Modifiers::SHIFT.0,
+        );
+        assert!(!router.take_switch_chord_fired());
+        router.dispatch_key(&mod_key(KEY_SHIFT_L, false, 3), Modifiers::CTRL.0);
+        assert!(
+            router.take_switch_chord_fired(),
+            "Ctrl+Shift chord must still fire"
+        );
+        assert!(!router.take_switch_chord_fired(), "fires only once");
+    }
+
+    #[test]
+    fn super_shift_does_not_fire_ctrl_shift_chord() {
+        // Super+Shift must NOT be mistaken for the Ctrl+Shift switch.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
+        router.dispatch_key(
+            &mod_key(KEY_SHIFT_L, true, 2),
+            Modifiers::SUPER.0 | Modifiers::SHIFT.0,
+        );
+        router.dispatch_key(&mod_key(KEY_SHIFT_L, false, 3), Modifiers::SUPER.0);
+        assert!(
+            !router.take_switch_chord_fired(),
+            "Super+Shift must not fire the Ctrl+Shift switch chord"
+        );
+    }
+
+    #[test]
+    fn grab_handoff_does_not_leak_held_modifier() {
+        // A modifier held across a focus/generation boundary must not
+        // leak into the new generation: scrub_generation resets the
+        // baseline, and the first event of the new generation re-seeds
+        // it from xkb rather than trusting stale physical state.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        // Hold Super in the old generation.
+        router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
+        assert!(router.physical_modifiers.intersects(Modifiers::SUPER));
+
+        // Generation boundary (focus change / grab handoff).
+        router.scrub_generation();
+        assert!(!router.physical_modifiers.intersects(Modifiers::SUPER));
+        assert!(!router.modifiers_acquired);
+
+        // In the new generation Super is NOT held (the new surface
+        // doesn't have it). The first event must seed from xkb (empty),
+        // not from the stale pre-handoff physical state.
+        router.dispatch_key(&mod_key(KEY_SHIFT_L, true, 2), Modifiers::SHIFT.0);
+        let mask = router.engine_modifier_mask(&mod_key(KEY_SHIFT_L, true, 2), Modifiers::SHIFT.0);
+        assert!(
+            !mask.intersects(Modifiers::SUPER),
+            "stale Super must not leak across generation boundary; got {:?}",
+            mask
+        );
+    }
+
+    #[test]
+    fn modifier_held_at_grab_start_is_seeded() {
+        // If a modifier was already down when the grab started (so no
+        // press event arrives for it), the first event of the generation
+        // must seed it from the xkb snapshot, so a subsequent sibling
+        // release still carries it.
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+
+        // No Super press event; it was already held. First event is the
+        // Shift press, whose xkb snapshot reports Super|Shift.
+        router.dispatch_key(
+            &mod_key(KEY_SHIFT_L, true, 1),
+            Modifiers::SUPER.0 | Modifiers::SHIFT.0,
+        );
+
+        // Shift release with a stale snapshot still carries Super.
+        let mask = router.engine_modifier_mask(&mod_key(KEY_SHIFT_L, false, 2), Modifiers::NONE.0);
+        assert!(
+            mask.intersects(Modifiers::SUPER),
+            "Super held at grab start must be seeded; got {:?}",
+            mask
+        );
     }
 }

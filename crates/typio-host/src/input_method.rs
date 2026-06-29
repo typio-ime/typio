@@ -30,7 +30,7 @@
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use wayland_backend::client::ReadEventsGuard;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
@@ -41,6 +41,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use crate::focus_controller::InputFacts;
 use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
+use crate::panel_present_gate::{self, PresentDecision};
 use crate::panel_scheduler::{self, PanelScheduleState};
 use crate::protocols::input_method_v2::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
@@ -52,27 +53,6 @@ use crate::protocols::viewporter::wp_viewport::WpViewport;
 use crate::protocols::viewporter::wp_viewporter::WpViewporter;
 use crate::protocols::virtual_keyboard_v1::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use crate::protocols::virtual_keyboard_v1::zwp_virtual_keyboard_v1::{self, ZwpVirtualKeyboardV1};
-
-/// How long an armed `wl_surface.frame` callback may stay outstanding
-/// before the present throttle gives up waiting for `done` and forces a
-/// present anyway. Sized well above a single refresh interval at any
-/// realistic rate (≈33 ms at 30 Hz) so a healthy compositor never trips
-/// it, but short enough that a genuine frame-callback stall (occluded /
-/// unmapped popup) recovers within a couple of frames instead of
-/// freezing the candidate panel indefinitely. See
-/// [`InputMethodState::panel_present_blocked`].
-const PANEL_FRAME_CALLBACK_TIMEOUT: Duration = Duration::from_millis(200);
-
-/// Pure decision for [`InputMethodState::panel_present_blocked`]: given
-/// the armed-callback timestamp and the current instant, has the
-/// outstanding `wl_surface.frame` callback exceeded
-/// [`PANEL_FRAME_CALLBACK_TIMEOUT`]? Extracted so the deadlock-recovery
-/// timeout is unit-testable without a live Wayland connection.
-fn frame_callback_timed_out(since: Option<Instant>, now: Instant) -> bool {
-    since
-        .map(|t| now.saturating_duration_since(t) >= PANEL_FRAME_CALLBACK_TIMEOUT)
-        .unwrap_or(false)
-}
 
 /// Callback type for input-method lifecycle events.
 pub type LifecycleCallback = Box<dyn FnMut(LifecycleEvent) + Send>;
@@ -217,33 +197,30 @@ pub struct InputMethodState {
     /// `wl_callback` armed via `wl_surface.frame` after each present.
     /// The compositor fires it once it has consumed the presented
     /// buffer. Held alive until the `done` event clears the pending
-    /// flag below.
+    /// state below.
     panel_frame_callback: Option<wl_callback::WlCallback>,
-    /// True between a present and the matching `wl_surface.frame`
-    /// `done` callback. While set, the panel flush path skips
-    /// presenting (coalescing candidate updates into the next frame)
-    /// so the daemon never submits faster than the compositor can
-    /// release swapchain images — the back-pressure that makes the
-    /// synchronous `vkQueuePresentKHR` in flux block the main loop
-    /// for >15 s during rapid candidate paging, tripping the
-    /// watchdog. See [`Self::panel_present_blocked`].
+    /// True while the most recently armed `wl_surface.frame` callback is
+    /// outstanding. This is a soft pacing hint, not a hard present lock:
+    /// candidate updates wait briefly for `done`, then present the latest
+    /// coalesced state anyway so dropped callbacks cannot freeze the panel.
+    /// See [`Self::panel_present_decision`].
     pub panel_frame_pending: bool,
     /// When the outstanding `wl_surface.frame` callback was armed.
     ///
-    /// The throttle in [`Self::panel_present_blocked`] relies on the
-    /// compositor sending `done` for every armed frame callback. A
-    /// compositor that stops delivering `done` — popup occluded, on an
-    /// unfocused output, or a buggy frame-scheduler — would otherwise
-    /// leave `panel_frame_pending` stuck `true` forever, so every later
-    /// candidate/preedit update is silently dropped and the panel
-    /// appears frozen (the user-visible "switching candidates lags
-    /// after a while" symptom). This timestamp lets the throttle
-    /// time out and force a present, recovering the surface. `None`
-    /// when no callback is outstanding.
+    /// The soft gate uses this timestamp to cap callback coalescing at one
+    /// low-refresh frame. `None` when no callback is outstanding.
     panel_frame_pending_since: Option<Instant>,
-    /// Count of throttle timeouts that have force-cleared a stuck frame
-    /// callback. Surfaced in the watchdog/diagnostics so a recurring
-    /// compositor frame-callback stall is visible in production logs.
+    /// Start of the current uninterrupted period with no frame callback.
+    /// Unlike `panel_frame_pending_since`, this is not reset when the host
+    /// replaces a stale callback after the soft limit. It is reset only when
+    /// the compositor eventually sends `done` or the popup is hidden.
+    panel_frame_missing_since: Option<Instant>,
+    /// Whether the current missing-callback episode already produced its
+    /// diagnostic warning.
+    panel_frame_stall_reported: bool,
+    /// Count of missing-callback episodes that crossed the diagnostic
+    /// threshold. Surfaced so recurring compositor frame-callback stalls are
+    /// visible in production logs.
     pub panel_frame_stall_count: u64,
     /// The input-method popup surface (positioning protocol).
     #[allow(dead_code)]
@@ -359,57 +336,58 @@ impl InputMethodState {
         self.panel_schedule_state = panel_scheduler::mark_dirty(self.panel_schedule_state);
     }
 
-    /// Whether the panel must wait before presenting again.
+    /// Whether the panel may present now or should wait briefly.
     ///
-    /// Returns `true` while a `wl_surface.frame` callback armed after the
-    /// previous present is still outstanding. Callers skip the present and
-    /// leave the schedule dirty so the next tick (after the callback fires)
-    /// re-flushes with the latest coalesced candidate state. This caps the
-    /// present rate at the compositor's refresh rate, so the swapchain never
-    /// exhausts free images and the synchronous `vkQueuePresentKHR` never
-    /// blocks the main loop. The `done` callback is guaranteed to arrive
-    /// because `arm_panel_frame_callback` commits the surface after arming
-    /// the request (a bare `wl_surface.frame` only takes effect on the next
-    /// commit), so the pending flag cannot get permanently stuck.
-    ///
-    /// Defence in depth: even though the bare commit guarantees `done`
-    /// *should* arrive, a compositor that drops frame callbacks for an
-    /// occluded / unfocused-output popup would still wedge the panel.
-    /// If the outstanding callback has been pending longer than
-    /// [`PANEL_FRAME_CALLBACK_TIMEOUT`], we force-clear the throttle so
-    /// the next flush presents (which re-arms a fresh callback) instead
-    /// of dropping every candidate update forever. The timeout is
-    /// counted in `panel_frame_stall_count` and warned once per stall so
-    /// the condition is visible in diagnostics.
-    pub fn panel_present_blocked(&mut self) -> bool {
-        if !self.panel_frame_pending {
-            return false;
-        }
-        if frame_callback_timed_out(self.panel_frame_pending_since, Instant::now()) {
+    /// `wl_surface.frame` still paces healthy compositors, but it is no
+    /// longer a hard lock. If the callback is missing past the soft limit,
+    /// the next flush presents the latest coalesced candidate state anyway
+    /// and re-arms a fresh callback. An uninterrupted missing-callback
+    /// episode older than the diagnostic threshold logs once and increments
+    /// `panel_frame_stall_count`.
+    pub fn panel_present_decision(&mut self, now: Instant) -> PresentDecision {
+        let decision = panel_present_gate::decide(self.panel_frame_pending_since, now);
+        if decision == PresentDecision::Present
+            && !self.panel_frame_stall_reported
+            && panel_present_gate::callback_stall_should_warn(self.panel_frame_missing_since, now)
+        {
             let elapsed = self
-                .panel_frame_pending_since
-                .map(|t| t.elapsed())
+                .panel_frame_missing_since
+                .map(|t| now.saturating_duration_since(t))
                 .unwrap_or_default();
-            {
-                self.panel_frame_stall_count += 1;
-                tracing::warn!(
-                    target: "typio.panel.host",
-                    stalled_ms = elapsed.as_secs_f64() * 1000.0,
-                    timeout_ms = PANEL_FRAME_CALLBACK_TIMEOUT.as_secs_f64() * 1000.0,
-                    stall_count = self.panel_frame_stall_count,
-                    "panel: frame-callback stall — forcing present (compositor \
-                     did not deliver wl_surface.frame done)"
-                );
-                self.clear_panel_frame_callback();
-                return false;
+            self.panel_frame_stall_count += 1;
+            self.panel_frame_stall_reported = true;
+            tracing::warn!(
+                target: "typio.panel.host",
+                stalled_ms = elapsed.as_secs_f64() * 1000.0,
+                soft_limit_ms = panel_present_gate::PANEL_FRAME_CALLBACK_SOFT_LIMIT
+                    .as_secs_f64()
+                    * 1000.0,
+                warn_after_ms = panel_present_gate::PANEL_FRAME_CALLBACK_STALL_WARN
+                    .as_secs_f64()
+                    * 1000.0,
+                stall_count = self.panel_frame_stall_count,
+                "panel: frame-callback stall — using timer-paced presents \
+                 (compositor did not deliver wl_surface.frame done)"
+            );
+        }
+        decision
+    }
+
+    /// Poll timeout that wakes the loop when the soft present gate expires.
+    pub fn panel_present_wait_remaining_ms(&self, now: Instant) -> Option<i32> {
+        match panel_present_gate::decide(self.panel_frame_pending_since, now) {
+            PresentDecision::Present => Some(0),
+            PresentDecision::WaitUntil(deadline) => {
+                Some(panel_present_gate::deadline_remaining_ms(deadline, now))
             }
         }
-        true
     }
 
     pub fn clear_panel_frame_callback(&mut self) {
         self.panel_frame_pending = false;
         self.panel_frame_pending_since = None;
+        self.panel_frame_missing_since = None;
+        self.panel_frame_stall_reported = false;
         // `wl_callback` has no destroy request; dropping the proxy is
         // correct disposal (the server frees it after `done`).
         self.panel_frame_callback = None;
@@ -764,6 +742,8 @@ impl InputMethodFrontend {
             panel_frame_callback: None,
             panel_frame_pending: false,
             panel_frame_pending_since: None,
+            panel_frame_missing_since: None,
+            panel_frame_stall_reported: false,
             panel_frame_stall_count: 0,
             popup_surface,
             viewporter,
@@ -896,11 +876,11 @@ impl InputMethodFrontend {
 
     /// Arm a `wl_surface.frame` callback on the popup surface after a
     /// successful present. The panel flush path consults
-    /// [`InputMethodState::panel_present_blocked`] before the next
-    /// present and skips while the callback is outstanding, so the
-    /// daemon never submits frames faster than the compositor releases
-    /// swapchain images. Idempotent: re-arming replaces any prior
-    /// outstanding callback.
+    /// [`InputMethodState::panel_present_decision`] before the next
+    /// present. A healthy callback paces presents at compositor refresh;
+    /// a missing callback only delays candidates until the soft gate
+    /// expires. Idempotent: re-arming replaces any prior outstanding
+    /// callback.
     pub fn arm_panel_frame_callback(&mut self) {
         let qh = self.queue.handle();
         let cb = self.state.popup_surface_obj.frame(&qh, ());
@@ -908,22 +888,22 @@ impl InputMethodFrontend {
         // `wl_surface.commit` (Wayland spec). flux's `flux_frame_present`
         // has already attached + committed the buffer for this frame via
         // Mesa's WSI, so the request just queued would otherwise sit
-        // un-committed until the next present — which the throttle below
-        // suppresses precisely because `panel_frame_pending` is set. That
-        // is a deadlock: the callback that clears the throttle is gated
-        // behind a present the throttle prevents, so the compositor never
-        // sends `done`, `panel_frame_pending` stays true, and every later
-        // candidate/preedit update is skipped until the panel is hidden.
-        // Issue a bare commit (no new buffer) so the frame request reaches
-        // the compositor now and `done` fires at the next refresh.
+        // un-committed until the next present. Issue a bare commit (no new
+        // buffer) so a healthy compositor can send `done` at the next
+        // refresh instead of waiting for the soft-gate fallback.
         self.state.popup_surface_obj.commit();
-        // The throttle prevents re-arming while a callback is outstanding,
-        // so the slot is normally empty; overwriting drops any stragger
-        // (wl_callback has no destroy request, so dropping the proxy is
-        // the correct disposal — the server frees it after `done`).
+        // The soft gate may re-arm while a callback is outstanding. Keeping
+        // `panel_frame_missing_since` across that replacement preserves a
+        // single diagnostic episode until the compositor eventually sends a
+        // callback or the popup is hidden.
+        let now = Instant::now();
+        if !self.state.panel_frame_pending {
+            self.state.panel_frame_missing_since = Some(now);
+            self.state.panel_frame_stall_reported = false;
+        }
         self.state.panel_frame_callback = Some(cb);
         self.state.panel_frame_pending = true;
-        self.state.panel_frame_pending_since = Some(Instant::now());
+        self.state.panel_frame_pending_since = Some(now);
     }
 
     /// Prepare a read from the Wayland socket, dispatching any already-queued
@@ -1443,21 +1423,6 @@ mod tests {
         let e = ConnectError::BindFailed("zwp_input_method_manager_v2", "NotPresent".to_string());
         let s = format!("{e}");
         assert!(s.contains("zwp_input_method_manager_v2"));
-    }
-
-    #[test]
-    fn frame_callback_timeout_recovers_stuck_throttle() {
-        let now = Instant::now();
-        // No callback armed → never blocked on a timeout.
-        assert!(!frame_callback_timed_out(None, now));
-        // Freshly armed → still within budget, stay throttled.
-        assert!(!frame_callback_timed_out(Some(now), now));
-        // Armed just under the timeout → stay throttled.
-        let almost = now - (PANEL_FRAME_CALLBACK_TIMEOUT - Duration::from_millis(1));
-        assert!(!frame_callback_timed_out(Some(almost), now));
-        // Armed past the timeout → force-clear so candidate updates resume.
-        let stale = now - (PANEL_FRAME_CALLBACK_TIMEOUT + Duration::from_millis(50));
-        assert!(frame_callback_timed_out(Some(stale), now));
     }
 
     #[test]

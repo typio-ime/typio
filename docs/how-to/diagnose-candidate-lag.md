@@ -15,7 +15,7 @@ tell them apart instead of guessing.
 
 ```text
 key → engine (libtypio/Rime) → CompositionState.candidates
-    → panel_scheduler (should_flush?) → present throttle (frame callback)
+    → panel_scheduler (should_flush?) → present gate (frame callback + timer)
     → FluxPanel::draw_candidates
         → layout_candidates  (flux_text_measure, cached)
         → flux_text_draw     → glyph cache → atlas (FreeType raster)
@@ -27,7 +27,7 @@ Each stage has a distinct failure mode and a distinct probe:
 | Stage | Failure mode | Grows over time? | Probe |
 |------|---------------|------------------|-------|
 | Glyph atlas | Atlas saturates → re-raster every frame | Yes (CJK working set) | `TYPIO_PANEL_PROBE` `atlas_clears` |
-| Present throttle | `wl_surface.frame` `done` never arrives → panel wedged | Yes (after focus/occlusion) | `typio.panel.host` stall warning |
+| Present gate | `wl_surface.frame` `done` never arrives → timer-paced fallback | Yes (after focus/occlusion) | `typio.panel.host` stall warning |
 | Swapchain | No `wp_viewporter` → rebuild per page | Constant, not growing | startup `typio.wayland.viewporter` warning |
 | Engine | Rime userdb / state grows | Yes | watchdog stage attribution |
 
@@ -170,37 +170,38 @@ Watch `glyph_evictions_delta`, `atlas_clears_delta`, and `measure_ms` /
 [ADR-0020](../adr/0020-atlas-reclamation-and-glyph-layer-modularization.md),
 and [Vulkan/flux rendering](../explanation/vulkan-flux-rendering.md).
 
-### Dimension B — Present throttle / compositor back-pressure
+### Dimension B — Present gate / compositor back-pressure
 
 **Signature:** `present_max_ms` climbing while `atlas_clears`/`evict` stay
 flat; or the panel visibly freezes and then catches up in a burst.
 
 **Why it happens:** after each present the daemon arms a
-`wl_surface.frame` callback and skips presenting until the compositor
-sends `done` (this caps the present rate at the refresh rate so the
-synchronous `vkQueuePresentKHR` never blocks the loop — see
-[ADR-0010](../adr/0010-non-blocking-candidate-popup-present.md)). If the
+`wl_surface.frame` callback and uses it as a soft present gate. A healthy
+callback wakes the panel at compositor refresh so the synchronous
+`vkQueuePresentKHR` does not run faster than buffer release. If the
 compositor stops delivering `done` — popup occluded, on an unfocused
-output, or a buggy frame scheduler — the throttle would wedge and every
-later candidate update is dropped.
+output, or a buggy frame scheduler — the panel waits only for the soft
+limit and then presents the latest coalesced candidate state anyway. See
+[ADR-0036](../adr/0036-soft-present-gate-for-candidate-panel.md).
 
-Current builds defend against this: an outstanding callback older than
-`PANEL_FRAME_CALLBACK_TIMEOUT` (200 ms) force-clears the throttle and
-logs a one-shot warning. Grep for it:
+Current builds still report the condition: an uninterrupted
+missing-callback episode older than the diagnostic threshold logs one
+warning. Grep for it:
 
 ```bash
 journalctl --user -u typio --since -1h | rg "frame-callback stall"
 ```
 
 ```text
-panel: frame-callback stall — forcing present (compositor did not deliver
-  wl_surface.frame done) stalled_ms=214.7 timeout_ms=200 stall_count=37
+panel: frame-callback stall — using timer-paced presents (compositor did not
+  deliver wl_surface.frame done) stalled_ms=214.7 soft_limit_ms=20 \
+  warn_after_ms=200 stall_count=37
 ```
 
 A rising `stall_count` confirms the compositor is dropping frame
-callbacks for the popup. The daemon now recovers automatically, but a
-high count points at the compositor's frame scheduling (file upstream
-with the compositor name/version).
+callbacks for the popup. The daemon recovers by timer-pacing candidates,
+but a high count still points at the compositor's frame scheduling (file
+upstream with the compositor name/version).
 
 ### Dimension B′ — Missing `wp_viewporter`
 

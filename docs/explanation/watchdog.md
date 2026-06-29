@@ -55,11 +55,11 @@ only while an input field is focused**:
   flag and signals the condition variable under the lock (no lost wakeup).
 - **Disarmed**, the watchdog thread blocks on its condition variable — zero
   wakeups while the daemon is idle.
-- **Armed**, it samples at a coarse 1 s interval
-  (`TYPIO_WL_WATCHDOG_SAMPLE_MS`), waking early if disarmed or stopped. One
-  second is ample against the 3 s threshold and keeps wakeups negligible even
-  during active typing (when the user is interacting and power is not the
-  priority).
+- **Armed**, it samples at a coarse 2 s interval
+  (`TYPIO_WL_WATCHDOG_SAMPLE_MS`), waking early if disarmed or stopped. The
+  practical detection window is roughly 3-5 s for ordinary work stages, which
+  keeps wakeups negligible even during active typing while still recovering a
+  grab-holding wedge.
 
 The condition variable uses `CLOCK_MONOTONIC` (via `pthread_condattr_setclock`)
 so NTP steps or suspend/resume cannot skew the sample interval.
@@ -81,7 +81,7 @@ deadline (the usual culprit chain), then `kill(getpid(), SIGKILL)`.
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | `TYPIO_WL_WATCHDOG_STUCK_MS` | 3000 | Heartbeat age that declares a stall. |
-| `TYPIO_WL_WATCHDOG_SAMPLE_MS` | 1000 | Sample interval while armed. |
+| `TYPIO_WL_WATCHDOG_SAMPLE_MS` | 2000 | Sample interval while armed. |
 
 Lowering the sample interval tightens detection latency at the cost of more
 wakeups while typing; it does not affect idle power (the thread is blocked when

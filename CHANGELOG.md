@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Log output is colorized only on a terminal.** When stderr is the systemd
   journal or a redirected file, ANSI escapes are now suppressed, so captured
   logs are plain text.
+- **Frontend watchdog defaults are lighter.** The watchdog now starts
+  disarmed and is armed only while an input field is focused; while armed, its
+  coarse sampling interval is 2 s instead of 1 s. Idle operation keeps zero
+  watchdog wakeups, and focused operation keeps the grab-stall safety net with
+  lower sampling overhead.
 
 ### Added
 
@@ -50,17 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status now uses its own popup owner and auto-hide timer, so language-switch
   feedback and voice-state feedback do not clear each other or affect each
   other's recency gates.
-- **Present throttle could wedge if the compositor dropped frame callbacks.**
-  The candidate panel skips presenting until the compositor sends
-  `wl_surface.frame` `done`. v0.5.4 guaranteed the request reaches the
-  compositor, but a compositor that genuinely stops delivering `done` for an
-  occluded or unfocused-output popup would still leave `panel_frame_pending`
-  stuck `true` forever, dropping every later candidate update — the
-  "switching candidates lags after a while" symptom. An outstanding callback
-  older than 200 ms now force-clears the throttle (presenting re-arms a fresh
-  callback) and logs a one-shot `frame-callback stall` warning with a running
-  `stall_count`, so the daemon self-recovers and the condition is visible in
-  diagnostics.
+- **Candidate panel frame callbacks are now a soft present gate.** The panel
+  still uses `wl_surface.frame` callbacks to pace healthy compositors, but a
+  missing callback no longer blocks candidate updates until the old 200 ms
+  recovery path. After a 50 ms soft limit, the host presents the latest
+  coalesced candidate state and re-arms the callback; a 200 ms uninterrupted
+  missing-callback episode now logs one `frame-callback stall` warning with a
+  running `stall_count` instead of controlling user-visible recovery.
 
 ## [0.5.4] - 2026-06-25
 
