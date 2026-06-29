@@ -136,6 +136,56 @@ fn help_flag_is_headless() {
     );
 }
 
+/// Wait until `needle` appears in `path`, or panic with the file contents.
+fn wait_for_log(path: &PathBuf, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let log = std::fs::read_to_string(path).unwrap_or_default();
+        if log.contains(needle) {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("'{needle}' not seen within 5s\n--- typio stderr ---\n{log}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn send_signal(pid: u32, sig: &str) {
+    let status = Command::new("kill")
+        .arg(format!("-{sig}"))
+        .arg(pid.to_string())
+        .status()
+        .expect("spawn kill");
+    assert!(status.success(), "kill -{sig} {pid} failed");
+}
+
+#[test]
+fn sigusr_adjusts_log_level_at_runtime() {
+    // Default invocation → floor at `info`. The stderr log lands next to the
+    // socket's XDG dir (see `spawn_typio`).
+    let (guard, socket) = spawn_typio(&[]);
+    let log_path = socket.parent().unwrap().parent().unwrap().join("typio.stderr");
+    let pid = guard.child.id();
+
+    // SIGUSR1: info → debug. The confirmation logs at info (always visible).
+    // The `level` field is a `&str`, so tracing renders it quoted.
+    send_signal(pid, "USR1");
+    wait_for_log(&log_path, "log level changed");
+    wait_for_log(&log_path, r#"level="debug""#);
+
+    // SIGUSR1 again: debug → trace.
+    send_signal(pid, "USR1");
+    wait_for_log(&log_path, r#"level="trace""#);
+
+    // SIGUSR2: reset to the startup floor (info).
+    send_signal(pid, "USR2");
+    wait_for_log(&log_path, r#"level="info""#);
+
+    // `guard` drops here, killing the daemon.
+    drop(guard);
+}
+
 #[test]
 fn daemon_starts_and_stops_cleanly_headless() {
     let (mut guard, socket) = spawn_typio(&[]);

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use flux_sys::{
     flux_arena, flux_arena_destroy, flux_arena_init, flux_arena_reset, flux_canvas,
     flux_canvas_begin, flux_canvas_desc, flux_canvas_destroy, flux_canvas_end,
-    flux_canvas_fill_rrect, flux_color_rgba, flux_device, flux_device_create, flux_device_desc,
+    flux_color_rgba, flux_device, flux_device_create, flux_device_desc,
     flux_device_release, flux_device_vk_instance, flux_error_info, flux_frame,
     flux_frame_begin_desc, flux_frame_present, flux_frame_submit, flux_get_last_error,
     flux_struct_type, flux_surface, flux_surface_begin_frame, flux_surface_create,
@@ -147,6 +147,88 @@ unsafe fn text_stats_snapshot(text: *mut flux_text) -> TextStatsSnapshot {
         glyph_misses: stats.glyph_misses,
         glyph_evictions: stats.glyph_evictions,
         atlas_clears: stats.atlas_clears,
+    }
+}
+
+/// Whether the always-on stderr panel probe is enabled via
+/// `TYPIO_PANEL_PROBE=1`. Cached after the first read so the hot path
+/// pays a single relaxed atomic load per frame, not an env lookup.
+fn panel_probe_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("TYPIO_PANEL_PROBE").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    })
+}
+
+/// Compact stderr probe for diagnosing "candidate switching lags after a
+/// while". Accumulates per-frame present timing and glyph-cache churn,
+/// then emits one summary line every `PROBE_WINDOW` frames — plus an
+/// immediate line whenever `atlas_clears` rises (the canonical
+/// atlas-thrash signal) so a saturating atlas is caught the moment it
+/// starts, not `PROBE_WINDOW` frames later.
+///
+/// The three numbers to watch over a long session:
+///   * `atlas_clears` climbing       → glyph atlas thrash (see atlas.c)
+///   * `evict/win` consistently > 0  → glyph cache over its working set
+///   * `present_max_ms` climbing     → compositor / swapchain back-pressure
+fn emit_panel_probe(
+    present: Duration,
+    total: Duration,
+    candidate_count: usize,
+    stats: &TextStatsSnapshot,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Frames per aggregated stderr line.
+    const PROBE_WINDOW: u64 = 120;
+
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static PRESENT_MAX_US: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_MAX_US: AtomicU64 = AtomicU64::new(0);
+    static SLOW_FRAMES: AtomicU64 = AtomicU64::new(0);
+    static LAST_CLEARS: AtomicU64 = AtomicU64::new(u64::MAX);
+    static LAST_EVICTIONS: AtomicU64 = AtomicU64::new(0);
+
+    let present_us = present.as_micros() as u64;
+    let total_us = total.as_micros() as u64;
+    PRESENT_MAX_US.fetch_max(present_us, Ordering::Relaxed);
+    TOTAL_MAX_US.fetch_max(total_us, Ordering::Relaxed);
+    if total >= PANEL_TIMING_SLOW_THRESHOLD {
+        SLOW_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+    let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // Immediate alert on atlas-clear: the single most diagnostic event
+    // for the "lags after a while" regression. u64::MAX sentinel skips
+    // the first frame so we don't false-alarm on the initial read.
+    let last_clears = LAST_CLEARS.swap(stats.atlas_clears, Ordering::Relaxed);
+    if last_clears != u64::MAX && stats.atlas_clears > last_clears {
+        eprintln!(
+            "panel-probe: ATLAS CLEAR #{} (glyph atlas exhausted — next frames \
+             re-rasterise visible glyphs; sustained clears = thrash) glyph_count={} \
+             glyph_cap={}",
+            stats.atlas_clears, stats.glyph_count, stats.glyph_cap
+        );
+    }
+
+    if n % PROBE_WINDOW == 0 {
+        let present_max_ms = PRESENT_MAX_US.swap(0, Ordering::Relaxed) as f64 / 1000.0;
+        let total_max_ms = TOTAL_MAX_US.swap(0, Ordering::Relaxed) as f64 / 1000.0;
+        let slow = SLOW_FRAMES.swap(0, Ordering::Relaxed);
+        let evict_delta = stats
+            .glyph_evictions
+            .saturating_sub(LAST_EVICTIONS.swap(stats.glyph_evictions, Ordering::Relaxed));
+        eprintln!(
+            "panel-probe: frames={n} window={PROBE_WINDOW} cands={candidate_count} \
+             present_max_ms={present_max_ms:.1} total_max_ms={total_max_ms:.1} \
+             slow_frames={slow}/{PROBE_WINDOW} glyph_count={} glyph_cap={} \
+             atlas_clears={} evict/win={evict_delta}",
+            stats.glyph_count, stats.glyph_cap, stats.atlas_clears
+        );
     }
 }
 
@@ -621,7 +703,12 @@ impl FluxPanel {
             tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::TRACE);
         let timing_info_enabled =
             tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::INFO);
-        let timing_enabled = timing_trace_enabled || timing_info_enabled;
+        // The stderr probe (TYPIO_PANEL_PROBE=1) reuses the same per-stage
+        // timing + glyph-stats machinery so it needs measurement turned on,
+        // but it routes a compact summary to stderr without requiring the
+        // caller to know the RUST_LOG target. See `emit_panel_probe`.
+        let probe_enabled = panel_probe_enabled();
+        let timing_enabled = timing_trace_enabled || timing_info_enabled || probe_enabled;
         let total_start = timing_enabled.then(Instant::now);
         let frame_id = if timing_enabled {
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -960,6 +1047,15 @@ impl FluxPanel {
                 } else {
                     emit_panel_timing!(trace);
                 }
+            }
+            if probe_enabled {
+                let stats_after = unsafe { text_stats_snapshot(self.text) };
+                emit_panel_probe(
+                    present_duration,
+                    total_duration,
+                    candidates.len(),
+                    &stats_after,
+                );
             }
         }
     }

@@ -9,8 +9,7 @@ After=graphical-session.target
 Type=simple
 # Absolute path is filled at install time by the build system
 ExecStart=@TYPIO_HOST_DIR@/typio
-Restart=on-failure
-RestartSec=2s
+Restart=no
 SyslogIdentifier=typio
 StandardOutput=journal
 StandardError=journal

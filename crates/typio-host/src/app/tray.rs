@@ -176,11 +176,11 @@ pub(super) fn set_active_keyboard(
     let name_c = CString::new(name).map_err(|_| SvcError)?;
     match c_registry::typio_registry_set_active_keyboard(reg, name_c.as_ptr()) {
         TypioResult::TypioOk => {
-            eprintln!("tray: active keyboard -> {name}");
+            tracing::debug!(target: "typio.tray", keyboard = %name, "active keyboard changed");
             Ok(())
         }
         _ => {
-            eprintln!("tray: set_active_keyboard({name}) failed");
+            tracing::warn!(target: "typio.tray", keyboard = %name, "set_active_keyboard failed");
             Err(SvcError)
         }
     }
@@ -221,7 +221,7 @@ pub(super) fn cycle_active_language(instance: *mut TypioInstance) {
     };
     match c_registry::typio_registry_next_language(reg) {
         TypioResult::TypioOk => {
-            eprintln!("tray: active language cycled");
+            tracing::debug!(target: "typio.tray", "active language cycled");
         }
         _ => {
             // No cycleable language (none or single): cycle engines instead.

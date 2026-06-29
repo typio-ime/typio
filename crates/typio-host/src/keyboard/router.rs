@@ -4,20 +4,20 @@
 //! context. Decides whether a key is consumed by the engine or forwarded
 //! to the focused application via the virtual keyboard.
 
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{CStr, c_char, c_void};
 use std::sync::Mutex;
 
 use typio_abi::{TypioComposition, TypioEventType, TypioKeyEvent};
 
-use crate::candidate_guard::{classify_host_selection, HostSelectionAction, HostSelectionFlags};
+use crate::candidate_guard::{HostSelectionAction, HostSelectionFlags, classify_host_selection};
 use crate::input_method::{DecodedKeyEvent, InputMethodState};
 use crate::keyboard_policy::{
-    modifier_bit_for_keysym, sync_physical_modifiers, tracking_mark_released_pending,
-    tracking_reset, tracking_reset_generations, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
-    WL_KEYBOARD_KEY_STATE_RELEASED,
+    KEY_CAPITAL_V, KEY_V, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
+    WL_KEYBOARD_KEY_STATE_RELEASED, modifier_bit_for_keysym, sync_physical_modifiers,
+    tracking_mark_released_pending, tracking_reset, tracking_reset_generations,
 };
 use crate::repeat_timer::Modifiers;
-use crate::text_ui_state::{text_ui_plan_update, PreeditTracking, TextUiPlan};
+use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
 
 /// Maximum number of keys tracked for symmetric press/release. Mirrors
 /// `TYPIO_WL_MAX_TRACKED_KEYS` in the C host.
@@ -208,6 +208,12 @@ pub struct KeyboardRouter {
     /// only the candidate highlight, leaving the inline preedit text
     /// untouched). See [`crate::text_ui_state::text_ui_plan_update`].
     preedit_tracking: PreeditTracking,
+    /// Keycode currently held as the voice push-to-talk trigger, if any.
+    voice_ptt_keycode: Option<u32>,
+    /// Latched when `Super+V` starts voice push-to-talk.
+    voice_ptt_pressed: bool,
+    /// Latched when the matching `V` release ends voice push-to-talk.
+    voice_ptt_released: bool,
 }
 
 /// Default engine-switch chord: Ctrl+Shift, the standard Linux IME
@@ -221,6 +227,10 @@ pub fn default_switch_binding() -> crate::keyboard_policy::ShortcutBinding {
         modifiers: Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
         keysym: 0, // unused — chord_is_switch_modifier covers both sides
     }
+}
+
+fn is_voice_ptt_key(keysym: u32) -> bool {
+    keysym == KEY_V || keysym == KEY_CAPITAL_V
 }
 
 impl KeyboardRouter {
@@ -257,6 +267,9 @@ impl KeyboardRouter {
             shortcut_fired: false,
             engine_tracked_mods: Modifiers::NONE,
             preedit_tracking: PreeditTracking::new(),
+            voice_ptt_keycode: None,
+            voice_ptt_pressed: false,
+            voice_ptt_released: false,
         })
     }
 
@@ -388,6 +401,9 @@ impl KeyboardRouter {
         self.engine_tracked_mods = Modifiers::NONE;
         self.shortcut_saw_non_modifier = false;
         self.chord_full_set_held = false;
+        self.voice_ptt_keycode = None;
+        self.voice_ptt_pressed = false;
+        self.voice_ptt_released = false;
     }
 
     /// Scrub the current key generation and reset all per-key tracking.
@@ -407,6 +423,9 @@ impl KeyboardRouter {
         self.shortcut_already_triggered = false;
         self.shortcut_fired = false;
         self.engine_tracked_mods = Modifiers::NONE;
+        self.voice_ptt_keycode = None;
+        self.voice_ptt_pressed = false;
+        self.voice_ptt_released = false;
     }
 
     /// True iff the configured engine-switch chord (Ctrl+Shift by
@@ -415,6 +434,16 @@ impl KeyboardRouter {
     /// keyboard. Reading clears the flag.
     pub fn take_switch_chord_fired(&mut self) -> bool {
         std::mem::take(&mut self.shortcut_fired)
+    }
+
+    /// True iff the most recent dispatch started voice push-to-talk.
+    pub fn take_voice_ptt_pressed(&mut self) -> bool {
+        std::mem::take(&mut self.voice_ptt_pressed)
+    }
+
+    /// True iff the most recent dispatch ended voice push-to-talk.
+    pub fn take_voice_ptt_released(&mut self) -> bool {
+        std::mem::take(&mut self.voice_ptt_released)
     }
 
     /// Current grab epoch.
@@ -551,6 +580,24 @@ impl KeyboardRouter {
             }
         }
 
+        if state == WL_KEYBOARD_KEY_STATE_RELEASED && self.voice_ptt_keycode == Some(key.keycode) {
+            self.voice_ptt_keycode = None;
+            self.voice_ptt_released = true;
+            return true;
+        }
+
+        if state == WL_KEYBOARD_KEY_STATE_PRESSED
+            && !is_modifier_key
+            && is_voice_ptt_key(key.keysym)
+            && self
+                .shortcut_modifiers(xkb_mods_depressed)
+                .intersects(Modifiers::SUPER)
+        {
+            self.voice_ptt_keycode = Some(key.keycode);
+            self.voice_ptt_pressed = true;
+            return true;
+        }
+
         if key.state != 1 {
             // Release: forward to the engine so engines that need
             // release events (e.g. Rime schema switching on a lone
@@ -570,6 +617,10 @@ impl KeyboardRouter {
         }
         let consumed = self.process_key_engine(key, xkb_mods_depressed, false);
         consumed
+    }
+
+    fn shortcut_modifiers(&self, xkb_mods_depressed: u32) -> Modifiers {
+        Modifiers(self.physical_modifiers.0 | xkb_mods_depressed)
     }
 
     /// Advance the Ctrl+Shift engine-switch chord state machine for one
@@ -812,6 +863,9 @@ mod tests {
                 shortcut_fired: false,
                 engine_tracked_mods: Modifiers::NONE,
                 preedit_tracking: PreeditTracking::new(),
+                voice_ptt_keycode: None,
+                voice_ptt_pressed: false,
+                voice_ptt_released: false,
             }
         }
     }
@@ -945,6 +999,48 @@ mod tests {
         // Releasing the modifiers must NOT switch.
         assert!(!router.track_switch_modifier(Modifiers::SHIFT, false));
         assert!(!router.track_switch_modifier(Modifiers::CTRL, false));
+    }
+
+    #[test]
+    fn super_v_press_and_release_are_voice_ptt_shortcut() {
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let press = DecodedKeyEvent {
+            keycode: 47,
+            xkb_keycode: 55,
+            keysym: KEY_V,
+            unicode: "v".to_string(),
+            state: WL_KEYBOARD_KEY_STATE_PRESSED,
+            time: 10,
+        };
+        let release = DecodedKeyEvent {
+            state: WL_KEYBOARD_KEY_STATE_RELEASED,
+            time: 20,
+            ..press.clone()
+        };
+
+        assert!(router.dispatch_key(&press, Modifiers::SUPER.0));
+        assert!(router.take_voice_ptt_pressed());
+        assert!(!router.take_voice_ptt_pressed());
+
+        assert!(router.dispatch_key(&release, Modifiers::NONE.0));
+        assert!(router.take_voice_ptt_released());
+        assert!(!router.take_voice_ptt_released());
+    }
+
+    #[test]
+    fn super_capital_v_is_voice_ptt_shortcut() {
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let press = DecodedKeyEvent {
+            keycode: 47,
+            xkb_keycode: 55,
+            keysym: KEY_CAPITAL_V,
+            unicode: "V".to_string(),
+            state: WL_KEYBOARD_KEY_STATE_PRESSED,
+            time: 10,
+        };
+
+        assert!(router.dispatch_key(&press, Modifiers::SUPER.0));
+        assert!(router.take_voice_ptt_pressed());
     }
 
     #[test]

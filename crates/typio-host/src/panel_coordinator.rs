@@ -316,7 +316,10 @@ impl PanelCoordinator {
             return None;
         }
         let caret_fallback = self.position_anchor_has_caret
-            || self.positioned_ui_pending_owner == UiOwner::Indicator;
+            || matches!(
+                self.positioned_ui_pending_owner,
+                UiOwner::Indicator | UiOwner::Voice
+            );
         if caret_fallback {
             self.mark_anchor_ready();
             return self.flush_pending();
@@ -400,6 +403,24 @@ mod tests {
         coord.queue_positioned_ui(UiOwner::Candidate, "candidate");
         coord.hide(UiOwner::Candidate);
         assert!(!coord.has_pending());
+    }
+
+    #[test]
+    fn voice_status_uses_status_overlay_timeout_fallback() {
+        let mut coord =
+            PanelCoordinator::with_config(PanelCoordinatorConfig::from_values(true, 50));
+        coord.reset_anchor();
+        assert_eq!(
+            coord.decide_positioned_flush(UiOwner::Voice, "Voice: no audio source"),
+            FlushDecision::Pending
+        );
+
+        let later = Instant::now() + std::time::Duration::from_millis(60);
+        assert_eq!(
+            coord.flush_pending_with_timeout(later),
+            Some((UiOwner::Voice, "Voice: no audio source".to_string()))
+        );
+        assert_eq!(coord.visible_owner(), UiOwner::Voice);
     }
 
     #[test]

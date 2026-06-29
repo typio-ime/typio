@@ -2,11 +2,12 @@
 
 ## The daemon discovers no engines
 
-The daemon logs how many engines it loaded at startup (`Host loader
-registered N engine(s) from …`); run `typio --verbose` to see it. If the
-count is zero, the engine manifest is usually installed in a directory that is
-not on the search path, or the file name does not match the expected pattern.
-The scanner looks for `typio-engine-*.toml`.
+The daemon logs each engine it registers at startup (target
+`typio.startup`, e.g. `registered engine kind=keyboard engine=…`), visible
+at the default log level. If nothing is registered, the engine manifest is
+usually installed in a directory that is not on the search path, or the file
+name does not match the expected pattern. The scanner looks for
+`typio-engine-*.toml`.
 
 Confirm the manifest sits in a scanned directory and is readable:
 
@@ -117,6 +118,12 @@ typio &
 
 The underlying leak is patched in the current source. Rebuilding and reinstalling eliminates it permanently.
 
+If candidate switching is still sluggish on a current build, the cause is
+one of the glyph-atlas, present-throttle, swapchain, or engine paths.
+Work through [How to Diagnose Candidate-Switching
+Lag](diagnose-candidate-lag.md), which adds a `TYPIO_PANEL_PROBE=1` stderr
+probe and a decision tree for telling those four apart.
+
 ## Indicator Lingers After Switching tmux Panes or Windows
 
 **Symptom:** The engine/mode indicator stays visible for a moment after switching panes inside tmux, screen, or a similar terminal multiplexer running in a Wayland terminal emulator (foot, Alacritty, kitty, etc.).
@@ -160,6 +167,22 @@ Logs go to stderr. To keep a trace:
 ```bash
 typio --verbose 2>&1 | tee typio-trace.log
 ```
+
+To raise verbosity on an **already-running** daemon — useful when a fault
+only appears after a long session and you do not want to restart — send
+`SIGUSR1` to step the level up (`info`→`debug`→`trace`), and `SIGUSR2` to
+reset it:
+
+```bash
+pkill -USR1 typio    # bump one level; repeat to reach trace
+pkill -USR2 typio    # reset to the startup level
+```
+
+For installed (journald) builds, follow along with
+`journalctl --user -u typio -f`. To narrow the trace to one subsystem
+instead of raising everything, set a per-target filter at startup, e.g.
+`RUST_LOG=typio.panel=trace typio` (see
+[CLI Reference](../reference/cli.md#log-filtering-with-rust_log)).
 
 Keyboard trace lines include both raw key data and the resolved text character when XKB can derive one, for example `unicode=U+0061 char='a'`. They also carry `seq=...`, `phase=...`, and `topic=...` so related events can be correlated in order.
 

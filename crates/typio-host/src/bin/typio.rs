@@ -12,6 +12,8 @@ fn main() -> ExitCode {
     let mut app = match App::from_env() {
         Ok(a) => a,
         Err(e) => {
+            // Logging is not initialized yet (verbosity comes from the parsed
+            // args), so this fatal CLI error goes straight to stderr.
             eprintln!("{e}");
             return ExitCode::from(2);
         }
@@ -19,7 +21,7 @@ fn main() -> ExitCode {
     diagnostics::init_logging(app.verbosity());
 
     if let Err(e) = app.init() {
-        eprintln!("typio: init failed: {e}");
+        tracing::error!(target: "typio.startup", error = %e, "init failed");
         return ExitCode::from(1);
     }
 

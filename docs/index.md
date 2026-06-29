@@ -7,6 +7,7 @@ The Linux/Wayland host for the [Typio](../typio) input method framework. This re
 - **[How-to Guides](how-to/)** — Task-oriented recipes for specific goals.
   - [How to Package for Distribution](how-to/package-for-distribution.md)
   - [Troubleshooting](how-to/troubleshooting.md)
+  - [How to Diagnose Candidate-Switching Lag](how-to/diagnose-candidate-lag.md)
 - **[Reference](reference/)** — Lookup-oriented API, config, and protocol documentation.
   - [Glossary](reference/glossary.md) — Canonical project terms with definitions and sources
   - [IPC Protocol Reference](reference/ipc-protocol.md) — TIP v1 (UDS + JSON-RPC)

@@ -18,9 +18,10 @@ use crate::keyboard::router::RepeatOutcome;
 use crate::panel_coordinator::UiOwner;
 use crate::panel_scheduler::{self, PanelUpdateResult};
 use crate::session_glue::FocusTransition;
+use crate::voice::VoiceOutcome;
 use crate::watchdog::LoopStage;
 
-use super::{arm_repeat, tray::cycle_active_language, App, DaemonEvent};
+use super::{App, DaemonEvent, arm_repeat, tray::cycle_active_language};
 
 impl App {
     /// The Wayland main loop. Returns the daemon exit code.
@@ -55,6 +56,15 @@ impl App {
             .as_ref()
             .map(|t| t.as_fd().as_raw_fd())
             .unwrap_or(-1);
+        let voice_status_fd = self
+            .voice_status_timer
+            .as_ref()
+            .map(|t| t.as_fd().as_raw_fd())
+            .unwrap_or(-1);
+        // Voice session eventfd: becomes readable when inference completes
+        // (or an async model load resolves). Stable for the session
+        // lifetime, so it can join the static poll set.
+        let voice_session_fd = self.voice.as_ref().map(|v| v.session_fd()).unwrap_or(-1);
 
         let mut fds = [
             libc::pollfd {
@@ -87,6 +97,16 @@ impl App {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            libc::pollfd {
+                fd: voice_status_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: voice_session_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
 
         while !self.drain_events() {
@@ -103,7 +123,7 @@ impl App {
                     }
                 }
                 if frontend.stopped() {
-                    eprintln!("typio: input method unavailable");
+                    tracing::error!(target: "typio.lifecycle", "input method unavailable; exiting");
                     return 1;
                 }
             }
@@ -114,7 +134,7 @@ impl App {
             {
                 let frontend = self.frontend.as_ref().unwrap();
                 if let Err(e) = frontend.flush() {
-                    eprintln!("Wayland flush error: {e}");
+                    tracing::error!(target: "typio.wayland.io", error = %e, "flush failed");
                     return 1;
                 }
             }
@@ -124,7 +144,7 @@ impl App {
                 match frontend.prepare_read_loop() {
                     Ok(guard) => Some(guard),
                     Err(e) => {
-                        eprintln!("Wayland prepare_read error: {e}");
+                        tracing::error!(target: "typio.wayland.io", error = %e, "prepare_read failed");
                         return 1;
                     }
                 }
@@ -164,6 +184,9 @@ impl App {
                 if let Some(indicator_remaining) = self.indicator_hide_remaining_ms(now) {
                     reduce_timeout(indicator_remaining);
                 }
+                if let Some(voice_remaining) = self.voice_status_hide_remaining_ms(now) {
+                    reduce_timeout(voice_remaining);
+                }
                 timeout_ms
             };
             let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout_ms) };
@@ -172,7 +195,7 @@ impl App {
                 if e.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
-                eprintln!("poll error: {e}");
+                tracing::error!(target: "typio.lifecycle", error = %e, "poll failed");
                 return 1;
             }
 
@@ -185,7 +208,7 @@ impl App {
                         tracing::enabled!(target: "typio.wayland.io", tracing::Level::DEBUG);
                     let started = timing_enabled.then(Instant::now);
                     if let Err(e) = frontend.read_and_dispatch(guard) {
-                        eprintln!("Wayland read error: {e}");
+                        tracing::error!(target: "typio.wayland.io", error = %e, "read_and_dispatch failed");
                         return 1;
                     }
                     if let Some(started) = started {
@@ -197,7 +220,7 @@ impl App {
                     }
                 }
             } else if fds[0].revents & (libc::POLLERR | libc::POLLHUP) != 0 {
-                eprintln!("Wayland display disconnected");
+                tracing::error!(target: "typio.wayland.io", "display disconnected");
                 return 1;
             }
             // If POLLIN was not set, `read_guard` is dropped here and cancels the read.
@@ -239,6 +262,7 @@ impl App {
             //    a subsequent press arrive in the same Wayland dispatch
             //    batch, both must reach the router in order — losing the
             //    release leaves the repeat timer armed forever.
+            let mut voice_status_to_show: Option<String> = None;
             {
                 let frontend = self.frontend.as_mut().unwrap();
                 let state = frontend.state_mut();
@@ -286,7 +310,7 @@ impl App {
                             // used for it); with <2 languages the cycle
                             // falls back to engine cycling. Suppresses
                             // forwarding of the modifier press itself.
-                            eprintln!("indicator: Ctrl+Shift chord fired");
+                            tracing::debug!(target: "typio.indicator", "Ctrl+Shift language-switch chord fired");
                             let instance_ptr = self
                                 .instance
                                 .as_mut()
@@ -294,6 +318,20 @@ impl App {
                                 .unwrap_or(std::ptr::null_mut());
                             cycle_active_language(instance_ptr);
                             let _ = self.event_tx.send(DaemonEvent::StateRefresh);
+                        } else if router.take_voice_ptt_pressed() {
+                            tracing::debug!(target: "typio.voice", "Super+V push-to-talk pressed");
+                            let _ = timer.stop();
+                            voice_status_to_show = Some(match self.voice.as_ref() {
+                                Some(voice) if voice.is_available() => {
+                                    if voice.start() {
+                                        "Voice: listening…".to_string()
+                                    } else {
+                                        "Voice: could not start audio capture".to_string()
+                                    }
+                                }
+                                Some(voice) => format!("Voice: {}", voice.unavail_reason()),
+                                None => "Voice: unavailable".to_string(),
+                            });
                         } else if consumed {
                             // Engine consumed the key. Drain any output it
                             // produced, then arm the repeat timer in engine
@@ -328,7 +366,13 @@ impl App {
                             Some(handled) => handled,
                             None => router.dispatch_key(&key, mods),
                         };
-                        if consumed {
+                        if router.take_voice_ptt_released() {
+                            tracing::debug!(target: "typio.voice", "Super+V push-to-talk released");
+                            if let Some(voice) = self.voice.as_ref() {
+                                voice.stop();
+                                voice_status_to_show = Some("Voice: transcribing…".to_string());
+                            }
+                        } else if consumed {
                             router.drain_commit(state);
                             router.drain_composition(state);
                         } else {
@@ -338,6 +382,9 @@ impl App {
                         let _ = timer.stop();
                     }
                 }
+            }
+            if let Some(label) = voice_status_to_show {
+                self.request_voice_status_show(label, Instant::now());
             }
 
             // 7. Flush the candidate panel if the scheduler says so.
@@ -539,12 +586,16 @@ impl App {
                     state.panel_coord_mut().flush_pending_with_timeout(now)
                 };
                 if let Some((owner, label)) = flushed {
-                    eprintln!(
-                        "indicator: deferred flush owner={:?} label='{}'",
-                        owner, label
+                    tracing::debug!(
+                        target: "typio.indicator",
+                        ?owner,
+                        %label,
+                        "deferred flush"
                     );
                     if owner == UiOwner::Indicator {
                         self.render_indicator_banner(&label, now);
+                    } else if owner == UiOwner::Voice {
+                        self.render_voice_status_banner(&label, now);
                     } else if owner == UiOwner::Candidate {
                         // The anchor probe timed out, and the caret fallback was armed.
                         // Mark the panel dirty so it redraws with the fallback anchor
@@ -554,9 +605,6 @@ impl App {
                         }
                     }
                 }
-                // UiOwner::Voice is reserved for a future chunk; the flush
-                // path is in place and tested by panel_coordinator's queue
-                // tests, but no producer feeds it yet.
             }
 
             // 8. Repeat timer expiration.
@@ -602,6 +650,62 @@ impl App {
                 self.hide_indicator();
             }
 
+            // 8c. Voice status auto-hide timer expiration.
+            if fds[6].revents & libc::POLLIN != 0 {
+                let mut buf = [0u8; 8];
+                if let Some(tf) = self.voice_status_timer.as_ref() {
+                    unsafe {
+                        libc::read(
+                            tf.as_fd().as_raw_fd(),
+                            buf.as_mut_ptr() as *mut c_void,
+                            buf.len(),
+                        );
+                    }
+                }
+                self.hide_voice_status();
+            }
+
+            // 8d. Voice session eventfd: inference finished (or an async
+            //     model load resolved). Dispatch fires the session callback
+            //     synchronously, which queues outcomes we then drain. A
+            //     recognised result is committed to the focused text field.
+            if fds[7].revents & libc::POLLIN != 0 {
+                if let Some(voice) = self.voice.as_ref() {
+                    voice.dispatch();
+                }
+                let outcomes = self
+                    .voice
+                    .as_ref()
+                    .map(|v| v.drain())
+                    .unwrap_or_default();
+                let now = Instant::now();
+                for outcome in outcomes {
+                    match outcome {
+                        VoiceOutcome::Result(text) => {
+                            if text.is_empty() {
+                                self.request_voice_status_show(
+                                    "Voice: (no speech detected)".to_string(),
+                                    now,
+                                );
+                            } else {
+                                tracing::debug!(target: "typio.voice", text = %text, "transcription result");
+                                if let Some(frontend) = self.frontend.as_mut() {
+                                    frontend.state_mut().commit_string_and_flush(&text);
+                                }
+                                self.request_voice_status_show(format!("Voice: {text}"), now);
+                            }
+                        }
+                        VoiceOutcome::Error(msg) => {
+                            tracing::warn!(target: "typio.voice", message = %msg, "transcription error");
+                            self.request_voice_status_show(format!("Voice: {msg}"), now);
+                        }
+                        // State transitions are surfaced directly by the
+                        // press/release handlers; nothing to do here.
+                        VoiceOutcome::State(_) => {}
+                    }
+                }
+            }
+
             // End-of-tick heartbeat.
             wd!().stage_done();
 
@@ -619,7 +723,9 @@ impl App {
                                 let _ = watcher.schedule_reload();
                             }
                         }
-                        Err(e) => eprintln!("config watcher inotify error: {e}"),
+                        Err(e) => {
+                            tracing::warn!(target: "typio.config", error = %e, "inotify drain failed")
+                        }
                     }
                 }
             }
@@ -629,7 +735,7 @@ impl App {
                         Ok(true) => true,
                         Ok(false) => false,
                         Err(e) => {
-                            eprintln!("config watcher timer error: {e}");
+                            tracing::warn!(target: "typio.config", error = %e, "timer drain failed");
                             false
                         }
                     }
@@ -643,7 +749,7 @@ impl App {
             }
         }
 
-        eprintln!("typio: shutting down...");
+        tracing::info!(target: "typio.lifecycle", "shutting down");
         0
     }
 }

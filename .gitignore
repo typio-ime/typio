@@ -107,3 +107,9 @@ Thumbs.db
 perf.data
 perf.data.*
 perf.data.dir/
+
+# Local daemon log captures and scratch text files (diagnostics, not
+# project artifacts). Scoped to `typio*.log` so the tracked `run.log` is
+# unaffected.
+typio*.log
+temp_*.txt

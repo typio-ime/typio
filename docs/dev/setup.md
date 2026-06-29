@@ -60,6 +60,8 @@ projects/
 │   ├── typio-engine-compose/     # Cargo: Latin + compose-key keyboard
 │   ├── typio-engine-rime/        # Meson: RIME-based Chinese keyboard
 │   ├── typio-engine-mozc/        # Meson: Mozc-based Japanese keyboard
+│   ├── typio-engine-sherpa/      # Meson: sherpa-onnx voice input
+│   ├── typio-engine-whisper/     # Meson: whisper.cpp voice input
 │   └── typio-linux/              # run typio-linux commands here
 └── optics/
     ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
@@ -149,13 +151,17 @@ recurse. Manifest locations differ per engine — see the table below:
 ./target/debug/typio -v \
   --engine-dir ../typio-engine-compose \
   --engine-dir ../typio-engine-rime/build \
-  --engine-dir ../typio-engine-mozc/build
+  --engine-dir ../typio-engine-mozc/build \
+  --engine-dir ../typio-engine-sherpa/build
 ```
 
 Equivalently, set the colon-separated `$TYPIO_ENGINE_PATH` once:
 
 ```bash
-export TYPIO_ENGINE_PATH="$PWD/../typio-engine-compose:$PWD/../typio-engine-rime/build:$PWD/../typio-engine-mozc/build"
+export TYPIO_ENGINE_PATH="$PWD/../typio-engine-compose:\
+$PWD/../typio-engine-rime/build:\
+$PWD/../typio-engine-mozc/build:\
+$PWD/../typio-engine-sherpa/build"
 ./target/debug/typio -v
 ```
 
@@ -164,11 +170,12 @@ and `$TYPIO_ENGINE_PATH` are explicit development/test opt-ins; no per-user
 engine directory is scanned by default. See
 [ADR-0025](../adr/0025-engine-discovery-search-path.md).
 
-## Load a Keyboard Engine
+## Load Engines
 
-`typio` starts without a keyboard engine, but it has nothing to convert
-keystrokes with. Build an engine and pass its manifest directory to exercise
-input conversion.
+`typio` starts without engines. Without a keyboard engine it has nothing to
+convert keystrokes with; without a voice engine the voice push-to-talk path has
+nothing to transcribe with. Build an engine and pass its manifest directory to
+exercise input conversion or voice input.
 
 The keyboard engines that ship as siblings under `typio/`:
 
@@ -178,13 +185,23 @@ The keyboard engines that ship as siblings under `typio/`:
 | `typio-engine-rime` | Meson (needs `librime`, `libcurl`) | `typio-engine-rime/build/typio-engine-rime.toml` | Chinese (zh) |
 | `typio-engine-mozc` | Meson (needs Mozc depot) | `typio-engine-mozc/build/typio-engine-mozc.toml` | Japanese (ja) |
 
+The voice engines that ship as siblings under `typio/`:
+
+| Engine | Build system | Manifest path | Languages |
+|---|---|---|---|
+| `typio-engine-sherpa` | Meson (needs `sherpa-onnx`, `libcurl`) | `typio-engine-sherpa/build/typio-engine-sherpa.toml` | Multilingual (mul) |
+| `typio-engine-whisper` | Meson (needs whisper.cpp) | `typio-engine-whisper/build/typio-engine-whisper.toml` | Multilingual (mul) |
+
 Build the Cargo engine with `cargo build --release` and the Meson engines
 with `meson setup build && meson compile -C build` from their own roots,
 e.g.:
 
 ```bash
 cargo build --release --manifest-path ../typio-engine-compose/Cargo.toml
-meson compile -C ../typio-engine-rime/build    # first time: meson setup ../typio-engine-rime/build ../typio-engine-rime
+meson setup ../typio-engine-rime/build ../typio-engine-rime       # first time
+meson compile -C ../typio-engine-rime/build
+meson setup ../typio-engine-sherpa/build ../typio-engine-sherpa   # first time
+meson compile -C ../typio-engine-sherpa/build
 ```
 
 Then point the daemon at the directory that contains the manifest (note the
@@ -193,6 +210,7 @@ Then point the daemon at the directory that contains the manifest (note the
 ```bash
 ./target/debug/typio -v --engine-dir ../typio-engine-compose
 ./target/debug/typio -v --engine-dir ../typio-engine-rime/build
+./target/debug/typio -v --engine-dir ../typio-engine-sherpa/build
 ```
 
 ## Run Tests

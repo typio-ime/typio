@@ -14,7 +14,7 @@ mod tray;
 use tray::{build_tray_snapshot, install_tray_action_handler, update_tray_from_controller};
 
 use std::cell::RefCell;
-use std::ffi::{c_char, CString};
+use std::ffi::{CString, c_char};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
@@ -91,6 +91,11 @@ pub struct App {
     resume_signal: Option<ResumeSignal>,
     #[cfg(feature = "wayland")]
     focus_driver: Option<FocusDriver>,
+    /// Voice push-to-talk controller: owns the libtypio voice session and
+    /// the PipeWire (`pw-record`) audio source. `None` if session creation
+    /// failed at startup.
+    #[cfg(feature = "wayland")]
+    voice: Option<crate::voice::VoiceController>,
     /// On-screen indicator state machine (gate state + label composition).
     /// Pure; the popup surface is owned by `PanelCoordinator`, the auto-hide
     /// timer by [`Self::indicator_timer`].
@@ -110,6 +115,14 @@ pub struct App {
     /// can be lowered without a `timerfd_gettime` syscall on every tick.
     #[cfg(feature = "wayland")]
     indicator_hide_deadline: Option<Instant>,
+    /// Auto-hide timerfd for the voice status banner. Separate from the
+    /// keyboard/language indicator so voice status does not affect indicator
+    /// recency gates or get hidden by the indicator timer.
+    #[cfg(feature = "wayland")]
+    voice_status_timer: Option<NixTimerFd>,
+    /// Absolute time when the voice status banner should auto-hide.
+    #[cfg(feature = "wayland")]
+    voice_status_hide_deadline: Option<Instant>,
     config_watcher: Option<ConfigWatcher>,
     watchdog: Option<Watchdog>,
     /// Sender half of the daemon event channel. Cloned into the IPC
@@ -122,6 +135,27 @@ pub struct App {
     /// Observed `DaemonEvent::Restart` during the last drain. Consumed
     /// by [`Self::finish`] to decide whether to `execv` after exit.
     saw_restart: bool,
+}
+
+fn format_engine_list(names: &[String]) -> String {
+    if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+fn has_engine_manifest(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(crate::engine_loader::manifest::is_manifest_filename)
+    })
 }
 
 impl App {
@@ -159,12 +193,18 @@ impl App {
             resume_signal: None,
             #[cfg(feature = "wayland")]
             focus_driver: None,
+            #[cfg(feature = "wayland")]
+            voice: None,
             indicator: None,
             indicator_config: IndicatorConfig::default(),
             #[cfg(feature = "wayland")]
             indicator_timer: None,
             #[cfg(feature = "wayland")]
             indicator_hide_deadline: None,
+            #[cfg(feature = "wayland")]
+            voice_status_timer: None,
+            #[cfg(feature = "wayland")]
+            voice_status_hide_deadline: None,
             config_watcher: None,
             watchdog: None,
             event_tx,
@@ -195,10 +235,9 @@ impl App {
             self.options.config_dir.as_deref(),
             self.options.data_dir.as_deref(),
             None, // state_dir — let libtypio pick the default.
-            engine_dirs
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect(),
+            // Rust host owns manifest discovery below; libtypio's legacy
+            // loader callback slot is intentionally unused.
+            Vec::new(),
         );
 
         instance
@@ -247,11 +286,34 @@ impl App {
                 continue;
             };
             let report = loader.load_dir(reg, dir_path);
+            if report.manifest_count == 0 {
+                let build_dir = dir_path.join("build");
+                if has_engine_manifest(&build_dir) {
+                    tracing::warn!(
+                        target: "typio.startup",
+                        dir = %dir_path.display(),
+                        hint = %build_dir.display(),
+                        "no engine manifests found; did you mean the build/ subdirectory?"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "typio.startup",
+                        dir = %dir_path.display(),
+                        "no engine manifests found (expected typio-engine-*.toml)"
+                    );
+                }
+            }
             for info in report.registered {
-                eprintln!(
-                    "OK:   registered engine '{}' from {}/",
-                    info.name,
-                    dir_path.display()
+                let kind = match info.engine_type {
+                    typio::core::engine::EngineType::Keyboard => "keyboard",
+                    typio::core::engine::EngineType::Voice => "voice",
+                };
+                tracing::info!(
+                    target: "typio.startup",
+                    kind,
+                    engine = %info.name,
+                    dir = %dir_path.display(),
+                    "registered engine"
                 );
                 if info.engine_type == typio::core::engine::EngineType::Voice {
                     registered_voices.push(info.name);
@@ -260,10 +322,20 @@ impl App {
                 }
             }
             for (path, reason) in &report.skipped {
-                eprintln!("WARN: skipped {}: {reason:?}", path.display());
+                tracing::warn!(
+                    target: "typio.startup",
+                    path = %path.display(),
+                    ?reason,
+                    "skipped engine manifest"
+                );
             }
             for (path, err) in &report.failed {
-                eprintln!("WARN: failed to load {}: {err}", path.display());
+                tracing::warn!(
+                    target: "typio.startup",
+                    path = %path.display(),
+                    error = %err,
+                    "failed to load engine manifest"
+                );
             }
         }
 
@@ -279,21 +351,34 @@ impl App {
             if let Some(first) = registered_keyboards.first() {
                 if let Ok(c_name) = CString::new(first.as_str()) {
                     c_registry::typio_registry_set_active_keyboard(registry, c_name.as_ptr());
-                    eprintln!("OK:   active keyboard = {first}");
+                    tracing::info!(target: "typio.startup", keyboard = %first, "active keyboard set");
                 }
             }
         } else {
-            eprintln!("OK:   language restored");
+            tracing::info!(target: "typio.startup", "language restored");
         }
-        eprintln!(
-            "OK:   registered {} keyboard(s){}",
-            registered_keyboards.len(),
-            if registered_voices.is_empty() {
-                String::new()
-            } else {
-                format!(", {} voice(s)", registered_voices.len())
-            }
+        let active_voice = instance
+            .registry_rust()
+            .and_then(|reg| reg.active_voice_name())
+            .map(str::to_string);
+        tracing::info!(
+            target: "typio.startup",
+            keyboards = %format_engine_list(&registered_keyboards),
+            "registered keyboard engine(s)"
         );
+        tracing::info!(
+            target: "typio.startup",
+            voices = %format_engine_list(&registered_voices),
+            "registered voice engine(s)"
+        );
+        if let Some(active_voice) = active_voice {
+            tracing::info!(target: "typio.startup", voice = %active_voice, "active voice set");
+        } else if !registered_voices.is_empty() {
+            tracing::warn!(
+                target: "typio.startup",
+                "registered voice engine(s), but no active voice selected"
+            );
+        }
 
         self.instance = Some(instance);
 
@@ -319,11 +404,11 @@ impl App {
         {
             match InputMethodFrontend::connect(None) {
                 Ok(frontend) => {
-                    eprintln!("OK: Wayland input-method frontend connected");
+                    tracing::info!(target: "typio.startup", "Wayland input-method frontend connected");
                     self.frontend = Some(frontend);
                 }
                 Err(e) => {
-                    eprintln!("WARN: Wayland frontend not available: {e}");
+                    tracing::warn!(target: "typio.startup", error = %e, "Wayland frontend not available");
                 }
             }
 
@@ -337,7 +422,7 @@ impl App {
                         self.router = Some(router);
                     }
                     None => {
-                        eprintln!("WARN: failed to create keyboard router");
+                        tracing::warn!(target: "typio.startup", "failed to create keyboard router");
                     }
                 }
 
@@ -346,12 +431,30 @@ impl App {
                         self.repeat_timer = Some(timer);
                     }
                     Err(e) => {
-                        eprintln!("WARN: failed to create repeat timer: {e}");
+                        tracing::warn!(target: "typio.startup", error = %e, "failed to create repeat timer");
                     }
                 }
 
                 self.resume_signal = Some(ResumeSignal::new());
                 self.focus_driver = Some(FocusDriver::new());
+
+                // Voice push-to-talk: create the libtypio voice session and
+                // attach a PipeWire (`pw-record`) audio source. Capture is
+                // now real; transcription additionally requires a registered
+                // voice engine (gated at PTT-press time via `is_available`).
+                let raw = instance.as_mut() as *mut TypioInstance;
+                match crate::voice::VoiceController::new(raw) {
+                    Some(voice) => {
+                        tracing::info!(
+                            target: "typio.startup",
+                            "voice session created (PipeWire pw-record capture)"
+                        );
+                        self.voice = Some(voice);
+                    }
+                    None => {
+                        tracing::warn!(target: "typio.startup", "failed to create voice session")
+                    }
+                }
 
                 // Indicator subsystem: state machine + auto-hide timerfd.
                 // The timer is created disarmed and only armed when a show
@@ -359,7 +462,15 @@ impl App {
                 self.indicator = Some(Indicator::new());
                 match NixTimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::TFD_NONBLOCK) {
                     Ok(tf) => self.indicator_timer = Some(tf),
-                    Err(e) => eprintln!("WARN: failed to create indicator timer: {e}"),
+                    Err(e) => {
+                        tracing::warn!(target: "typio.startup", error = %e, "failed to create indicator timer")
+                    }
+                }
+                match NixTimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::TFD_NONBLOCK) {
+                    Ok(tf) => self.voice_status_timer = Some(tf),
+                    Err(e) => {
+                        tracing::warn!(target: "typio.startup", error = %e, "failed to create voice status timer")
+                    }
                 }
             }
 
@@ -374,13 +485,15 @@ impl App {
             let mut tray = Tray::new();
             let registered = tray.register();
             if registered {
-                eprintln!(
-                    "OK:   StatusNotifierItem registered as {}",
-                    tray.service_name()
+                tracing::info!(
+                    target: "typio.startup",
+                    service = %tray.service_name(),
+                    "StatusNotifierItem registered"
                 );
             } else {
-                eprintln!(
-                    "WARN: tray did not register (no org.kde.StatusNotifierWatcher on the session bus?)"
+                tracing::warn!(
+                    target: "typio.startup",
+                    "tray did not register (no org.kde.StatusNotifierWatcher on the session bus?)"
                 );
             }
             install_tray_action_handler(&tray, raw, self.event_tx.clone());
@@ -396,7 +509,7 @@ impl App {
     /// Run the daemon until shutdown.
     pub fn run(&mut self) -> i32 {
         if self.instance.is_none() {
-            eprintln!("typio: app not initialized");
+            tracing::error!(target: "typio.lifecycle", "app not initialized");
             return 1;
         }
 
@@ -409,11 +522,11 @@ impl App {
             .unwrap_or_else(protocol::socket_path);
         let server = match UdsServer::bind(&socket_path) {
             Ok(s) => {
-                eprintln!("OK: UDS listening on {}", socket_path.display());
+                tracing::info!(target: "typio.startup", path = %socket_path.display(), "UDS listening");
                 s
             }
             Err(e) => {
-                eprintln!("WARN: UDS bind failed: {e} — running without IPC");
+                tracing::warn!(target: "typio.startup", error = %e, "UDS bind failed — running without IPC");
                 return self.run_without_uds();
             }
         };
@@ -466,7 +579,7 @@ impl App {
 
         self.ipc_bus = Some(ipc_bus.clone());
 
-        eprintln!("typio: running. Ctrl+C to exit.");
+        tracing::info!(target: "typio.lifecycle", "running (Ctrl+C to exit)");
 
         #[cfg(feature = "wayland")]
         if self.frontend.is_some() && self.router.is_some() && self.repeat_timer.is_some() {
@@ -496,12 +609,12 @@ impl App {
                 if e.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
-                eprintln!("poll error: {e}");
+                tracing::error!(target: "typio.lifecycle", error = %e, "poll failed");
                 return 1;
             }
         }
 
-        eprintln!("typio: shutting down...");
+        tracing::info!(target: "typio.lifecycle", "shutting down");
         0
     }
 
@@ -515,11 +628,11 @@ impl App {
         let raw = instance.as_mut() as *mut TypioInstance;
         match typio::instance::typio_instance_reload_config(raw) {
             typio::TypioResult::TypioOk => {
-                eprintln!("typio: configuration reloaded");
+                tracing::info!(target: "typio.lifecycle", "configuration reloaded");
                 self.indicator_config = self.load_indicator_config();
                 self.refresh_state_surfaces();
             }
-            _ => eprintln!("typio: configuration reload failed"),
+            _ => tracing::warn!(target: "typio.lifecycle", "configuration reload failed"),
         }
     }
     /// Re-sync the Rust-side `StateController` with libtypio, then push
@@ -556,7 +669,7 @@ impl App {
     }
 
     fn run_without_uds(&mut self) -> i32 {
-        eprintln!("typio: running without UDS");
+        tracing::info!(target: "typio.lifecycle", "running without UDS");
 
         #[cfg(feature = "wayland")]
         if let Some(ref mut frontend) = self.frontend {
@@ -579,6 +692,10 @@ impl App {
     /// - `StateRefresh` triggers a controller + tray + IPC re-sync via
     ///   [`Self::refresh_state_surfaces`].
     fn drain_events(&mut self) -> bool {
+        // Apply any SIGUSR1/SIGUSR2 log-level change on the loop thread (the
+        // filter reload is not async-signal-safe, so the handler only flags).
+        crate::diagnostics::apply_pending_level_signals();
+
         let mut should_exit = signals::take_shutdown_requested();
         let mut state_refresh = false;
 
@@ -596,7 +713,7 @@ impl App {
         }
 
         if state_refresh {
-            eprintln!("indicator: StateRefresh received, refreshing state surfaces");
+            tracing::debug!(target: "typio.lifecycle", "StateRefresh received, refreshing state surfaces");
             self.refresh_state_surfaces();
             // StateRefresh covers every deliberate registry mutation:
             // the Ctrl+Shift language-switch chord, tray menu picks, and
@@ -622,6 +739,11 @@ impl App {
     /// own `Drop` calls `typio_input_context_free` on a dangling pointer
     /// → double-free segfault.
     pub fn shutdown(&mut self) {
+        // Drop the voice controller first: freeing its session joins any
+        // in-flight inference thread, which dereferences the instance's
+        // registry — so it must happen while the instance is still alive.
+        #[cfg(feature = "wayland")]
+        drop(self.voice.take());
         drop(self.router.take());
         drop(self.repeat_timer.take());
         drop(self.frontend.take());
@@ -634,7 +756,7 @@ impl App {
     /// Finalize: exec on restart, then return the exit code.
     pub fn finish(self, exit_code: i32) -> i32 {
         if self.saw_restart && exit_code == 0 {
-            eprintln!("typio: restarting...");
+            tracing::info!(target: "typio.lifecycle", "restarting");
             let argv0 = self
                 .argv
                 .first()
@@ -645,7 +767,11 @@ impl App {
             unsafe {
                 libc::execv(argv0.as_ptr(), ptrs.as_ptr());
             }
-            eprintln!("typio: execv failed: {}", std::io::Error::last_os_error());
+            tracing::error!(
+                target: "typio.lifecycle",
+                error = %std::io::Error::last_os_error(),
+                "execv failed"
+            );
             return 1;
         }
         exit_code
@@ -653,7 +779,7 @@ impl App {
 
     fn print_startup_banner(&self) {
         let version = env!("CARGO_PKG_VERSION");
-        eprintln!("Starting typio {version}");
+        tracing::info!(target: "typio.startup", version, "starting typio");
     }
 }
 
@@ -685,8 +811,8 @@ fn arm_repeat(timer: &mut RepeatTimer, compositor_info: Option<(i32, i32)>, mods
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
     use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
 
     /// Serialises tests that touch the shared signal flags so they do not
     /// race with each other when `cargo test` runs them in parallel.
@@ -727,12 +853,18 @@ mod tests {
             resume_signal: None,
             #[cfg(feature = "wayland")]
             focus_driver: None,
+            #[cfg(feature = "wayland")]
+            voice: None,
             indicator: None,
             indicator_config: IndicatorConfig::default(),
             #[cfg(feature = "wayland")]
             indicator_timer: None,
             #[cfg(feature = "wayland")]
             indicator_hide_deadline: None,
+            #[cfg(feature = "wayland")]
+            voice_status_timer: None,
+            #[cfg(feature = "wayland")]
+            voice_status_hide_deadline: None,
             config_watcher: None,
             watchdog: None,
             event_tx: tx,

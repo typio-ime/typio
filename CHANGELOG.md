@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Unified all runtime diagnostics onto `tracing`.** Every `eprintln!`
+  used for daemon logging (startup self-check, lifecycle, indicator, panel,
+  voice, tray, config-watcher, Wayland I/O errors) now goes through
+  structured `tracing` events with `typio.<subsystem>` targets and proper
+  levels, so `RUST_LOG` and `-v`/`-vv` control all of it uniformly. The
+  previously always-printed `indicator:`/`panel:`/`voice:` lines are now
+  `debug`, so default operation is quiet; startup and lifecycle stay at
+  `info`. CLI verbosity now maps to `info`/`debug`/`trace` (matching
+  `docs/reference/cli.md`), correcting the prior `warn`/`info`/`debug`. The
+  only remaining direct stderr writes are the pre-logging CLI argument error
+  and the opt-in `TYPIO_PANEL_PROBE` perf instrument.
+- **Log output is colorized only on a terminal.** When stderr is the systemd
+  journal or a redirected file, ANSI escapes are now suppressed, so captured
+  logs are plain text.
+
+### Added
+
+- **Runtime log-level control via `SIGUSR1`/`SIGUSR2`.** `SIGUSR1` raises the
+  running daemon's log floor one step (`info`→`debug`→`trace`); `SIGUSR2`
+  resets it to the startup level — no restart needed to capture a verbose
+  trace of a live repro. This makes the behavior documented in
+  `docs/reference/cli.md` real (the filter is now a hot-reloadable layer; the
+  signal handlers only flag the request, and the non-async-signal-safe reload
+  runs on the main loop).
+- **Super+V voice status prompt.** The host now treats Super+V as a
+  push-to-talk shortcut and shows a separate voice status banner. Until an
+  audio source is wired, the shortcut reports `Voice: no audio source`
+  instead of silently doing nothing.
+- **`TYPIO_PANEL_PROBE=1` candidate-panel probe.** Set the env var to get a
+  compact per-window stderr summary (present timing, glyph-cache churn,
+  atlas clears) plus an immediate alert on every atlas exhaustion — the
+  signals for diagnosing candidate-switching lag without needing to know the
+  `RUST_LOG` targets. See [How to Diagnose Candidate-Switching
+  Lag](docs/how-to/diagnose-candidate-lag.md).
+
+### Fixed
+
+- **Keyboard indicator and voice status banner shared one lifecycle.** Voice
+  status now uses its own popup owner and auto-hide timer, so language-switch
+  feedback and voice-state feedback do not clear each other or affect each
+  other's recency gates.
+- **Present throttle could wedge if the compositor dropped frame callbacks.**
+  The candidate panel skips presenting until the compositor sends
+  `wl_surface.frame` `done`. v0.5.4 guaranteed the request reaches the
+  compositor, but a compositor that genuinely stops delivering `done` for an
+  occluded or unfocused-output popup would still leave `panel_frame_pending`
+  stuck `true` forever, dropping every later candidate update — the
+  "switching candidates lags after a while" symptom. An outstanding callback
+  older than 200 ms now force-clears the throttle (presenting re-arms a fresh
+  callback) and logs a one-shot `frame-callback stall` warning with a running
+  `stall_count`, so the daemon self-recovers and the condition is visible in
+  diagnostics.
+
 ## [0.5.4] - 2026-06-25
 
 ### Fixed

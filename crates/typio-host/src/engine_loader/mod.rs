@@ -34,16 +34,16 @@ pub mod manifest;
 
 use std::path::{Path, PathBuf};
 
-use typio::core::engine::backend::{process::ProcessBackend, EngineBackend};
+use typio::core::engine::backend::{EngineBackend, process::ProcessBackend};
 use typio::core::engine::{BackendPreference, EngineCapabilities, EngineInfo, EngineType};
 use typio::core::registry::EngineRegistry;
 
 use caps::HostCapabilities;
-use manifest::{is_manifest_filename, EngineManifest, ManifestError};
+use manifest::{EngineManifest, ManifestError, is_manifest_filename};
 
 pub use caps::{HostCapabilities as Capabilities, NegotiationFailure};
-pub use dirs::{find_manifest_for, resolve_engine_dirs, ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR};
-pub use manifest::{resolve_path_arg, ManifestError as Error, DEFAULT_LANGUAGE};
+pub use dirs::{ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR, find_manifest_for, resolve_engine_dirs};
+pub use manifest::{DEFAULT_LANGUAGE, ManifestError as Error, resolve_path_arg};
 
 /// Loader state: a host capability set + a remembered icon theme path.
 ///
@@ -132,6 +132,7 @@ impl EngineLoader {
             if !is_manifest_filename(filename) {
                 continue;
             }
+            report.manifest_count += 1;
             match self.load_single(registry, &path) {
                 Ok(info) => report.registered.push(info),
                 Err(LoadError::Skipped(reason)) => report.skipped.push((path, reason)),
@@ -331,6 +332,8 @@ impl std::error::Error for LoadError {}
 /// Per-directory summary returned by [`EngineLoader::load_dir`].
 #[derive(Debug, Default)]
 pub struct LoadDirReport {
+    /// Manifest files matching `typio-engine-*.toml` in this directory.
+    pub manifest_count: usize,
     /// Engines successfully registered, with name + type.
     pub registered: Vec<RegisteredEngine>,
     /// Manifests located but deliberately skipped, with reason.
@@ -473,6 +476,7 @@ optional = ["prediction"]
         let mut registry = EngineRegistry::new();
         let report = loader.load_dir(&mut registry, temp.path());
 
+        assert_eq!(report.manifest_count, 3);
         assert_eq!(report.registered.len(), 1, "one engine registered");
         assert_eq!(report.registered[0].name, "demo");
         assert_eq!(report.registered[0].engine_type, EngineType::Keyboard);
@@ -503,6 +507,7 @@ optional = ["prediction"]
         let mut loader = EngineLoader::new();
         let mut registry = EngineRegistry::new();
         let report = loader.load_dir(&mut registry, Path::new("/nonexistent/typio/engines"));
+        assert_eq!(report.manifest_count, 0);
         assert!(report.registered.is_empty());
         assert!(report.skipped.is_empty());
         assert!(report.failed.is_empty());

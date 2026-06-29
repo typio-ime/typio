@@ -54,6 +54,18 @@ extern "C" fn signal_handler(_sig: libc::c_int) {
     SHUTDOWN_FROM_SIGNAL.store(true, Ordering::SeqCst);
 }
 
+/// `SIGUSR1`: raise the running log level one step (`info`→`debug`→`trace`).
+/// Only flags the request — the non-signal-safe filter reload happens on the
+/// main loop via [`crate::diagnostics::apply_pending_level_signals`].
+extern "C" fn raise_log_level_handler(_sig: libc::c_int) {
+    crate::diagnostics::request_raise_level();
+}
+
+/// `SIGUSR2`: reset the running log level to the startup level.
+extern "C" fn reset_log_level_handler(_sig: libc::c_int) {
+    crate::diagnostics::request_reset_level();
+}
+
 /// C trampoline for `TypioKeyboardModeChangedCallback`. Fires when an
 /// engine reports a **deliberate** mode change (e.g. rime switching schema
 /// or toggling 中/A). Marshals to the main loop via `DaemonEvent::StateRefresh`;
@@ -86,6 +98,14 @@ pub(super) fn install_signal_handlers() {
         libc::signal(
             libc::SIGTERM,
             signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGUSR1,
+            raise_log_level_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGUSR2,
+            reset_log_level_handler as *const () as libc::sighandler_t,
         );
     }
 }

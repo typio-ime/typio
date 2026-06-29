@@ -20,6 +20,8 @@ use crate::repeat_timer::Modifiers;
 pub type Keysym = u32;
 
 pub const KEY_SPACE: Keysym = 0x0020;
+pub const KEY_V: Keysym = 0x0076;
+pub const KEY_CAPITAL_V: Keysym = 0x0056;
 
 pub const KEY_SHIFT_L: Keysym = 0xffe1;
 pub const KEY_SHIFT_R: Keysym = 0xffe2;

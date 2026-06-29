@@ -1,11 +1,13 @@
 //! On-screen status indicator driving.
 //!
 //! All `App` methods that compose, schedule, render, or hide the
-//! transient `<badge> · <engine> · <mode>` banner live here. The loop
+//! transient `<badge> · <engine> · <mode>` banner and the voice status
+//! banner live here. The loop
 //! driver in [`super::mod`] calls into [`App::trigger_indicator_focus`]
 //! / [`App::trigger_indicator_reactivate`] / [`App::trigger_indicator_state_change`]
 //! / [`App::request_indicator_show`] / [`App::render_indicator_banner`] /
-//! [`App::hide_indicator`] / [`App::indicator_hide_remaining_ms`].
+//! [`App::hide_indicator`] / [`App::request_voice_status_show`] /
+//! [`App::hide_voice_status`] / [`App::indicator_hide_remaining_ms`].
 
 use std::ffi::CStr;
 use std::time::Instant;
@@ -122,16 +124,19 @@ impl App {
 
         let label = {
             let Some(instance) = self.instance.as_ref() else {
-                eprintln!("indicator: no instance, skipping");
+                tracing::debug!(target: "typio.indicator", "no instance, skipping show");
                 return;
             };
             let Some(registry) = instance.registry_rust() else {
-                eprintln!("indicator: no registry, skipping");
+                tracing::debug!(target: "typio.indicator", "no registry, skipping show");
                 return;
             };
             let sources = RegistryLabelSources { registry };
             let Some(indicator) = self.indicator.as_mut() else {
-                eprintln!("indicator: no indicator state machine, skipping");
+                tracing::debug!(
+                    target: "typio.indicator",
+                    "no indicator state machine, skipping show"
+                );
                 return;
             };
             let cfg = self.indicator_config;
@@ -155,14 +160,15 @@ impl App {
                     indicator.show_for_state_change(now, mode_ref, &cfg, &sources)
                 }
             };
-            eprintln!(
-                "indicator: path={:?} mode_display={:?} salience={:?} lang={:?} engine={:?} → label={:?}",
-                path,
-                mode_display,
-                mode_salience,
-                sources.active_language_tag(),
-                sources.active_engine_name(),
-                label
+            tracing::debug!(
+                target: "typio.indicator",
+                ?path,
+                mode_display = ?mode_display,
+                salience = ?mode_salience,
+                lang = ?sources.active_language_tag(),
+                engine = ?sources.active_engine_name(),
+                ?label,
+                "show evaluated"
             );
             label
         };
@@ -219,28 +225,68 @@ impl App {
     pub(super) fn request_indicator_show(&mut self, label: String, now: Instant) {
         let decision = {
             let Some(frontend) = self.frontend.as_mut() else {
-                eprintln!("indicator: no frontend, skipping");
+                tracing::debug!(target: "typio.indicator", "no frontend, skipping");
                 return;
             };
             let coord = frontend.state_mut().panel_coord_mut();
             let anchor_ready = coord.anchor_ready();
             let decision = coord.decide_positioned_flush(UiOwner::Indicator, &label);
-            eprintln!(
-                "indicator: coordinator anchor_ready={} → {:?}",
-                anchor_ready, decision
+            tracing::debug!(
+                target: "typio.indicator",
+                anchor_ready,
+                ?decision,
+                "coordinator flush decision"
             );
             decision
         };
         match decision {
             FlushDecision::Show => self.render_indicator_banner(&label, now),
             FlushDecision::Pending => {
-                eprintln!("indicator: queued, will flush when anchor resolves");
+                tracing::debug!(
+                    target: "typio.indicator",
+                    "queued, will flush when anchor resolves"
+                );
             }
             FlushDecision::Cancel => {
-                eprintln!("indicator: coordinator cancelled the request");
+                tracing::debug!(target: "typio.indicator", "coordinator cancelled the request");
                 if let Some(indicator) = self.indicator.as_mut() {
                     indicator.hide();
                 }
+            }
+        }
+    }
+
+    /// Show a voice-input status banner. This uses the same positioned popup
+    /// surface as the indicator, but claims it under the Voice owner so the
+    /// candidate panel will not hide it while no candidates are visible.
+    #[cfg(feature = "wayland")]
+    pub(super) fn request_voice_status_show(&mut self, label: String, now: Instant) {
+        let decision = {
+            let Some(frontend) = self.frontend.as_mut() else {
+                tracing::debug!(target: "typio.voice", "no frontend, skipping status banner");
+                return;
+            };
+            let coord = frontend.state_mut().panel_coord_mut();
+            let anchor_ready = coord.anchor_ready();
+            let decision = coord.decide_positioned_flush(UiOwner::Voice, &label);
+            tracing::debug!(
+                target: "typio.voice",
+                anchor_ready,
+                ?decision,
+                "coordinator flush decision"
+            );
+            decision
+        };
+        match decision {
+            FlushDecision::Show => self.render_voice_status_banner(&label, now),
+            FlushDecision::Pending => {
+                tracing::debug!(
+                    target: "typio.voice",
+                    "queued status banner, will flush when anchor resolves"
+                );
+            }
+            FlushDecision::Cancel => {
+                tracing::debug!(target: "typio.voice", "coordinator cancelled the status banner");
             }
         }
     }
@@ -253,6 +299,26 @@ impl App {
     /// when a queued show later becomes renderable.
     #[cfg(feature = "wayland")]
     pub(super) fn render_indicator_banner(&mut self, label: &str, now: Instant) {
+        self.draw_status_banner_now(label);
+        if let Some(indicator) = self.indicator.as_mut() {
+            indicator.note_shown(now);
+        }
+        self.arm_indicator_timer(now);
+    }
+
+    /// Render a voice-input status banner onto the shared positioned popup
+    /// surface and arm the voice status auto-hide timer. This deliberately
+    /// bypasses the keyboard indicator state machine and recency gate.
+    #[cfg(feature = "wayland")]
+    pub(super) fn render_voice_status_banner(&mut self, label: &str, now: Instant) {
+        self.draw_status_banner_now(label);
+        self.arm_voice_status_timer(now);
+    }
+
+    /// Shared drawing path for status banners. Ownership and timer semantics
+    /// stay with the caller; this only sizes, paints, and commits the panel.
+    #[cfg(feature = "wayland")]
+    fn draw_status_banner_now(&mut self, label: &str) {
         let scale = self
             .frontend
             .as_ref()
@@ -279,10 +345,6 @@ impl App {
         if let Some(frontend) = self.frontend.as_mut() {
             frontend.arm_panel_frame_callback();
         }
-        if let Some(indicator) = self.indicator.as_mut() {
-            indicator.note_shown(now);
-        }
-        self.arm_indicator_timer(now);
     }
 
     /// Hide the indicator (timer expiry, deactivate, or coordinator
@@ -296,7 +358,7 @@ impl App {
         if let Some(indicator) = self.indicator.as_mut() {
             indicator.hide();
         }
-        let indicator_owned = {
+        let status_owned = {
             let Some(frontend) = self.frontend.as_mut() else {
                 return;
             };
@@ -305,8 +367,8 @@ impl App {
             coord.hide(UiOwner::Indicator);
             was_visible
         };
-        if indicator_owned {
-            eprintln!("panel: hide reason=indicator_autohide");
+        if status_owned {
+            tracing::debug!(target: "typio.panel.host", "panel: hide reason=indicator_autohide");
             if let Some(frontend) = self.frontend.as_mut() {
                 frontend.state_mut().clear_panel_frame_callback();
                 if let Some(panel) = frontend.panel_mut() {
@@ -315,6 +377,31 @@ impl App {
             }
         }
         self.disarm_indicator_timer();
+    }
+
+    /// Hide the voice status banner without mutating the keyboard/language
+    /// indicator state machine or its recency gate.
+    #[cfg(feature = "wayland")]
+    pub(super) fn hide_voice_status(&mut self) {
+        let status_owned = {
+            let Some(frontend) = self.frontend.as_mut() else {
+                return;
+            };
+            let coord = frontend.state_mut().panel_coord_mut();
+            let was_visible = coord.visible_owner() == UiOwner::Voice;
+            coord.hide(UiOwner::Voice);
+            was_visible
+        };
+        if status_owned {
+            tracing::debug!(target: "typio.panel.host", "panel: hide reason=voice_status_autohide");
+            if let Some(frontend) = self.frontend.as_mut() {
+                frontend.state_mut().clear_panel_frame_callback();
+                if let Some(panel) = frontend.panel_mut() {
+                    panel.hide();
+                }
+            }
+        }
+        self.disarm_voice_status_timer();
     }
 
     /// Arm the auto-hide timer for the indicator's configured duration
@@ -342,11 +429,45 @@ impl App {
         self.indicator_hide_deadline = None;
     }
 
+    /// Arm the auto-hide timer for the voice status banner. It uses the same
+    /// display duration setting as the keyboard indicator, but a separate
+    /// timer/deadline so the two overlays do not clear each other.
+    #[cfg(feature = "wayland")]
+    pub(super) fn arm_voice_status_timer(&mut self, now: Instant) {
+        let duration = self.indicator_config.duration;
+        if let Some(tf) = self.voice_status_timer.as_ref() {
+            let expiration = Expiration::OneShot(TimeSpec::from_duration(duration));
+            let _ = tf.set(expiration, TimerSetTimeFlags::empty());
+        }
+        self.voice_status_hide_deadline = Some(now + duration);
+    }
+
+    /// Disarm the voice status auto-hide timer.
+    #[cfg(feature = "wayland")]
+    pub(super) fn disarm_voice_status_timer(&mut self) {
+        if let Some(tf) = self.voice_status_timer.as_ref() {
+            let expiration =
+                Expiration::OneShot(TimeSpec::from_duration(std::time::Duration::ZERO));
+            let _ = tf.set(expiration, TimerSetTimeFlags::empty());
+        }
+        self.voice_status_hide_deadline = None;
+    }
+
     /// Remaining milliseconds until the indicator auto-hide deadline, or
     /// `None` when the timer is not armed.
     #[cfg(feature = "wayland")]
     pub(super) fn indicator_hide_remaining_ms(&self, now: Instant) -> Option<i32> {
         self.indicator_hide_deadline
+            .and_then(|d| d.checked_duration_since(now))
+            .map(|rem| rem.as_millis() as i32)
+            .map(|ms| ms.max(0))
+    }
+
+    /// Remaining milliseconds until the voice status auto-hide deadline, or
+    /// `None` when the timer is not armed.
+    #[cfg(feature = "wayland")]
+    pub(super) fn voice_status_hide_remaining_ms(&self, now: Instant) -> Option<i32> {
+        self.voice_status_hide_deadline
             .and_then(|d| d.checked_duration_since(now))
             .map(|rem| rem.as_millis() as i32)
             .map(|ms| ms.max(0))
