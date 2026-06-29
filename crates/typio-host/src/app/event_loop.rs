@@ -18,7 +18,6 @@ use crate::keyboard::router::RepeatOutcome;
 use crate::panel_coordinator::UiOwner;
 use crate::panel_scheduler::{self, PanelUpdateResult};
 use crate::session_glue::FocusTransition;
-use crate::voice::VoiceOutcome;
 use crate::watchdog::LoopStage;
 
 use super::{App, DaemonEvent, arm_repeat, tray::cycle_active_language};
@@ -321,17 +320,21 @@ impl App {
                         } else if router.take_voice_ptt_pressed() {
                             tracing::debug!(target: "typio.voice", "Super+V push-to-talk pressed");
                             let _ = timer.stop();
-                            voice_status_to_show = Some(match self.voice.as_ref() {
+                            // On success the session fires a synchronous
+                            // `Recording` state change that drives the sticky
+                            // "listening…" banner; only surface a transient
+                            // banner here for the failure / unavailable paths.
+                            voice_status_to_show = match self.voice.as_ref() {
                                 Some(voice) if voice.is_available() => {
                                     if voice.start() {
-                                        "Voice: listening…".to_string()
+                                        None
                                     } else {
-                                        "Voice: could not start audio capture".to_string()
+                                        Some("Voice: could not start audio capture".to_string())
                                     }
                                 }
-                                Some(voice) => format!("Voice: {}", voice.unavail_reason()),
-                                None => "Voice: unavailable".to_string(),
-                            });
+                                Some(voice) => Some(format!("Voice: {}", voice.unavail_reason())),
+                                None => Some("Voice: unavailable".to_string()),
+                            };
                         } else if consumed {
                             // Engine consumed the key. Drain any output it
                             // produced, then arm the repeat timer in engine
@@ -369,8 +372,10 @@ impl App {
                         if router.take_voice_ptt_released() {
                             tracing::debug!(target: "typio.voice", "Super+V push-to-talk released");
                             if let Some(voice) = self.voice.as_ref() {
+                                // The session fires a synchronous `Processing`
+                                // state change that drives the sticky
+                                // "transcribing…" banner.
                                 voice.stop();
-                                voice_status_to_show = Some("Voice: transcribing…".to_string());
                             }
                         } else if consumed {
                             router.drain_commit(state);
@@ -384,7 +389,10 @@ impl App {
                 }
             }
             if let Some(label) = voice_status_to_show {
-                self.request_voice_status_show(label, Instant::now());
+                // Press/release only surface transient feedback here (errors,
+                // unavailable); the in-progress banners are driven by the
+                // session state machine in `handle_voice_outcome`.
+                self.show_voice_transient(label, Instant::now());
             }
 
             // 7. Flush the candidate panel if the scheduler says so.
@@ -595,7 +603,11 @@ impl App {
                     if owner == UiOwner::Indicator {
                         self.render_indicator_banner(&label, now);
                     } else if owner == UiOwner::Voice {
-                        self.render_voice_status_banner(&label, now);
+                        let kind = self
+                            .voice_pending_banner
+                            .take()
+                            .unwrap_or(super::indicator::VoiceBanner::Transient);
+                        self.render_voice_status_banner(&label, now, kind);
                     } else if owner == UiOwner::Candidate {
                         // The anchor probe timed out, and the caret fallback was armed.
                         // Mark the panel dirty so it redraws with the fallback anchor
@@ -665,44 +677,28 @@ impl App {
                 self.hide_voice_status();
             }
 
-            // 8d. Voice session eventfd: inference finished (or an async
-            //     model load resolved). Dispatch fires the session callback
-            //     synchronously, which queues outcomes we then drain. A
-            //     recognised result is committed to the focused text field.
+            // 8d. Voice session events. The session fd signals inference and
+            //     async-load completion, so `dispatch` (which reads the fd and
+            //     joins the inference thread) only runs when the fd is
+            //     readable. But `start`/`stop` queue state transitions
+            //     synchronously on push-to-talk press/release, so we drain —
+            //     and surface — outcomes every tick to keep the banner in step
+            //     with the session state machine. A recognised result is
+            //     committed to the focused text field inside the handler.
             if fds[7].revents & libc::POLLIN != 0 {
                 if let Some(voice) = self.voice.as_ref() {
                     voice.dispatch();
                 }
-                let outcomes = self
-                    .voice
-                    .as_ref()
-                    .map(|v| v.drain())
-                    .unwrap_or_default();
+            }
+            let voice_outcomes = self
+                .voice
+                .as_ref()
+                .map(|v| v.drain())
+                .unwrap_or_default();
+            if !voice_outcomes.is_empty() {
                 let now = Instant::now();
-                for outcome in outcomes {
-                    match outcome {
-                        VoiceOutcome::Result(text) => {
-                            if text.is_empty() {
-                                self.request_voice_status_show(
-                                    "Voice: (no speech detected)".to_string(),
-                                    now,
-                                );
-                            } else {
-                                tracing::debug!(target: "typio.voice", text = %text, "transcription result");
-                                if let Some(frontend) = self.frontend.as_mut() {
-                                    frontend.state_mut().commit_string_and_flush(&text);
-                                }
-                                self.request_voice_status_show(format!("Voice: {text}"), now);
-                            }
-                        }
-                        VoiceOutcome::Error(msg) => {
-                            tracing::warn!(target: "typio.voice", message = %msg, "transcription error");
-                            self.request_voice_status_show(format!("Voice: {msg}"), now);
-                        }
-                        // State transitions are surfaced directly by the
-                        // press/release handlers; nothing to do here.
-                        VoiceOutcome::State(_) => {}
-                    }
+                for outcome in voice_outcomes {
+                    self.handle_voice_outcome(outcome, now);
                 }
             }
 

@@ -123,6 +123,16 @@ pub struct App {
     /// Absolute time when the voice status banner should auto-hide.
     #[cfg(feature = "wayland")]
     voice_status_hide_deadline: Option<Instant>,
+    /// Last voice session state observed by the banner driver. Used to tell
+    /// a productive `Processing → Idle` (a result follows) from a barren one
+    /// (nothing recognised → show no-speech feedback).
+    #[cfg(feature = "wayland")]
+    voice_last_state: typio::voice::types::VoiceState,
+    /// Auto-hide policy for a voice banner the panel coordinator queued
+    /// because the anchor was not ready. Applied when the deferred show
+    /// finally flushes so a sticky banner is not downgraded to transient.
+    #[cfg(feature = "wayland")]
+    voice_pending_banner: Option<indicator::VoiceBanner>,
     config_watcher: Option<ConfigWatcher>,
     watchdog: Option<Watchdog>,
     /// Sender half of the daemon event channel. Cloned into the IPC
@@ -205,6 +215,10 @@ impl App {
             voice_status_timer: None,
             #[cfg(feature = "wayland")]
             voice_status_hide_deadline: None,
+            #[cfg(feature = "wayland")]
+            voice_last_state: typio::voice::types::VoiceState::Idle,
+            #[cfg(feature = "wayland")]
+            voice_pending_banner: None,
             config_watcher: None,
             watchdog: None,
             event_tx,
@@ -865,6 +879,10 @@ mod tests {
             voice_status_timer: None,
             #[cfg(feature = "wayland")]
             voice_status_hide_deadline: None,
+            #[cfg(feature = "wayland")]
+            voice_last_state: typio::voice::types::VoiceState::Idle,
+            #[cfg(feature = "wayland")]
+            voice_pending_banner: None,
             config_watcher: None,
             watchdog: None,
             event_tx: tx,

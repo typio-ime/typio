@@ -22,7 +22,31 @@ use crate::watchdog::LoopStage;
 
 use typio::TypioInstance;
 
+#[cfg(feature = "wayland")]
+use crate::voice::VoiceOutcome;
+#[cfg(feature = "wayland")]
+use typio::voice::types::VoiceState;
+
 use super::App;
+
+/// Lifetime policy for a voice status banner.
+///
+/// Voice has two visually identical but behaviourally distinct banners:
+/// the in-progress states ("listening…", "transcribing…", "loading…")
+/// must persist for as long as the session sits in that state — which is
+/// unbounded for push-to-talk — while the terminal feedback (the final
+/// transcription, an error, or no-speech) should fade on its own like the
+/// keyboard indicator. Conflating the two is what made an active recording
+/// vanish after the indicator's auto-hide interval.
+#[cfg(feature = "wayland")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VoiceBanner {
+    /// Stays until the session state advances or it is explicitly hidden.
+    /// No auto-hide timer is armed.
+    Sticky,
+    /// Auto-hides after the configured indicator duration.
+    Transient,
+}
 
 /// Which indicator show-path to take. Mirror of
 /// [`Indicator`](crate::indicator::Indicator)'s three public methods,
@@ -260,7 +284,12 @@ impl App {
     /// surface as the indicator, but claims it under the Voice owner so the
     /// candidate panel will not hide it while no candidates are visible.
     #[cfg(feature = "wayland")]
-    pub(super) fn request_voice_status_show(&mut self, label: String, now: Instant) {
+    pub(super) fn request_voice_status_show(
+        &mut self,
+        label: String,
+        now: Instant,
+        kind: VoiceBanner,
+    ) {
         let decision = {
             let Some(frontend) = self.frontend.as_mut() else {
                 tracing::debug!(target: "typio.voice", "no frontend, skipping status banner");
@@ -273,13 +302,19 @@ impl App {
                 target: "typio.voice",
                 anchor_ready,
                 ?decision,
+                ?kind,
                 "coordinator flush decision"
             );
             decision
         };
         match decision {
-            FlushDecision::Show => self.render_voice_status_banner(&label, now),
+            FlushDecision::Show => self.render_voice_status_banner(&label, now, kind),
             FlushDecision::Pending => {
+                // The anchor is not ready yet; the coordinator holds the
+                // label and re-emits it via `flush_pending_with_timeout`.
+                // Remember the kind so the deferred render keeps the right
+                // auto-hide policy.
+                self.voice_pending_banner = Some(kind);
                 tracing::debug!(
                     target: "typio.voice",
                     "queued status banner, will flush when anchor resolves"
@@ -289,6 +324,20 @@ impl App {
                 tracing::debug!(target: "typio.voice", "coordinator cancelled the status banner");
             }
         }
+    }
+
+    /// Show a sticky voice banner (no auto-hide): the in-progress states
+    /// that must persist until the session advances.
+    #[cfg(feature = "wayland")]
+    pub(super) fn show_voice_sticky(&mut self, label: impl Into<String>, now: Instant) {
+        self.request_voice_status_show(label.into(), now, VoiceBanner::Sticky);
+    }
+
+    /// Show a transient voice banner that fades after the configured
+    /// duration: terminal feedback (result / error / no-speech).
+    #[cfg(feature = "wayland")]
+    pub(super) fn show_voice_transient(&mut self, label: impl Into<String>, now: Instant) {
+        self.request_voice_status_show(label.into(), now, VoiceBanner::Transient);
     }
 
     /// Render the indicator banner onto the candidate Panel's surface,
@@ -310,9 +359,19 @@ impl App {
     /// surface and arm the voice status auto-hide timer. This deliberately
     /// bypasses the keyboard indicator state machine and recency gate.
     #[cfg(feature = "wayland")]
-    pub(super) fn render_voice_status_banner(&mut self, label: &str, now: Instant) {
+    pub(super) fn render_voice_status_banner(
+        &mut self,
+        label: &str,
+        now: Instant,
+        kind: VoiceBanner,
+    ) {
         self.draw_status_banner_now(label);
-        self.arm_voice_status_timer(now);
+        match kind {
+            // Sticky banners must not auto-hide. Disarm any timer left over
+            // from a previous transient banner so it cannot clear us.
+            VoiceBanner::Sticky => self.disarm_voice_status_timer(),
+            VoiceBanner::Transient => self.arm_voice_status_timer(now),
+        }
     }
 
     /// Shared drawing path for status banners. Ownership and timer semantics
@@ -402,6 +461,65 @@ impl App {
             }
         }
         self.disarm_voice_status_timer();
+    }
+
+    /// Drain one voice-session outcome and reflect it on the status banner.
+    ///
+    /// The banner is driven by the session state machine (see
+    /// [`Self::on_voice_state`]) so the in-progress states stay on screen for
+    /// their full, unbounded duration; only the terminal `Result`/`Error`
+    /// feedback uses the auto-hide timer.
+    #[cfg(feature = "wayland")]
+    pub(super) fn handle_voice_outcome(&mut self, outcome: VoiceOutcome, now: Instant) {
+        match outcome {
+            VoiceOutcome::State(state) => self.on_voice_state(state, now),
+            VoiceOutcome::Result(text) => {
+                if text.is_empty() {
+                    // Recognised audio that filtered down to nothing.
+                    self.show_voice_transient("Voice: no speech detected", now);
+                } else {
+                    tracing::debug!(target: "typio.voice", text = %text, "transcription result");
+                    if let Some(frontend) = self.frontend.as_mut() {
+                        frontend.state_mut().commit_string_and_flush(&text);
+                    }
+                    self.show_voice_transient(format!("Voice: {text}"), now);
+                }
+            }
+            VoiceOutcome::Error(msg) => {
+                tracing::warn!(target: "typio.voice", message = %msg, "transcription error");
+                self.show_voice_transient(format!("Voice: {msg}"), now);
+            }
+        }
+    }
+
+    /// Map a voice session state transition onto the status banner.
+    ///
+    /// The in-progress states render sticky banners (no auto-hide); reaching
+    /// `Idle` tears the sticky banner down unless a terminal `Result`/`Error`
+    /// banner has already taken over (in which case its own timer owns the
+    /// fade), or the session went idle straight out of `Processing` with no
+    /// result — i.e. nothing was recognised.
+    #[cfg(feature = "wayland")]
+    fn on_voice_state(&mut self, state: VoiceState, now: Instant) {
+        let prev = self.voice_last_state;
+        self.voice_last_state = state;
+        match state {
+            VoiceState::Loading => self.show_voice_sticky("Voice: loading model…", now),
+            VoiceState::Recording => self.show_voice_sticky("Voice: listening…", now),
+            VoiceState::Processing => self.show_voice_sticky("Voice: transcribing…", now),
+            VoiceState::Idle => {
+                if self.voice_status_hide_deadline.is_some() {
+                    // A transient result/error banner is already on screen
+                    // (it precedes the Idle transition in the same drain);
+                    // leave it to fade on its own timer.
+                } else if prev == VoiceState::Processing {
+                    // Transcription finished without producing any text.
+                    self.show_voice_transient("Voice: no speech detected", now);
+                } else {
+                    self.hide_voice_status();
+                }
+            }
+        }
     }
 
     /// Arm the auto-hide timer for the indicator's configured duration

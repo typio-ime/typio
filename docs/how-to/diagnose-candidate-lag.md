@@ -52,17 +52,65 @@ cargo build --release -p typio-host --bin typio
 typio --version
 ```
 
-## Step 1 — Turn on the panel probe
+## Step 1 — Start a long diagnostic run
 
-The panel probe is a single-env-var, always-on stderr summary built for
-exactly this investigation. It needs no `RUST_LOG` knowledge:
+The lag is intermittent and may take hours to appear, so the run has to
+stay quiet for a long time yet still capture the moment it happens. Three
+rules make that work:
+
+- **Use a release build.** A debug build inflates the timing numbers
+  (`present_max_ms`, `total_max_ms`) and makes them meaningless. The
+  *logical* signals (atlas clears, stall warnings, eviction deltas) are
+  still valid in debug, but if you care about latency, build release.
+- **Do *not* pass `--verbose`.** `-v` raises the floor to `debug` (per-tick
+  panel-scheduler and per-key input lines); `-vv` to `trace` (per-frame
+  timing). Over a day that is hundreds of MB to GB and buries the signal.
+  The probe is a bare `eprintln!` so it prints regardless of log level, and
+  the `frame-callback stall` warning is `warn!` (≥ the default `info`
+  floor), so a plain run already captures everything that matters.
+- **Split full vs. filtered output.** `tee` keeps a small `info`-floor full
+  log as a fallback; `grep` writes a clean signal-only log you actually
+  read. `--line-buffered` is required so the pipe flushes in real time.
 
 ```bash
-TYPIO_PANEL_PROBE=1 typio --verbose 2>&1 | tee typio-panel.log
+cargo build --release -p typio-host --bin typio
+
+TYPIO_PANEL_PROBE=1 ./target/release/typio \
+  --engine-dir ../typio-engine-compose \
+  --engine-dir ../typio-engine-rime/build \
+  --engine-dir ../typio-engine-sherpa/build \
+  2>&1 \
+  | tee typio-panel-full.log \
+  | grep --line-buffered -E 'panel-probe|frame-callback stall|wp_viewporter|ATLAS CLEAR' \
+  > typio-panel.log
 ```
 
+Then just use the input method normally and let it run.
+
+### Capture detail on demand when you feel the lag
+
+Keep the run at the quiet `info` floor, and the moment you notice a
+stutter, bump the level *temporarily* — no restart needed. The daemon
+reloads its log floor live on `SIGUSR1` (raise one step) and `SIGUSR2`
+(reset to the startup level):
+
+```bash
+kill -USR1 $(pidof typio)    # info → debug; reproduce the stutter now
+# … page through candidates while it is laggy …
+kill -USR2 $(pidof typio)    # back to quiet
+```
+
+Those few seconds of `debug`/`trace` land in `typio-panel-full.log` (not
+the filtered log), so the main trail stays small while you still get
+per-frame detail exactly when it matters. This is the recommended way to
+chase an intermittent stutter over a long session.
+
+> Running under the systemd user service instead? `journald` adds
+> timestamps and rotation for free — drop the `tee`/`grep` plumbing and
+> read with `journalctl --user -u typio | grep -E 'panel-probe|stall'`.
+
 Reproduce the lag (page through candidates for a while), then read the
-two line types it emits.
+two line types the probe emits.
 
 **Per-window summary (every 120 presented frames):**
 
@@ -106,10 +154,14 @@ set exceeds what fits, the atlas clears and the next frames re-rasterise
 every visible glyph. The current O(1) clear keeps a single clear cheap;
 *sustained* clears mean the working set genuinely exceeds capacity.
 
-**Deeper trace** (per-frame stage timing + glyph deltas):
+**Deeper trace** (per-frame stage timing + glyph deltas). Once the probe
+has pointed you here, get the per-frame breakdown without restarting the
+long run — refine just these targets and bump the floor with `SIGUSR1`,
+or start a fresh focused session with:
 
 ```bash
-RUST_LOG="typio.panel.timing=info,typio.panel.text=debug" typio --verbose
+RUST_LOG="typio.panel.timing=info,typio.panel.text=debug" \
+  ./target/release/typio --engine-dir … 2>&1 | tee typio-panel-deep.log
 ```
 
 Watch `glyph_evictions_delta`, `atlas_clears_delta`, and `measure_ms` /
