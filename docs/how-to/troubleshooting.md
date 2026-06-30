@@ -18,8 +18,8 @@ ls /usr/local/share/typio/engines
 
 Engine packages are separate repositories. Build one and point the daemon
 at its manifest directory — for example the [compose
-engine](../../typio-engine-compose) with `cargo build --release`, or the
-[rime engine](../../typio-engine-rime) with
+engine](../../typio-engines/typio-engine-compose) with `cargo build --release`, or the
+[rime engine](../../typio-engines/typio-engine-rime) with
 `meson setup build && meson compile -C build`. For development-only
 engines, start the daemon with `typio --engine-dir DIR` (repeatable) or set
 `TYPIO_ENGINE_PATH=DIR1:DIR2`; no per-user directory is scanned by default.
@@ -121,8 +121,8 @@ The underlying leak is patched in the current source. Rebuilding and reinstallin
 If candidate switching is still sluggish on a current build, the cause is
 one of the glyph-atlas, present-throttle, swapchain, or engine paths.
 Work through [How to Diagnose Candidate-Switching
-Lag](diagnose-candidate-lag.md), which adds a `TYPIO_PANEL_PROBE=1` stderr
-probe and a decision tree for telling those four apart.
+Lag](diagnose-candidate-lag.md), which uses the `typio.panel.probe=debug`
+tracing target and a decision tree for telling those four apart.
 
 ## Indicator Lingers After Switching tmux Panes or Windows
 

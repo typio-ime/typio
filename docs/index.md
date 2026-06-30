@@ -1,6 +1,9 @@
-# Typio Wayland Documentation
+# Typio Documentation
 
-The Linux/Wayland host for the [Typio](../typio) input method framework. This repository contains the `typio` binary and its supporting code: the Wayland input-method frontend, candidate Panel renderer, UDS control surface (TIP v1), system tray, and voice capture plumbing.
+The Linux/Wayland Typio workspace. This repository contains the `typio` daemon,
+the `typioctl` client, the framework and ABI crates, the candidate Panel
+renderer, the UDS control surface (TIP v1), system tray integration, and voice
+capture plumbing.
 
 ## Sections
 
@@ -15,7 +18,7 @@ The Linux/Wayland host for the [Typio](../typio) input method framework. This re
   - [Engine Discovery Reference](reference/engine-discovery.md) — search path, file-name rules, icons
   - [Interface Stability Reference](reference/stability.md) — stability tiers for every external interface
 - **[Explanation](explanation/)** — Understanding-oriented design documents.
-  - [Project Scope: typio-linux vs. libtypio](explanation/project-scope.md)
+  - [Project Scope: Host, Framework, ABI, Vet, and CLI](explanation/project-scope.md)
   - [Wayland Input Method Protocol](explanation/wayland-input-method.md)
   - [Input-Method Session](explanation/input-method-session.md) — Disambiguates the three layers of "session"
   - [Focus Controller](explanation/focus-controller.md) — Derived-state, idempotent-diff lifecycle model

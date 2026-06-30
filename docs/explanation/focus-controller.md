@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The focus controller is the per-tick control loop that manages typio-linux's
+The focus controller is the per-tick control loop that manages typio's
 Wayland input-method **focus and keyboard-grab lifecycle**: grab create/destroy,
 `focus_in`/`focus_out`, keymap epoch scrubbing, and discarding an abandoned
 composition on defocus.

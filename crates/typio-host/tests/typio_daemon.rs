@@ -30,11 +30,7 @@ impl Drop for DaemonGuard {
 }
 
 fn typio_bin_path() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .join("../../target/debug/typio")
-        .canonicalize()
-        .unwrap_or_else(|_| manifest_dir.join("../../target/debug/typio"))
+    PathBuf::from(env!("CARGO_BIN_EXE_typio"))
 }
 
 fn spawn_typio(extra_args: &[&str]) -> (DaemonGuard, PathBuf) {
@@ -165,7 +161,12 @@ fn sigusr_adjusts_log_level_at_runtime() {
     // Default invocation → floor at `info`. The stderr log lands next to the
     // socket's XDG dir (see `spawn_typio`).
     let (guard, socket) = spawn_typio(&[]);
-    let log_path = socket.parent().unwrap().parent().unwrap().join("typio.stderr");
+    let log_path = socket
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("typio.stderr");
     let pid = guard.child.id();
 
     // SIGUSR1: info → debug. The confirmation logs at info (always visible).

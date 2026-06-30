@@ -21,7 +21,7 @@ use crate::panel_scheduler::{self, PanelUpdateResult};
 use crate::session_glue::FocusTransition;
 use crate::watchdog::LoopStage;
 
-use super::{App, DaemonEvent, arm_repeat, tray::cycle_active_language};
+use super::{arm_repeat, tray::cycle_active_language, App, DaemonEvent};
 
 impl App {
     /// The Wayland main loop. Returns the daemon exit code.
@@ -496,13 +496,15 @@ impl App {
                     // cannot later kill the candidate list); they release
                     // it when empty unless an overlay is borrowing it.
                     {
-                        let coord = frontend.state_mut().panel_coord_mut();
-                        if candidates.is_empty() {
-                            if owner != UiOwner::Indicator && owner != UiOwner::Voice {
-                                coord.hide(UiOwner::Candidate);
-                            }
-                        } else {
-                            if !anchor_ready {
+                        let state = frontend.state_mut();
+                        let owner_changed = {
+                            let coord = state.panel_coord_mut();
+                            let before = coord.visible_owner();
+                            if candidates.is_empty() {
+                                if owner != UiOwner::Indicator && owner != UiOwner::Voice {
+                                    coord.hide(UiOwner::Candidate);
+                                }
+                            } else if !anchor_ready {
                                 let decision =
                                     coord.decide_positioned_flush(UiOwner::Candidate, "candidate");
                                 if decision == crate::panel_coordinator::FlushDecision::Show {
@@ -511,6 +513,10 @@ impl App {
                             } else {
                                 coord.claim(UiOwner::Candidate);
                             }
+                            before != coord.visible_owner()
+                        };
+                        if owner_changed {
+                            state.invalidate_panel_presentation();
                         }
                     }
 
@@ -544,8 +550,19 @@ impl App {
                     };
                     let throttled =
                         !candidates.is_empty() && (!anchor_ready || frame_wait_ms.is_some());
+                    let already_presented = !candidates.is_empty()
+                        && anchor_ready
+                        && frontend.state().panel_coord().visible_owner() == UiOwner::Candidate
+                        && frontend.state().panel_presentation_current(composition_seq);
 
-                    let (result, presented, hid) = if throttled {
+                    let (result, presented, hid) = if already_presented {
+                        tracing::trace!(
+                            target: "typio.panel.host",
+                            composition_seq,
+                            "panel: skip present reason=already_presented"
+                        );
+                        (PanelUpdateResult::Done, false, false)
+                    } else if throttled {
                         if let Some(wait_ms) = frame_wait_ms {
                             tracing::trace!(
                                 target: "typio.panel.host",
@@ -610,10 +627,12 @@ impl App {
                     } else {
                         if hid {
                             frontend.state_mut().clear_panel_frame_callback();
+                            frontend.state_mut().invalidate_panel_presentation();
                         }
                         frontend.state_mut().panel_schedule_state =
                             panel_scheduler::complete(result);
                         if presented {
+                            frontend.state_mut().mark_panel_presented(composition_seq);
                             frontend.arm_panel_frame_callback();
                         }
                     }
@@ -730,11 +749,7 @@ impl App {
                     voice.dispatch();
                 }
             }
-            let voice_outcomes = self
-                .voice
-                .as_ref()
-                .map(|v| v.drain())
-                .unwrap_or_default();
+            let voice_outcomes = self.voice.as_ref().map(|v| v.drain()).unwrap_or_default();
             if !voice_outcomes.is_empty() {
                 let now = Instant::now();
                 for outcome in voice_outcomes {

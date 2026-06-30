@@ -34,16 +34,16 @@ pub mod manifest;
 
 use std::path::{Path, PathBuf};
 
-use typio::core::engine::backend::{EngineBackend, process::ProcessBackend};
+use typio::core::engine::backend::{process::ProcessBackend, EngineBackend};
 use typio::core::engine::{BackendPreference, EngineCapabilities, EngineInfo, EngineType};
 use typio::core::registry::EngineRegistry;
 
 use caps::HostCapabilities;
-use manifest::{EngineManifest, ManifestError, is_manifest_filename};
+use manifest::{is_manifest_filename, EngineManifest, ManifestError};
 
 pub use caps::{HostCapabilities as Capabilities, NegotiationFailure};
-pub use dirs::{ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR, find_manifest_for, resolve_engine_dirs};
-pub use manifest::{DEFAULT_LANGUAGE, ManifestError as Error, resolve_path_arg};
+pub use dirs::{find_manifest_for, resolve_engine_dirs, ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR};
+pub use manifest::{resolve_path_arg, ManifestError as Error, DEFAULT_LANGUAGE};
 
 /// Loader state: a host capability set + a remembered icon theme path.
 ///

@@ -11,11 +11,11 @@ use std::time::{Duration, Instant};
 /// The longest a candidate update may wait for an outstanding frame callback
 /// before the host presents the latest coalesced state anyway.
 ///
-/// This stays below the old 200 ms recovery path, but above one 30 Hz frame.
+/// This stays below the old 200 ms recovery path and around a 50 Hz cadence.
 /// A healthy compositor normally wakes earlier through `wl_surface.frame`;
 /// a compositor that drops callbacks timer-paces at a conservative cadence
 /// instead of filling the swapchain and blocking in present.
-pub const PANEL_FRAME_CALLBACK_SOFT_LIMIT: Duration = Duration::from_millis(50);
+pub const PANEL_FRAME_CALLBACK_SOFT_LIMIT: Duration = Duration::from_millis(20);
 
 /// Diagnostic threshold for an uninterrupted period with no frame callback.
 ///
@@ -30,6 +30,41 @@ pub enum PresentDecision {
     Present,
     /// Wait until the deadline unless a frame callback arrives earlier.
     WaitUntil(Instant),
+}
+
+/// Tracks which candidate-panel snapshot has already reached `present`.
+///
+/// This is intentionally separate from the frame-callback gate. A frame
+/// callback answers "should the compositor pace the next present?"; this record
+/// answers "is there any newer panel content to present?". Keeping those
+/// questions separate mirrors a double-buffered UI: state changes are
+/// coalesced freely, and rendering consumes only the newest state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PresentationRecord {
+    generation: u64,
+    presented: Option<(u64, u64)>,
+}
+
+impl PresentationRecord {
+    /// Invalidate the last-presented marker after a non-composition change that
+    /// still requires a redraw: scale change, hide/show transition, theme reload,
+    /// or a different popup owner borrowing the surface.
+    pub fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.presented = None;
+    }
+
+    /// Mark `composition_seq` as successfully submitted in the current
+    /// generation.
+    pub fn mark_presented(&mut self, composition_seq: u64) {
+        self.presented = Some((self.generation, composition_seq));
+    }
+
+    /// True iff `composition_seq` was already submitted in the current
+    /// generation.
+    pub fn is_current(&self, composition_seq: u64) -> bool {
+        self.presented == Some((self.generation, composition_seq))
+    }
 }
 
 /// Decide whether an outstanding frame callback should still pace presents.
@@ -110,5 +145,21 @@ mod tests {
         assert!(!callback_stall_should_warn(Some(now), now));
         let stale = now - (PANEL_FRAME_CALLBACK_STALL_WARN + Duration::from_millis(1));
         assert!(callback_stall_should_warn(Some(stale), now));
+    }
+
+    #[test]
+    fn presentation_record_dedupes_until_invalidated() {
+        let mut record = PresentationRecord::default();
+        assert!(!record.is_current(7));
+
+        record.mark_presented(7);
+        assert!(record.is_current(7));
+        assert!(!record.is_current(8));
+
+        record.invalidate();
+        assert!(!record.is_current(7));
+
+        record.mark_presented(7);
+        assert!(record.is_current(7));
     }
 }

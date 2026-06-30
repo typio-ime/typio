@@ -1,10 +1,10 @@
-//! Cargo xtask helpers for typio-linux.
+//! Cargo xtask helpers for typio.
 //!
 //! Run with `cargo xtask <command>`.
 //!
 //! Commands:
-//!   install          Install the daemon binary, systemd user service,
-//!                    icons, and example configs.
+//!   install          Install binaries, systemd user service, icons, and
+//!                    example configs.
 //!   install --dry-run
 //!   uninstall        Remove installed files.
 
@@ -81,10 +81,11 @@ fn plan_install(prefix: &Path) -> Result<InstallPlan> {
         data_dst.clone(),
     ];
 
-    // Binary.
+    // Binaries.
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "release".to_string());
-    let binary_src = project_root.join("target").join(profile).join("typio");
-    copies.push((binary_src, bindir.join("typio")));
+    let target_dir = project_root.join("target").join(profile);
+    copies.push((target_dir.join("typio"), bindir.join("typio")));
+    copies.push((target_dir.join("typioctl"), bindir.join("typioctl")));
 
     // Systemd service file is rendered separately in install().
     dirs.push(systemd_user_dir.clone());

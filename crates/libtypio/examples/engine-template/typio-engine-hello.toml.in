@@ -1,0 +1,25 @@
+# Engine manifest — how Typio hosts discover this engine.
+# Install to <datadir>/typio/engines/ (the build does this for you).
+# See typio-linux docs/reference/engine-discovery.md for every key.
+
+name = "hello"
+type = "keyboard"
+protocol = "typio-engine-protocol"
+display_name = "Hello"
+description = "Minimal example engine — types 'hello' when you press 'a'."
+author = "Typio"
+icon = "typio-engine-hello"
+
+# Languages this engine supports (BCP-47, primary first). The language is
+# the user-facing switch unit: the framework picks this engine when one of
+# these tags is activated. Use ["mul"] for an any-language engine.
+language = "und"
+languages = ["en"]
+
+command = "@ENGINE_COMMAND@"
+args = []
+
+# Capabilities: required ones the host must support, optional ones the
+# engine adapts to when missing.
+required = []
+optional = []

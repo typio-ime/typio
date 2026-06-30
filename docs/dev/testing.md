@@ -1,29 +1,34 @@
 # Testing
 
 This document is for contributors. It covers how to run and extend the
-`typio-linux` test suite.
+Typio test suite.
 
 ## Scope
 
-The suite is the Cargo suite in `crates/typio-host`. It covers the shipping
-Rust daemon, subsystem ports, TIP framing, UDS IPC, engine discovery, and
-headless daemon behavior.
+The suite is the Cargo workspace suite. `crates/typio-host` covers the
+shipping Rust daemon, subsystem ports, TIP framing, UDS IPC, engine
+discovery, and headless daemon behavior. `crates/libtypio`,
+`crates/typio-abi`, and `crates/typio-vet` cover the framework, shared ABI,
+and engine conformance tooling. `crates/typioctl` covers the command-line
+TIP/UDS client.
 
 ## Run Cargo Tests
 
-Build or refresh sibling dependencies first. These commands run from the
-`typio-linux` repository root:
+Build or refresh the native renderer dependency first. These commands run from
+the Typio repository root:
 
 ```bash
-cargo build --release --manifest-path ../libtypio/Cargo.toml
-meson compile -C ../../optics/build    # first time: meson setup ../../optics/build ../../optics
+meson compile -C ../optics/build    # first time: meson setup ../optics/build ../optics -Dtext=true
 ```
 
 Run the full Rust suite:
 
 ```bash
-export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../optics/build:${LD_LIBRARY_PATH}"
 cargo test -p typio-host
+cargo test -p libtypio
+cargo test -p typio-abi
+cargo test -p typio-vet
+cargo test -p typioctl
 ```
 
 Run one test:
@@ -39,15 +44,15 @@ cargo test -p typio-host -- --nocapture
 ```
 
 If `cargo test` reports an undefined `flux_*` symbol, Cargo loaded a stale
-or system `libflux.so`. Rebuild `../../optics`, then confirm
-`LD_LIBRARY_PATH` includes `../../optics/build`.
+or system `libflux.so`. Rebuild `../optics`, then confirm
+`FLUX_BUILD_DIR` points at `../optics/build`.
 
 ## Cargo Coverage
 
 | Area | Test surface |
 |---|---|
-| CLI and daemon lifecycle | `app` unit tests, `tests/typio_daemon.rs` |
-| TIP protocol and JSON-RPC framing | `ipc` unit tests, `tests/daemon_stub.rs` |
+| Daemon lifecycle | `app` unit tests, `tests/typio_daemon.rs` |
+| TIP protocol and JSON-RPC framing | host `ipc` unit tests, `uds_server`, and `crates/typioctl/src/ipc.rs` |
 | UDS server and IPC bus | `uds_server`, `ipc_bus`, `service` tests |
 | Engine manifests and registration | `engine_loader` unit and integration tests |
 | Wayland focus, key policy, repeat, candidate guard | `focus_controller`, `session_glue`, `keyboard_policy`, `keyboard::router`, `candidate_guard` tests |

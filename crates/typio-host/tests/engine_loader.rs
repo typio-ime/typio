@@ -23,22 +23,22 @@ const REAL_MANIFESTS: &[(&str, &str)] = &[
     ("typio-engine-whisper", "typio-engine-whisper.toml"),
 ];
 
-fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR = .../typio-linux/crates/typio-host
-    // workspace sibling checkouts (typio-engine-*, libtypio) live three
-    // levels up: typio-host → crates → typio-linux → typio/ workspace.
+fn engine_workspace_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR = .../typio/crates/typio-host
+    // engine sibling checkouts live beside the main repo:
+    // projects/typio-engines/typio-engine-*.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir)
-        .join("../../..")
+        .join("../../../typio-engines")
         .canonicalize()
-        .expect("workspace root should canonicalise")
+        .expect("engine workspace root should canonicalise")
 }
 
 #[test]
 fn all_real_manifests_parse_and_validate() {
     let mut checked = 0;
     for (engine_dir, manifest_name) in REAL_MANIFESTS {
-        let path = workspace_root()
+        let path = engine_workspace_root()
             .join(engine_dir)
             .join("build")
             .join(manifest_name);
@@ -88,7 +88,7 @@ fn all_real_manifests_register_into_libtypio() {
     let mut registry = typio::core::registry::EngineRegistry::new();
 
     for (engine_dir, manifest_name) in REAL_MANIFESTS {
-        let path = workspace_root()
+        let path = engine_workspace_root()
             .join(engine_dir)
             .join("build")
             .join(manifest_name);
@@ -117,7 +117,7 @@ fn duplicate_registration_of_same_engine_is_skipped_not_failed() {
     let manifest = REAL_MANIFESTS
         .iter()
         .find_map(|(dir, name)| {
-            let p = workspace_root().join(dir).join("build").join(name);
+            let p = engine_workspace_root().join(dir).join("build").join(name);
             if p.exists() {
                 Some(p)
             } else {

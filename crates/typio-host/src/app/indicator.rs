@@ -402,6 +402,7 @@ impl App {
             panel.draw_status_banner(label, &heartbeat, &enter_present);
         }
         if let Some(frontend) = self.frontend.as_mut() {
+            frontend.state_mut().invalidate_panel_presentation();
             frontend.arm_panel_frame_callback();
         }
     }
@@ -429,7 +430,12 @@ impl App {
         if status_owned {
             tracing::debug!(target: "typio.panel.host", "panel: hide reason=indicator_autohide");
             if let Some(frontend) = self.frontend.as_mut() {
-                frontend.state_mut().clear_panel_frame_callback();
+                let state = frontend.state_mut();
+                state.clear_panel_frame_callback();
+                state.invalidate_panel_presentation();
+                if !state.composition.candidates.is_empty() {
+                    state.mark_panel_dirty();
+                }
                 if let Some(panel) = frontend.panel_mut() {
                     panel.hide();
                 }
@@ -454,7 +460,12 @@ impl App {
         if status_owned {
             tracing::debug!(target: "typio.panel.host", "panel: hide reason=voice_status_autohide");
             if let Some(frontend) = self.frontend.as_mut() {
-                frontend.state_mut().clear_panel_frame_callback();
+                let state = frontend.state_mut();
+                state.clear_panel_frame_callback();
+                state.invalidate_panel_presentation();
+                if !state.composition.candidates.is_empty() {
+                    state.mark_panel_dirty();
+                }
                 if let Some(panel) = frontend.panel_mut() {
                     panel.hide();
                 }

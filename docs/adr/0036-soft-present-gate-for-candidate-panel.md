@@ -45,11 +45,10 @@ The event loop now asks a pure present-gate policy whether to present or wait:
   `frame-callback stall` warning for that missing-callback episode, but do not
   block rendering.
 
-The soft limit is 50 ms, longer than one 30 Hz frame but still far below the
-old 200 ms recovery path. Healthy compositors wake earlier through the
-callback. A compositor that drops callbacks timer-paces candidate navigation at
-a conservative cadence instead of filling the swapchain and blocking in
-present.
+The soft limit is 20 ms, roughly a 50 Hz cadence and still far below the old
+200 ms recovery path. Healthy compositors wake earlier through the callback. A
+compositor that drops callbacks timer-paces candidate navigation at a
+conservative cadence instead of filling the swapchain and blocking in present.
 
 The panel scheduler remains the owner of dirty/retry state from ADR-0023. The
 present gate only contributes a poll deadline while candidates are dirty, so

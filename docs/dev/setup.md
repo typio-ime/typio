@@ -1,33 +1,34 @@
 # Developer Setup
 
-This document is for contributors who modify `typio-linux` source code.
+This document is for contributors who modify Typio source code.
 
 ## Quick Start
 
-All commands in this document run from the `typio-linux` repository root
+All commands in this document run from the Typio repository root
 unless a block says otherwise.
 
 ```bash
 # one-time per optics checkout:
-meson setup ../../optics/build ../../optics -Dtext=true
-meson compile -C ../../optics/build
+meson setup ../optics/build ../optics -Dtext=true
+meson compile -C ../optics/build
 
 # point flux-sys at the freshly built libflux (every shell that runs
 # cargo build/test/run, or drop the two exports into ~/.bashrc / a local
 # .envrc — the repo ships no committed copy):
-export FLUX_BUILD_DIR="$PWD/../../optics/build"
-export FLUX_SOURCE_DIR="$PWD/../../optics/libs/flux"
+export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 
 cargo build -p typio-host
+cargo build -p typioctl
 cargo test -p typio-host
 ./target/debug/typio --verbose
 ```
 
-`typio-linux` links `libflux` straight out of the `optics/flux` Meson build
+Typio links `libflux` straight out of the `optics/flux` Meson build
 tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
-is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `libtypio`
-and the `flux-sys` / `flux-text-sys` bindings resolve as git crates, so a
-build needs no sibling Rust checkouts either.
+is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `libtypio`,
+`typio-abi`, `typio-vet`, and `typioctl` are Cargo workspace members in this
+repository, so framework, ABI, vet, CLI, and host changes build together.
 
 The shipping daemon is the Rust `typio` binary from `crates/typio-host`.
 
@@ -48,32 +49,29 @@ and Fedora releases.
 
 ## Repository Layout
 
-`typio-linux` lives under a `typio/` umbrella alongside the framework
-library, engine packages, and tools. The GPU/media libraries live under a
-separate `optics/` umbrella because the canvas stack is shared with
-non-Typio projects:
+The Typio product workspace lives beside the engine umbrella and the settings
+panel repository. The GPU/media libraries live under a separate `optics/`
+umbrella because the canvas stack is shared with non-Typio projects:
 
 ```text
 projects/
-├── typio/
-│   ├── libtypio/                 # published as git crate v0.5.0; local checkout optional
+├── typio/                        # host + libtypio + typio-abi + typio-vet + typioctl
+├── typio-engines/
 │   ├── typio-engine-compose/     # Cargo: Latin + compose-key keyboard
 │   ├── typio-engine-rime/        # Meson: RIME-based Chinese keyboard
 │   ├── typio-engine-mozc/        # Meson: Mozc-based Japanese keyboard
 │   ├── typio-engine-sherpa/      # Meson: sherpa-onnx voice input
-│   ├── typio-engine-whisper/     # Meson: whisper.cpp voice input
-│   └── typio-linux/              # run typio-linux commands here
+│   └── typio-engine-whisper/     # Meson: whisper.cpp voice input
+├── typio-settings/               # Meson/C settings panel
 └── optics/
     ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
     ├── bindings/flux-rs/         # Rust bindings; published as git crate v0.1.0
-    ├── libs/iris/, libs/lens/, … # other optics components, not consumed by typio-linux
+    ├── libs/iris/, libs/lens/, … # other optics components, not consumed by Typio
 ```
 
-`typio-linux` resolves `libtypio` and `flux-sys` / `flux-text-sys` as git
-crates (see the `[workspace.dependencies]` table in the root `Cargo.toml`),
-so no sibling checkout is required for a build. The only external native
-dependency is `libflux`, which `flux-sys`'s build script locates through
-pkg-config at build time.
+Typio resolves `libtypio`, `typio-abi`, `typio-vet`, and `typioctl` from
+local workspace paths. The only external native dependency is `libflux`, which
+`flux-sys`'s build script locates through pkg-config at build time.
 
 ## flux (C library)
 
@@ -86,11 +84,11 @@ build tree. `meson setup` is one-time per checkout; `meson compile` rebuilds
 on demand:
 
 ```bash
-meson setup ../../optics/build ../../optics -Dtext=true
-meson compile -C ../../optics/build
+meson setup ../optics/build ../optics -Dtext=true
+meson compile -C ../optics/build
 
-export FLUX_BUILD_DIR="$PWD/../../optics/build"
-export FLUX_SOURCE_DIR="$PWD/../../optics/libs/flux"   # optional: bindgen from this checkout
+export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"   # optional: bindgen from this checkout
 ```
 
 `flux-sys` prepends the build tree's `meson-uninstalled/` to
@@ -99,14 +97,14 @@ export FLUX_SOURCE_DIR="$PWD/../../optics/libs/flux"   # optional: bindgen from 
 Keep the two exports set in any shell that runs `cargo build` / `test` /
 the daemon; `FLUX_BUILD_DIR` is what selects the in-tree library. If Cargo
 reports an undefined `flux_*` symbol, rebuild optics (`meson compile -C
-../../optics/build`) and re-run.
+../optics/build`) and re-run.
 
 **Installed (optional).** If you prefer a system-wide flux, `meson install`
 into a prefix on `PKG_CONFIG_PATH` and unset `FLUX_BUILD_DIR` (or set
 `FLUX_USE_INSTALLED=1`) so pkg-config resolves the installed `flux.pc`
 instead of the build tree.
 
-## Build typio-linux
+## Build Typio
 
 Build the debug daemon:
 
@@ -118,6 +116,20 @@ Build the release daemon:
 
 ```bash
 cargo build --release -p typio-host --bin typio
+```
+
+Build the CLI:
+
+```bash
+cargo build -p typioctl
+```
+
+Build the framework and ABI tooling explicitly when touching engine contracts:
+
+```bash
+cargo check -p typio-abi
+cargo check -p libtypio
+cargo check -p typio-vet
 ```
 
 Cargo features:
@@ -149,19 +161,19 @@ recurse. Manifest locations differ per engine — see the table below:
 
 ```bash
 ./target/debug/typio -v \
-  --engine-dir ../typio-engine-compose \
-  --engine-dir ../typio-engine-rime/build \
-  --engine-dir ../typio-engine-mozc/build \
-  --engine-dir ../typio-engine-sherpa/build
+  --engine-dir ../typio-engines/typio-engine-compose \
+  --engine-dir ../typio-engines/typio-engine-rime/build \
+  --engine-dir ../typio-engines/typio-engine-mozc/build \
+  --engine-dir ../typio-engines/typio-engine-sherpa/build
 ```
 
 Equivalently, set the colon-separated `$TYPIO_ENGINE_PATH` once:
 
 ```bash
-export TYPIO_ENGINE_PATH="$PWD/../typio-engine-compose:\
-$PWD/../typio-engine-rime/build:\
-$PWD/../typio-engine-mozc/build:\
-$PWD/../typio-engine-sherpa/build"
+export TYPIO_ENGINE_PATH="$PWD/../typio-engines/typio-engine-compose:\
+$PWD/../typio-engines/typio-engine-rime/build:\
+$PWD/../typio-engines/typio-engine-mozc/build:\
+$PWD/../typio-engines/typio-engine-sherpa/build"
 ./target/debug/typio -v
 ```
 
@@ -177,7 +189,7 @@ convert keystrokes with; without a voice engine the voice push-to-talk path has
 nothing to transcribe with. Build an engine and pass its manifest directory to
 exercise input conversion or voice input.
 
-The keyboard engines that ship as siblings under `typio/`:
+The keyboard engines that ship as siblings under `typio-engines/`:
 
 | Engine | Build system | Manifest path | Languages |
 |---|---|---|---|
@@ -185,7 +197,7 @@ The keyboard engines that ship as siblings under `typio/`:
 | `typio-engine-rime` | Meson (needs `librime`, `libcurl`) | `typio-engine-rime/build/typio-engine-rime.toml` | Chinese (zh) |
 | `typio-engine-mozc` | Meson (needs Mozc depot) | `typio-engine-mozc/build/typio-engine-mozc.toml` | Japanese (ja) |
 
-The voice engines that ship as siblings under `typio/`:
+The voice engines that ship as siblings under `typio-engines/`:
 
 | Engine | Build system | Manifest path | Languages |
 |---|---|---|---|
@@ -197,20 +209,20 @@ with `meson setup build && meson compile -C build` from their own roots,
 e.g.:
 
 ```bash
-cargo build --release --manifest-path ../typio-engine-compose/Cargo.toml
-meson setup ../typio-engine-rime/build ../typio-engine-rime       # first time
-meson compile -C ../typio-engine-rime/build
-meson setup ../typio-engine-sherpa/build ../typio-engine-sherpa   # first time
-meson compile -C ../typio-engine-sherpa/build
+cargo build --release --manifest-path ../typio-engines/typio-engine-compose/Cargo.toml
+meson setup ../typio-engines/typio-engine-rime/build ../typio-engines/typio-engine-rime       # first time
+meson compile -C ../typio-engines/typio-engine-rime/build
+meson setup ../typio-engines/typio-engine-sherpa/build ../typio-engines/typio-engine-sherpa   # first time
+meson compile -C ../typio-engines/typio-engine-sherpa/build
 ```
 
 Then point the daemon at the directory that contains the manifest (note the
 `/build` suffix for Meson engines):
 
 ```bash
-./target/debug/typio -v --engine-dir ../typio-engine-compose
-./target/debug/typio -v --engine-dir ../typio-engine-rime/build
-./target/debug/typio -v --engine-dir ../typio-engine-sherpa/build
+./target/debug/typio -v --engine-dir ../typio-engines/typio-engine-compose
+./target/debug/typio -v --engine-dir ../typio-engines/typio-engine-rime/build
+./target/debug/typio -v --engine-dir ../typio-engines/typio-engine-sherpa/build
 ```
 
 ## Run Tests
@@ -219,6 +231,7 @@ Run the Cargo suite:
 
 ```bash
 cargo test -p typio-host
+cargo test -p typioctl
 ```
 
 Run one test:
@@ -237,6 +250,7 @@ example configs:
 
 ```bash
 cargo build --release -p typio-host --bin typio
+cargo build --release -p typioctl
 cargo xtask install --prefix /usr/local
 ```
 

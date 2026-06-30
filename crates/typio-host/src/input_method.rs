@@ -41,7 +41,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use crate::focus_controller::InputFacts;
 use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
-use crate::panel_present_gate::{self, PresentDecision};
+use crate::panel_present_gate::{self, PresentDecision, PresentationRecord};
 use crate::panel_scheduler::{self, PanelScheduleState};
 use crate::protocols::input_method_v2::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
@@ -146,9 +146,13 @@ pub struct CompositionState {
 }
 
 impl CompositionState {
-    /// Set the current candidate list + selected index. Bumps the
-    /// composition sequence and returns the new value for logging.
+    /// Set the current candidate list + selected index. Bumps the composition
+    /// sequence only when the visual candidate state changes, and returns the
+    /// current value for logging.
     pub fn set_candidates(&mut self, candidates: Vec<String>, selected: usize) -> u64 {
+        if self.candidates == candidates && self.selected_candidate == selected {
+            return self.composition_seq;
+        }
         self.composition_seq = self.composition_seq.wrapping_add(1);
         self.candidates = candidates;
         self.selected_candidate = selected;
@@ -222,6 +226,14 @@ pub struct InputMethodState {
     /// threshold. Surfaced so recurring compositor frame-callback stalls are
     /// visible in production logs.
     pub panel_frame_stall_count: u64,
+    /// Last candidate composition snapshot successfully submitted to Flux.
+    ///
+    /// The scheduler may be marked dirty repeatedly while the soft frame gate
+    /// is waiting. This record lets the render path consume only the newest
+    /// composition and skip duplicate presents after unrelated wakeups, while
+    /// still allowing scale/ownership/hide changes to invalidate the cached
+    /// submission.
+    panel_presentation: PresentationRecord,
     /// The input-method popup surface (positioning protocol).
     #[allow(dead_code)]
     popup_surface: ZwpInputPopupSurfaceV2,
@@ -336,6 +348,23 @@ impl InputMethodState {
         self.panel_schedule_state = panel_scheduler::mark_dirty(self.panel_schedule_state);
     }
 
+    /// Whether `composition_seq` is already visible for the current panel
+    /// presentation generation.
+    pub fn panel_presentation_current(&self, composition_seq: u64) -> bool {
+        self.panel_presentation.is_current(composition_seq)
+    }
+
+    /// Record that `composition_seq` was successfully submitted.
+    pub fn mark_panel_presented(&mut self, composition_seq: u64) {
+        self.panel_presentation.mark_presented(composition_seq);
+    }
+
+    /// Invalidate the last-presented marker after any non-composition change
+    /// that still requires repainting the current candidates.
+    pub fn invalidate_panel_presentation(&mut self) {
+        self.panel_presentation.invalidate();
+    }
+
     /// Whether the panel may present now or should wait briefly.
     ///
     /// `wl_surface.frame` still paces healthy compositors, but it is no
@@ -436,6 +465,7 @@ impl InputMethodState {
     pub fn clear_panel_state(&mut self) {
         self.composition.clear();
         self.panel_schedule_state = panel_scheduler::cancel();
+        self.invalidate_panel_presentation();
         self.clear_panel_frame_callback();
     }
 
@@ -745,6 +775,7 @@ impl InputMethodFrontend {
             panel_frame_missing_since: None,
             panel_frame_stall_reported: false,
             panel_frame_stall_count: 0,
+            panel_presentation: PresentationRecord::default(),
             popup_surface,
             viewporter,
             panel_viewport,
@@ -1228,7 +1259,14 @@ impl Dispatch<wl_surface::WlSurface, ()> for InputMethodState {
     ) {
         use wayland_client::protocol::wl_surface::Event;
         if let Event::PreferredBufferScale { factor } = event {
-            state.buffer_scale = factor as f32;
+            let new_scale = factor as f32;
+            if (state.buffer_scale - new_scale).abs() >= f32::EPSILON {
+                state.buffer_scale = new_scale;
+                state.invalidate_panel_presentation();
+                if !state.composition.candidates.is_empty() {
+                    state.mark_panel_dirty();
+                }
+            }
             proxy.set_buffer_scale(factor);
         }
     }
@@ -1432,6 +1470,18 @@ mod tests {
     }
 
     #[test]
+    fn composition_seq_changes_only_for_visual_candidate_changes() {
+        let mut composition = CompositionState::default();
+        let seq1 = composition.set_candidates(vec!["alpha".to_string(), "beta".to_string()], 1);
+        let seq2 = composition.set_candidates(vec!["alpha".to_string(), "beta".to_string()], 1);
+        let seq3 = composition.set_candidates(vec!["alpha".to_string(), "beta".to_string()], 0);
+
+        assert_ne!(seq1, 0);
+        assert_eq!(seq2, seq1);
+        assert_ne!(seq3, seq2);
+    }
+
+    #[test]
     fn state_helpers_round_trip() {
         let Ok(mut frontend) = InputMethodFrontend::connect_test() else {
             eprintln!("skipping input_method state-helper test: no Wayland display");
@@ -1446,6 +1496,11 @@ mod tests {
         state.set_candidates(vec!["alpha".to_string(), "beta".to_string()], 1);
         assert_eq!(state.composition.candidates, vec!["alpha", "beta"]);
         assert_eq!(state.composition.selected_candidate, 1);
+        assert!(!state.panel_presentation_current(state.composition.composition_seq));
+        state.mark_panel_presented(state.composition.composition_seq);
+        assert!(state.panel_presentation_current(state.composition.composition_seq));
+        state.invalidate_panel_presentation();
+        assert!(!state.panel_presentation_current(state.composition.composition_seq));
 
         state.mark_panel_dirty();
         assert_eq!(state.panel_schedule_state, PanelScheduleState::Dirty);

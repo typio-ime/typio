@@ -1,0 +1,10 @@
+[package]
+name = "typio-abi"
+version = "0.1.1"
+edition = "2021"
+authors = ["Typio Contributors"]
+license = "MIT"
+description = "Typio C ABI type definitions — shared between host, engines, and test tools"
+
+[dependencies]
+libc = "0.2"

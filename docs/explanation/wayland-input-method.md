@@ -138,7 +138,7 @@ private engine fd. If an engine process crashes, the daemon observes a
 transport failure instead of taking the fault in the Wayland process. Engine
 code runs inside direct engine executables, not inside the daemon.
 
-See the [libtypio Engine Contract](https://github.com/typio-ime/libtypio/blob/main/docs/explanation/engine-contract.md#9-fault-isolation-protecting-the-daemon-from-engine-failures) for the complete list of sandboxed callbacks and their fallback behaviors.
+See the [libtypio Engine Contract](../../crates/libtypio/docs/explanation/engine-contract.md#9-fault-isolation-protecting-the-daemon-from-engine-failures) for the complete list of sandboxed callbacks and their fallback behaviors.
 
 ## Virtual Keyboard Forwarding (`bridge.c`)
 

@@ -1,6 +1,6 @@
 # Glossary
 
-Canonical terms used across the typio-linux codebase and documentation.
+Canonical terms used across the Typio codebase and documentation.
 Each entry links to the primary source where the term is defined or discussed
 in depth.
 

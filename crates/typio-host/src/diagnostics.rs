@@ -2,10 +2,10 @@
 //!
 //! # Logging conventions
 //!
-//! Every diagnostic in the daemon flows through `tracing` — there is no
-//! parallel `eprintln!`/`println!` channel for runtime output (the only
-//! exceptions are pre-logging fatal CLI errors in `bin/typio.rs` and the
-//! opt-in `TYPIO_PANEL_PROBE` perf instrument). Two axes carry the meaning:
+//! Every runtime diagnostic in the daemon flows through `tracing` — there is
+//! no parallel `eprintln!`/`println!` channel for runtime output. The only
+//! exception is the pre-logging fatal CLI error in `bin/typio.rs`. Two axes
+//! carry the meaning:
 //!
 //! ## Levels (what)
 //!

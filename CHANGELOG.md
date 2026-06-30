@@ -9,17 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Framework, ABI, and vet crates moved into the host workspace.**
+  `libtypio`, `typio-abi`, and `typio-vet` now live under `crates/` in this
+  repository, so engine-contract, framework, vet, and host changes can land in
+  one atomic commit instead of coordinating a sibling `libtypio` checkout or
+  git tag.
+- **`typioctl` moved into the main Typio workspace.** The command-line client
+  now builds as `cargo build -p typioctl` from this repository, so TIP/UDS
+  client changes can land atomically with daemon protocol changes.
 - **Unified all runtime diagnostics onto `tracing`.** Every `eprintln!`
   used for daemon logging (startup self-check, lifecycle, indicator, panel,
   voice, tray, config-watcher, Wayland I/O errors) now goes through
   structured `tracing` events with `typio.<subsystem>` targets and proper
-  levels, so `RUST_LOG` and `-v`/`-vv` control all of it uniformly. The
+  levels, so `RUST_LOG`, `-v`/`-vv`, and runtime `SIGUSR1`/`SIGUSR2` control
+  all of it uniformly. The
   previously always-printed `indicator:`/`panel:`/`voice:` lines are now
   `debug`, so default operation is quiet; startup and lifecycle stay at
   `info`. CLI verbosity now maps to `info`/`debug`/`trace` (matching
   `docs/reference/cli.md`), correcting the prior `warn`/`info`/`debug`. The
-  only remaining direct stderr writes are the pre-logging CLI argument error
-  and the opt-in `TYPIO_PANEL_PROBE` perf instrument.
+  only remaining direct stderr write in daemon runtime is the pre-logging CLI
+  argument error.
 - **Log output is colorized only on a terminal.** When stderr is the systemd
   journal or a redirected file, ANSI escapes are now suppressed, so captured
   logs are plain text.
@@ -42,12 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   push-to-talk shortcut and shows a separate voice status banner. Until an
   audio source is wired, the shortcut reports `Voice: no audio source`
   instead of silently doing nothing.
-- **`TYPIO_PANEL_PROBE=1` candidate-panel probe.** Set the env var to get a
-  compact per-window stderr summary (present timing, glyph-cache churn,
-  atlas clears) plus an immediate alert on every atlas exhaustion — the
-  signals for diagnosing candidate-switching lag without needing to know the
-  `RUST_LOG` targets. See [How to Diagnose Candidate-Switching
-  Lag](docs/how-to/diagnose-candidate-lag.md).
+- **Candidate-panel probe tracing target.** Enable
+  `RUST_LOG=typio.panel.probe=debug` to get compact per-window events
+  (present timing, glyph-cache churn, atlas clears) plus an immediate event on
+  every atlas exhaustion — the signals for diagnosing candidate-switching lag
+  without a separate environment-variable switch. See [How to Diagnose
+  Candidate-Switching Lag](docs/how-to/diagnose-candidate-lag.md).
 
 ### Fixed
 
@@ -58,10 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Candidate panel frame callbacks are now a soft present gate.** The panel
   still uses `wl_surface.frame` callbacks to pace healthy compositors, but a
   missing callback no longer blocks candidate updates until the old 200 ms
-  recovery path. After a 50 ms soft limit, the host presents the latest
+  recovery path. After a 20 ms soft limit, the host presents the latest
   coalesced candidate state and re-arms the callback; a 200 ms uninterrupted
   missing-callback episode now logs one `frame-callback stall` warning with a
-  running `stall_count` instead of controlling user-visible recovery.
+  running `stall_count` instead of controlling user-visible recovery. Panel
+  state now also records which candidate snapshot was actually submitted, so
+  repeated dirty ticks do not repaint an already-current snapshot while
+  scale, hide, and status-overlay ownership changes still force a redraw.
 
 ## [0.5.4] - 2026-06-25
 

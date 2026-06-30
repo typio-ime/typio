@@ -5,7 +5,7 @@ Typio uses two files under `$XDG_CONFIG_HOME/typio` (default `~/.config/typio`):
 | File | Owner | What it controls |
 |------|-------|------------------|
 | `core.toml` | **libtypio** (framework) | Engine registry, shortcuts, notifications, voice runtime, per-engine settings |
-| `platform.toml` | **typio-linux** (this host) | Panel styling: theme, fonts, colours, layout |
+| `platform.toml` | **typio** (this host) | Panel styling: theme, fonts, colours, layout |
 
 Both files are read from the same directory.  The directory itself is created
 and managed by libtypio (`typio_instance_get_config_dir`).  If you need a
@@ -133,7 +133,7 @@ Parsed by libtypio.  All values are shortcut strings such as `Ctrl+Shift` or
 
 ### `[notifications]` — desktop notification policy
 
-**Consumed by typio-linux.**  These keys control startup health notifications
+**Consumed by typio.**  These keys control startup health notifications
 and runtime toast behaviour.
 
 | Key | Type | Default | Description |
@@ -146,7 +146,7 @@ and runtime toast behaviour.
 
 ### `[engines.basic]` — basic engine routing
 
-**Consumed by typio-linux** (input router).  These keys change how the
+**Consumed by typio** (input router).  These keys change how the
 Wayland frontend routes printable keys when the basic engine is active.
 
 | Key | Type | Default | Description |

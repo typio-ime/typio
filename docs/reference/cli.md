@@ -54,7 +54,7 @@ target:
 | `typio.voice` | Voice push-to-talk and transcription. |
 | `typio.tray` | Tray menu actions. |
 | `typio.config` | Config-file watcher. |
-| `typio.panel.*` | Candidate panel scheduling, host, timing. |
+| `typio.panel.*` | Candidate panel scheduling, host, timing, and probe events. |
 | `typio.wayland.*` | Wayland I/O, grab, keymap, frontend. |
 | `typio.engine.*` | Engine key processing, composition, selection. |
 | `typio.input.*` | Input queue. |

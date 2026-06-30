@@ -1,7 +1,7 @@
 //! Wayland protocol bindings, generated at compile time from the local XMLs
-//! in `protocols/` at the typio-linux repo root.
+//! in `protocols/` at the typio repo root.
 //!
-//! We do not depend on the `wayland-protocols` crate. typio-linux ships the
+//! We do not depend on the `wayland-protocols` crate. typio ships the
 //! XMLs it needs and generates Rust bindings from them — the same pattern
 //! the C code uses with the C `wayland-scanner` tool, against the same XMLs.
 //! This keeps a single source of truth for protocol definitions across the
@@ -28,8 +28,8 @@
 //! | `viewporter`          | viewporter.xml                             | yes (panel)    |
 //!
 //! XML paths are relative to this crate's manifest dir
-//! (`typio-linux/crates/typio-host`), so `../../protocols/<name>.xml`
-//! reaches `typio-linux/protocols/`.
+//! (`typio/crates/typio-host`), so `../../protocols/<name>.xml`
+//! reaches `typio/protocols/`.
 
 // The imports inside each protocol mod are emitted unconditionally by
 // mirroring the wayland_protocol! macro in the wayland-protocols crate;

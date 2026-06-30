@@ -3,7 +3,7 @@
 ## Purpose
 
 This document describes the lifecycle of a Wayland input-method engagement in
-typio-linux — from the moment the compositor gives the daemon focus, through
+typio — from the moment the compositor gives the daemon focus, through
 keyboard-grab setup and key routing, to teardown and recovery.
 
 One naming hazard runs through all of it: three things span that engagement

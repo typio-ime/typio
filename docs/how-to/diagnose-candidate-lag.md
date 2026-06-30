@@ -26,7 +26,7 @@ Each stage has a distinct failure mode and a distinct probe:
 
 | Stage | Failure mode | Grows over time? | Probe |
 |------|---------------|------------------|-------|
-| Glyph atlas | Atlas saturates → re-raster every frame | Yes (CJK working set) | `TYPIO_PANEL_PROBE` `atlas_clears` |
+| Glyph atlas | Atlas saturates → re-raster every frame | Yes (CJK working set) | `typio.panel.probe=debug` `atlas_clears` |
 | Present gate | `wl_surface.frame` `done` never arrives → timer-paced fallback | Yes (after focus/occlusion) | `typio.panel.host` stall warning |
 | Swapchain | No `wp_viewporter` → rebuild per page | Constant, not growing | startup `typio.wayland.viewporter` warning |
 | Engine | Rime userdb / state grows | Yes | watchdog stage attribution |
@@ -65,9 +65,10 @@ rules make that work:
 - **Do *not* pass `--verbose`.** `-v` raises the floor to `debug` (per-tick
   panel-scheduler and per-key input lines); `-vv` to `trace` (per-frame
   timing). Over a day that is hundreds of MB to GB and buries the signal.
-  The probe is a bare `eprintln!` so it prints regardless of log level, and
-  the `frame-callback stall` warning is `warn!` (≥ the default `info`
-  floor), so a plain run already captures everything that matters.
+  Enable only the probe target with `RUST_LOG=typio.panel.probe=debug`; the
+  `frame-callback stall` warning is `warn!` (>= the default `info` floor), so
+  this captures the relevant long-run signals without turning on every debug
+  event.
 - **Split full vs. filtered output.** `tee` keeps a small `info`-floor full
   log as a fallback; `grep` writes a clean signal-only log you actually
   read. `--line-buffered` is required so the pipe flushes in real time.
@@ -75,13 +76,13 @@ rules make that work:
 ```bash
 cargo build --release -p typio-host --bin typio
 
-TYPIO_PANEL_PROBE=1 ./target/release/typio \
-  --engine-dir ../typio-engine-compose \
-  --engine-dir ../typio-engine-rime/build \
-  --engine-dir ../typio-engine-sherpa/build \
+RUST_LOG=typio.panel.probe=debug ./target/release/typio \
+  --engine-dir ../typio-engines/typio-engine-compose \
+  --engine-dir ../typio-engines/typio-engine-rime/build \
+  --engine-dir ../typio-engines/typio-engine-sherpa/build \
   2>&1 \
   | tee typio-panel-full.log \
-  | grep --line-buffered -E 'panel-probe|frame-callback stall|wp_viewporter|ATLAS CLEAR' \
+  | grep --line-buffered -E 'typio.panel.probe|frame-callback stall|wp_viewporter' \
   > typio-panel.log
 ```
 
@@ -107,7 +108,8 @@ chase an intermittent stutter over a long session.
 
 > Running under the systemd user service instead? `journald` adds
 > timestamps and rotation for free — drop the `tee`/`grep` plumbing and
-> read with `journalctl --user -u typio | grep -E 'panel-probe|stall'`.
+> read with
+> `journalctl --user -u typio | grep -E 'typio.panel.probe|stall'`.
 
 Reproduce the lag (page through candidates for a while), then read the
 two line types the probe emits.
@@ -115,15 +117,16 @@ two line types the probe emits.
 **Per-window summary (every 120 presented frames):**
 
 ```text
-panel-probe: frames=1200 window=120 cands=9 present_max_ms=2.1 total_max_ms=4.8 \
-  slow_frames=0/120 glyph_count=1873 glyph_cap=4096 atlas_clears=0 evict/win=0
+DEBUG typio.panel.probe: panel probe window frames=1200 window=120 \
+  candidate_count=9 present_max_ms=2.1 total_max_ms=4.8 slow_frames=0 \
+  glyph_count=1873 glyph_cap=4096 atlas_clears=0 glyph_evictions_delta=0
 ```
 
 **Immediate atlas-clear alert (fires the moment the atlas exhausts):**
 
 ```text
-panel-probe: ATLAS CLEAR #4 (glyph atlas exhausted — next frames re-rasterise \
-  visible glyphs; sustained clears = thrash) glyph_count=8190 glyph_cap=16384
+DEBUG typio.panel.probe: panel probe atlas clear atlas_clears=4 \
+  glyph_count=8190 glyph_cap=16384
 ```
 
 Read three numbers across successive windows:
@@ -131,9 +134,9 @@ Read three numbers across successive windows:
 - **`atlas_clears` climbing steadily** → the glyph atlas is thrashing
   (Dimension A). An occasional single bump is harmless; one every few
   windows during steady paging is the bug.
-- **`evict/win` consistently `> 0`** → the glyph cache is over its working
-  set; every evicted glyph re-rasterises via FreeType on its next
-  appearance. Tolerable in bursts, suspicious when sustained.
+- **`glyph_evictions_delta` consistently `> 0`** → the glyph cache is over
+  its working set; every evicted glyph re-rasterises via FreeType on its
+  next appearance. Tolerable in bursts, suspicious when sustained.
 - **`present_max_ms` climbing** → the cost is in `flux_frame_present`,
   i.e. compositor / swapchain back-pressure (Dimension B), not glyphs.
 
@@ -249,8 +252,8 @@ atlas_clears rising?          → Dimension A (glyph atlas)   → ADR-0019/0020
 ## What to include in a bug report
 
 - `typio --version` and confirmation you rebuilt against local optics
-- A `TYPIO_PANEL_PROBE=1` log window spanning the lag (several
-  `panel-probe` lines so the trend is visible)
+- A `typio.panel.probe=debug` log window spanning the lag (several
+  `panel probe window` lines so the trend is visible)
 - Any `frame-callback stall` lines and the final `stall_count`
 - `wayland-info | grep -i viewport` output
 - Compositor name and version

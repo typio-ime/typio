@@ -1,6 +1,6 @@
 # Vulkan and Flux Rendering
 
-This document describes how typio-linux renders its Panel UI through
+This document describes how typio renders its Panel UI through
 [flux](../../flux), a C23 Vulkan-first canvas library, and the performance
 optimizations that keep an IME popup responsive under sustained input.
 
@@ -12,7 +12,7 @@ and the specific optimizations that prevent stuttering.
 ## Flux — Vulkan Canvas Library
 
 [flux](../../flux) is a self-contained C23 graphics library that wraps Vulkan
-1.3 into a small immediate-mode 2-D canvas API. typio-linux consumes it as a
+1.3 into a small immediate-mode 2-D canvas API. typio consumes it as a
 meson subproject and links it statically. The host never calls Vulkan directly.
 
 Core flux concepts used by the host:

@@ -715,8 +715,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libtypio"
-version = "0.5.0"
-source = "git+https://github.com/typio-ime/libtypio.git?tag=v0.5.0#ea33444de4fdb528270515e136f7ebb424b74ce7"
+version = "0.6.0"
 dependencies = [
  "lazy_static",
  "libc",
@@ -1376,7 +1375,6 @@ dependencies = [
 [[package]]
 name = "typio-abi"
 version = "0.1.1"
-source = "git+https://github.com/typio-ime/libtypio.git?tag=v0.5.0#ea33444de4fdb528270515e136f7ebb424b74ce7"
 dependencies = [
  "libc",
 ]
@@ -1409,6 +1407,24 @@ dependencies = [
  "wayland-sys",
  "xkbcommon",
  "zbus",
+]
+
+[[package]]
+name = "typio-vet"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "libc",
+ "typio-abi",
+]
+
+[[package]]
+name = "typioctl"
+version = "0.1.1"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

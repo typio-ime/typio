@@ -14,7 +14,7 @@ mod tray;
 use tray::{build_tray_snapshot, install_tray_action_handler, update_tray_from_controller};
 
 use std::cell::RefCell;
-use std::ffi::{CString, c_char};
+use std::ffi::{c_char, CString};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
@@ -824,8 +824,8 @@ fn arm_repeat(timer: &mut RepeatTimer, compositor_info: Option<(i32, i32)>, mods
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use std::sync::atomic::Ordering;
+    use std::sync::Mutex;
 
     /// Serialises tests that touch the shared signal flags so they do not
     /// race with each other when `cargo test` runs them in parallel.

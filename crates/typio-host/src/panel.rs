@@ -23,12 +23,11 @@ use std::time::{Duration, Instant};
 
 use flux_sys::{
     flux_arena, flux_arena_destroy, flux_arena_init, flux_arena_reset, flux_canvas,
-    flux_canvas_begin, flux_canvas_desc, flux_canvas_destroy, flux_canvas_end,
-    flux_color_rgba, flux_device, flux_device_create, flux_device_desc,
-    flux_device_release, flux_device_vk_instance, flux_error_info, flux_frame,
-    flux_frame_begin_desc, flux_frame_present, flux_frame_submit, flux_get_last_error,
-    flux_struct_type, flux_surface, flux_surface_begin_frame, flux_surface_create,
-    flux_surface_desc, flux_surface_release,
+    flux_canvas_begin, flux_canvas_desc, flux_canvas_destroy, flux_canvas_end, flux_color_rgba,
+    flux_device, flux_device_create, flux_device_desc, flux_device_release,
+    flux_device_vk_instance, flux_error_info, flux_frame, flux_frame_begin_desc,
+    flux_frame_present, flux_frame_submit, flux_get_last_error, flux_struct_type, flux_surface,
+    flux_surface_begin_frame, flux_surface_create, flux_surface_desc, flux_surface_release,
 };
 use flux_text_sys::{
     flux_text, flux_text_create, flux_text_desc, flux_text_destroy, flux_text_draw,
@@ -119,6 +118,7 @@ const BANNER_FONT_SIZE: f32 = 15.0;
 const BANNER_ROW_HEIGHT: f32 = BANNER_PADDING * 2.0 + BANNER_FONT_SIZE * 1.3;
 
 const PANEL_TIMING_TARGET: &str = "typio.panel.timing";
+const PANEL_PROBE_TARGET: &str = "typio.panel.probe";
 const PANEL_TIMING_SLOW_THRESHOLD: Duration = Duration::from_millis(12);
 
 fn ms(duration: Duration) -> f64 {
@@ -150,24 +150,19 @@ unsafe fn text_stats_snapshot(text: *mut flux_text) -> TextStatsSnapshot {
     }
 }
 
-/// Whether the always-on stderr panel probe is enabled via
-/// `TYPIO_PANEL_PROBE=1`. Cached after the first read so the hot path
-/// pays a single relaxed atomic load per frame, not an env lookup.
+/// Whether the panel probe target is enabled through `tracing`.
+///
+/// The probe is high-volume enough that it should not collect stats unless
+/// `RUST_LOG=typio.panel.probe=debug` (or a wider debug/trace floor) enables
+/// it.
 fn panel_probe_enabled() -> bool {
-    use std::sync::OnceLock;
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("TYPIO_PANEL_PROBE").ok().as_deref(),
-            Some("1") | Some("true") | Some("yes")
-        )
-    })
+    tracing::enabled!(target: PANEL_PROBE_TARGET, tracing::Level::DEBUG)
 }
 
-/// Compact stderr probe for diagnosing "candidate switching lags after a
+/// Compact tracing probe for diagnosing "candidate switching lags after a
 /// while". Accumulates per-frame present timing and glyph-cache churn,
-/// then emits one summary line every `PROBE_WINDOW` frames — plus an
-/// immediate line whenever `atlas_clears` rises (the canonical
+/// then emits one summary event every `PROBE_WINDOW` frames — plus an
+/// immediate event whenever `atlas_clears` rises (the canonical
 /// atlas-thrash signal) so a saturating atlas is caught the moment it
 /// starts, not `PROBE_WINDOW` frames later.
 ///
@@ -183,7 +178,7 @@ fn emit_panel_probe(
 ) {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Frames per aggregated stderr line.
+    /// Frames per aggregated tracing event.
     const PROBE_WINDOW: u64 = 120;
 
     static FRAMES: AtomicU64 = AtomicU64::new(0);
@@ -207,11 +202,12 @@ fn emit_panel_probe(
     // the first frame so we don't false-alarm on the initial read.
     let last_clears = LAST_CLEARS.swap(stats.atlas_clears, Ordering::Relaxed);
     if last_clears != u64::MAX && stats.atlas_clears > last_clears {
-        eprintln!(
-            "panel-probe: ATLAS CLEAR #{} (glyph atlas exhausted — next frames \
-             re-rasterise visible glyphs; sustained clears = thrash) glyph_count={} \
-             glyph_cap={}",
-            stats.atlas_clears, stats.glyph_count, stats.glyph_cap
+        tracing::debug!(
+            target: PANEL_PROBE_TARGET,
+            atlas_clears = stats.atlas_clears,
+            glyph_count = stats.glyph_count,
+            glyph_cap = stats.glyph_cap,
+            "panel probe atlas clear"
         );
     }
 
@@ -222,12 +218,19 @@ fn emit_panel_probe(
         let evict_delta = stats
             .glyph_evictions
             .saturating_sub(LAST_EVICTIONS.swap(stats.glyph_evictions, Ordering::Relaxed));
-        eprintln!(
-            "panel-probe: frames={n} window={PROBE_WINDOW} cands={candidate_count} \
-             present_max_ms={present_max_ms:.1} total_max_ms={total_max_ms:.1} \
-             slow_frames={slow}/{PROBE_WINDOW} glyph_count={} glyph_cap={} \
-             atlas_clears={} evict/win={evict_delta}",
-            stats.glyph_count, stats.glyph_cap, stats.atlas_clears
+        tracing::debug!(
+            target: PANEL_PROBE_TARGET,
+            frames = n,
+            window = PROBE_WINDOW,
+            candidate_count,
+            present_max_ms,
+            total_max_ms,
+            slow_frames = slow,
+            glyph_count = stats.glyph_count,
+            glyph_cap = stats.glyph_cap,
+            atlas_clears = stats.atlas_clears,
+            glyph_evictions_delta = evict_delta,
+            "panel probe window"
         );
     }
 }
@@ -566,12 +569,7 @@ impl FluxPanel {
         match self.style {
             PanelStyle::Classic => {
                 let bg = flux_sys::flux_color_rgba(28, 28, 32, 255);
-                flux_sys::flux_canvas_fill_rrect(
-                    self.canvas,
-                    glass_rect,
-                    glass_radius,
-                    bg,
-                );
+                flux_sys::flux_canvas_fill_rrect(self.canvas, glass_rect, glass_radius, bg);
             }
             PanelStyle::LiquidGlass => {
                 let mut shape: *mut flux_sys::flux_path = std::ptr::null_mut();
@@ -583,12 +581,24 @@ impl FluxPanel {
                     // Since we can't do true Wayland background blur here, we increase the
                     // base opacity to simulate the diffusion of a frosted acrylic plate.
                     let mut vol_stops = [
-                        flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 100) },
-                        flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(220, 230, 240, 40) },
+                        flux_sys::flux_gradient_stop {
+                            t: 0.00,
+                            color: flux_sys::flux_color_rgba_premul(255, 255, 255, 100),
+                        },
+                        flux_sys::flux_gradient_stop {
+                            t: 1.00,
+                            color: flux_sys::flux_color_rgba_premul(220, 230, 240, 40),
+                        },
                     ];
                     let mut vol = flux_sys::flux_paint_linear_gradient(
-                        flux_sys::flux_point { x: glass_rect.x, y: glass_rect.y },
-                        flux_sys::flux_point { x: glass_rect.x, y: glass_rect.y + glass_rect.h },
+                        flux_sys::flux_point {
+                            x: glass_rect.x,
+                            y: glass_rect.y,
+                        },
+                        flux_sys::flux_point {
+                            x: glass_rect.x,
+                            y: glass_rect.y + glass_rect.h,
+                        },
                         vol_stops.as_mut_ptr(),
                         2,
                     );
@@ -602,19 +612,43 @@ impl FluxPanel {
                         let width = 3.0;
                         let inset = width / 2.0;
                         let mut inner_rect = glass_rect;
-                        inner_rect.x += inset; inner_rect.y += inset;
-                        inner_rect.w -= width; inner_rect.h -= width;
-                        flux_sys::flux_path_add_round_rect(bevel_shape, inner_rect, glass_radius - inset);
-                        
+                        inner_rect.x += inset;
+                        inner_rect.y += inset;
+                        inner_rect.w -= width;
+                        inner_rect.h -= width;
+                        flux_sys::flux_path_add_round_rect(
+                            bevel_shape,
+                            inner_rect,
+                            glass_radius - inset,
+                        );
+
                         let mut bevel_stops = [
-                            flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 120) },
-                            flux_sys::flux_gradient_stop { t: 0.50, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 0) },
-                            flux_sys::flux_gradient_stop { t: 0.80, color: flux_sys::flux_color_rgba_premul(0, 0, 0, 0) },
-                            flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(0, 0, 0, 50) },
+                            flux_sys::flux_gradient_stop {
+                                t: 0.00,
+                                color: flux_sys::flux_color_rgba_premul(255, 255, 255, 120),
+                            },
+                            flux_sys::flux_gradient_stop {
+                                t: 0.50,
+                                color: flux_sys::flux_color_rgba_premul(255, 255, 255, 0),
+                            },
+                            flux_sys::flux_gradient_stop {
+                                t: 0.80,
+                                color: flux_sys::flux_color_rgba_premul(0, 0, 0, 0),
+                            },
+                            flux_sys::flux_gradient_stop {
+                                t: 1.00,
+                                color: flux_sys::flux_color_rgba_premul(0, 0, 0, 50),
+                            },
                         ];
                         let mut sp = flux_sys::flux_paint_linear_gradient(
-                            flux_sys::flux_point { x: glass_rect.x, y: glass_rect.y },
-                            flux_sys::flux_point { x: glass_rect.x + glass_rect.w, y: glass_rect.y + glass_rect.h },
+                            flux_sys::flux_point {
+                                x: glass_rect.x,
+                                y: glass_rect.y,
+                            },
+                            flux_sys::flux_point {
+                                x: glass_rect.x + glass_rect.w,
+                                y: glass_rect.y + glass_rect.h,
+                            },
                             bevel_stops.as_mut_ptr(),
                             4,
                         );
@@ -625,13 +659,28 @@ impl FluxPanel {
 
                     // 3. Specular Sheen (Sharp top gloss)
                     let mut sheen_stops = [
-                        flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 100) },
-                        flux_sys::flux_gradient_stop { t: 0.35, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 0) },
-                        flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(0, 0, 0, 0) },
+                        flux_sys::flux_gradient_stop {
+                            t: 0.00,
+                            color: flux_sys::flux_color_rgba_premul(255, 255, 255, 100),
+                        },
+                        flux_sys::flux_gradient_stop {
+                            t: 0.35,
+                            color: flux_sys::flux_color_rgba_premul(255, 255, 255, 0),
+                        },
+                        flux_sys::flux_gradient_stop {
+                            t: 1.00,
+                            color: flux_sys::flux_color_rgba_premul(0, 0, 0, 0),
+                        },
                     ];
                     let mut sheen = flux_sys::flux_paint_linear_gradient(
-                        flux_sys::flux_point { x: glass_rect.x, y: glass_rect.y },
-                        flux_sys::flux_point { x: glass_rect.x, y: glass_rect.y + glass_rect.h * 0.8 },
+                        flux_sys::flux_point {
+                            x: glass_rect.x,
+                            y: glass_rect.y,
+                        },
+                        flux_sys::flux_point {
+                            x: glass_rect.x,
+                            y: glass_rect.y + glass_rect.h * 0.8,
+                        },
                         sheen_stops.as_mut_ptr(),
                         3,
                     );
@@ -639,13 +688,28 @@ impl FluxPanel {
 
                     // 4. Sharp Hairline Edge (Surface tension)
                     let mut hair_stops = [
-                        flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 220) },
-                        flux_sys::flux_gradient_stop { t: 0.40, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 40) },
-                        flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 80) },
+                        flux_sys::flux_gradient_stop {
+                            t: 0.00,
+                            color: flux_sys::flux_color_rgba_premul(255, 255, 255, 220),
+                        },
+                        flux_sys::flux_gradient_stop {
+                            t: 0.40,
+                            color: flux_sys::flux_color_rgba_premul(255, 255, 255, 40),
+                        },
+                        flux_sys::flux_gradient_stop {
+                            t: 1.00,
+                            color: flux_sys::flux_color_rgba_premul(255, 255, 255, 80),
+                        },
                     ];
                     let mut sp_hair = flux_sys::flux_paint_linear_gradient(
-                        flux_sys::flux_point { x: glass_rect.x, y: glass_rect.y },
-                        flux_sys::flux_point { x: glass_rect.x + glass_rect.w, y: glass_rect.y + glass_rect.h },
+                        flux_sys::flux_point {
+                            x: glass_rect.x,
+                            y: glass_rect.y,
+                        },
+                        flux_sys::flux_point {
+                            x: glass_rect.x + glass_rect.w,
+                            y: glass_rect.y + glass_rect.h,
+                        },
                         hair_stops.as_mut_ptr(),
                         3,
                     );
@@ -703,10 +767,9 @@ impl FluxPanel {
             tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::TRACE);
         let timing_info_enabled =
             tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::INFO);
-        // The stderr probe (TYPIO_PANEL_PROBE=1) reuses the same per-stage
-        // timing + glyph-stats machinery so it needs measurement turned on,
-        // but it routes a compact summary to stderr without requiring the
-        // caller to know the RUST_LOG target. See `emit_panel_probe`.
+        // The panel probe reuses the same per-stage timing + glyph-stats
+        // machinery, but only when its tracing target is enabled. See
+        // `emit_panel_probe`.
         let probe_enabled = panel_probe_enabled();
         let timing_enabled = timing_trace_enabled || timing_info_enabled || probe_enabled;
         let total_start = timing_enabled.then(Instant::now);
@@ -873,78 +936,172 @@ impl FluxPanel {
                             flux_sys::flux_path_create(&mut shape, &mut self.arena);
                             if !shape.is_null() {
                                 flux_sys::flux_path_add_round_rect(shape, item_rect, item_radius);
-                                
+
                                 // Beautiful gradient blue base with strong depth
                                 let mut vol_stops = [
-                                    flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(80, 160, 255, 230) },
-                                    flux_sys::flux_gradient_stop { t: 0.50, color: flux_sys::flux_color_rgba_premul(50, 120, 245, 210) },
-                                    flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(20, 80, 200, 190) },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.00,
+                                        color: flux_sys::flux_color_rgba_premul(80, 160, 255, 230),
+                                    },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.50,
+                                        color: flux_sys::flux_color_rgba_premul(50, 120, 245, 210),
+                                    },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 1.00,
+                                        color: flux_sys::flux_color_rgba_premul(20, 80, 200, 190),
+                                    },
                                 ];
                                 let mut vol = flux_sys::flux_paint_linear_gradient(
-                                    flux_sys::flux_point { x: item_rect.x, y: item_rect.y },
-                                    flux_sys::flux_point { x: item_rect.x, y: item_rect.y + item_rect.h },
+                                    flux_sys::flux_point {
+                                        x: item_rect.x,
+                                        y: item_rect.y,
+                                    },
+                                    flux_sys::flux_point {
+                                        x: item_rect.x,
+                                        y: item_rect.y + item_rect.h,
+                                    },
                                     vol_stops.as_mut_ptr(),
                                     3,
                                 );
-                                timed!(draw_duration, flux_sys::flux_canvas_fill_path(self.canvas, shape, &mut vol));
+                                timed!(
+                                    draw_duration,
+                                    flux_sys::flux_canvas_fill_path(self.canvas, shape, &mut vol)
+                                );
 
                                 // 3. Thick Inner Fresnel Bevel (simulating refraction)
-                                let mut bevel_shape: *mut flux_sys::flux_path = std::ptr::null_mut();
+                                let mut bevel_shape: *mut flux_sys::flux_path =
+                                    std::ptr::null_mut();
                                 flux_sys::flux_path_create(&mut bevel_shape, &mut self.arena);
                                 if !bevel_shape.is_null() {
                                     let width = 2.0;
                                     let inset = width / 2.0;
                                     let mut inner_rect = item_rect;
-                                    inner_rect.x += inset; inner_rect.y += inset;
-                                    inner_rect.w -= width; inner_rect.h -= width;
-                                    flux_sys::flux_path_add_round_rect(bevel_shape, inner_rect, item_radius - inset);
-                                    
+                                    inner_rect.x += inset;
+                                    inner_rect.y += inset;
+                                    inner_rect.w -= width;
+                                    inner_rect.h -= width;
+                                    flux_sys::flux_path_add_round_rect(
+                                        bevel_shape,
+                                        inner_rect,
+                                        item_radius - inset,
+                                    );
+
                                     let mut bevel_stops = [
-                                        flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(180, 220, 255, 140) },
-                                        flux_sys::flux_gradient_stop { t: 0.40, color: flux_sys::flux_color_rgba_premul(150, 200, 255, 0) },
-                                        flux_sys::flux_gradient_stop { t: 0.70, color: flux_sys::flux_color_rgba_premul(0, 0, 0, 0) },
-                                        flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(0, 0, 0, 70) },
+                                        flux_sys::flux_gradient_stop {
+                                            t: 0.00,
+                                            color: flux_sys::flux_color_rgba_premul(
+                                                180, 220, 255, 140,
+                                            ),
+                                        },
+                                        flux_sys::flux_gradient_stop {
+                                            t: 0.40,
+                                            color: flux_sys::flux_color_rgba_premul(
+                                                150, 200, 255, 0,
+                                            ),
+                                        },
+                                        flux_sys::flux_gradient_stop {
+                                            t: 0.70,
+                                            color: flux_sys::flux_color_rgba_premul(0, 0, 0, 0),
+                                        },
+                                        flux_sys::flux_gradient_stop {
+                                            t: 1.00,
+                                            color: flux_sys::flux_color_rgba_premul(0, 0, 0, 70),
+                                        },
                                     ];
                                     let mut sp = flux_sys::flux_paint_linear_gradient(
-                                        flux_sys::flux_point { x: item_rect.x, y: item_rect.y },
-                                        flux_sys::flux_point { x: item_rect.x, y: item_rect.y + item_rect.h },
+                                        flux_sys::flux_point {
+                                            x: item_rect.x,
+                                            y: item_rect.y,
+                                        },
+                                        flux_sys::flux_point {
+                                            x: item_rect.x,
+                                            y: item_rect.y + item_rect.h,
+                                        },
                                         bevel_stops.as_mut_ptr(),
                                         4,
                                     );
                                     sp.stroke_width = width;
                                     sp.join = flux_sys::flux_line_join::FLUX_JOIN_ROUND;
-                                    timed!(draw_duration, flux_sys::flux_canvas_stroke_path(self.canvas, bevel_shape, &sp));
+                                    timed!(
+                                        draw_duration,
+                                        flux_sys::flux_canvas_stroke_path(
+                                            self.canvas,
+                                            bevel_shape,
+                                            &sp
+                                        )
+                                    );
                                 }
 
                                 // 4. Top Specular Glass Reflection (Sharp gloss on top half)
                                 let mut sheen_stops = [
-                                    flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 160) },
-                                    flux_sys::flux_gradient_stop { t: 0.45, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 15) },
-                                    flux_sys::flux_gradient_stop { t: 0.50, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 0) },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.00,
+                                        color: flux_sys::flux_color_rgba_premul(255, 255, 255, 160),
+                                    },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.45,
+                                        color: flux_sys::flux_color_rgba_premul(255, 255, 255, 15),
+                                    },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.50,
+                                        color: flux_sys::flux_color_rgba_premul(255, 255, 255, 0),
+                                    },
                                 ];
                                 let mut sheen = flux_sys::flux_paint_linear_gradient(
-                                    flux_sys::flux_point { x: item_rect.x, y: item_rect.y },
-                                    flux_sys::flux_point { x: item_rect.x, y: item_rect.y + item_rect.h },
+                                    flux_sys::flux_point {
+                                        x: item_rect.x,
+                                        y: item_rect.y,
+                                    },
+                                    flux_sys::flux_point {
+                                        x: item_rect.x,
+                                        y: item_rect.y + item_rect.h,
+                                    },
                                     sheen_stops.as_mut_ptr(),
                                     3,
                                 );
-                                timed!(draw_duration, flux_sys::flux_canvas_fill_path(self.canvas, shape, &mut sheen));
+                                timed!(
+                                    draw_duration,
+                                    flux_sys::flux_canvas_fill_path(self.canvas, shape, &mut sheen)
+                                );
 
                                 // 5. Hairline Surface Tension
                                 let mut inner_stops = [
-                                    flux_sys::flux_gradient_stop { t: 0.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 230) },
-                                    flux_sys::flux_gradient_stop { t: 0.50, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 30) },
-                                    flux_sys::flux_gradient_stop { t: 1.00, color: flux_sys::flux_color_rgba_premul(255, 255, 255, 80) },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.00,
+                                        color: flux_sys::flux_color_rgba_premul(255, 255, 255, 230),
+                                    },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 0.50,
+                                        color: flux_sys::flux_color_rgba_premul(255, 255, 255, 30),
+                                    },
+                                    flux_sys::flux_gradient_stop {
+                                        t: 1.00,
+                                        color: flux_sys::flux_color_rgba_premul(255, 255, 255, 80),
+                                    },
                                 ];
                                 let mut inner_sp = flux_sys::flux_paint_linear_gradient(
-                                    flux_sys::flux_point { x: item_rect.x, y: item_rect.y },
-                                    flux_sys::flux_point { x: item_rect.x + item_rect.w, y: item_rect.y + item_rect.h },
+                                    flux_sys::flux_point {
+                                        x: item_rect.x,
+                                        y: item_rect.y,
+                                    },
+                                    flux_sys::flux_point {
+                                        x: item_rect.x + item_rect.w,
+                                        y: item_rect.y + item_rect.h,
+                                    },
                                     inner_stops.as_mut_ptr(),
                                     3,
                                 );
                                 inner_sp.stroke_width = 1.0;
                                 inner_sp.join = flux_sys::flux_line_join::FLUX_JOIN_ROUND;
-                                timed!(draw_duration, flux_sys::flux_canvas_stroke_path(self.canvas, shape, &inner_sp));
+                                timed!(
+                                    draw_duration,
+                                    flux_sys::flux_canvas_stroke_path(
+                                        self.canvas,
+                                        shape,
+                                        &inner_sp
+                                    )
+                                );
                             }
                         }
                     }

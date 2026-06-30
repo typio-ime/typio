@@ -129,28 +129,29 @@ Date format is `YYYY-MM-DD`. Get it from `date -I` or `date +%F`.
 Before committing non-trivial host changes:
 
 ```bash
-( cd ../libtypio && cargo build --release )
-( cd ../../optics && meson setup build && meson compile -C build )
+meson setup ../optics/build ../optics -Dtext=true   # first time only
+meson compile -C ../optics/build
 
-export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../optics/build:${LD_LIBRARY_PATH}"
+export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
-cargo test -p typio-host
+cargo build --release -p typioctl
+cargo test -p typio-host -p libtypio -p typio-abi -p typio-vet -p typioctl
 ```
 
 `optics` is a native C monorepo with a Meson build tree; `flux` is a
-sibling-repo build prerequisite, not typio-linux's build system.
+sibling-repo build prerequisite, not Typio's build system.
 
 ## 8. Repo Layout and Cross-Repo Work
 
-Sibling projects live under `/home/ming/projects/typio/`:
+The intended local checkout layout is:
 
 | Path | Role |
 |---|---|
-| `typio-linux/` | This repo, Rust Wayland host daemon |
-| `libtypio/` | Rust framework library |
-| `flux/` | Vulkan GPU canvas library used by the Panel |
-| `typio-engine-*` | Engine plugins |
-| `typio-settings/`, `typioctl/`, `typio-vet/`, `typio-docs/` | Tools and docs |
+| `/home/ming/projects/typio/` | This repo: host, framework, ABI, vet, and CLI workspace |
+| `/home/ming/projects/typio-engines/typio-engine-*` | Engine repositories |
+| `/home/ming/projects/typio-settings/` | Meson/C settings panel |
+| `/home/ming/projects/optics/` | Vulkan/GPU canvas libraries used by the Panel |
 
 Cross-repo edits are allowed when the fix genuinely belongs in a sibling
 repo. When touching a sibling repo:
@@ -164,7 +165,7 @@ repo. When touching a sibling repo:
 | Symptom | Wrong reaction | Right reaction |
 |---|---|---|
 | `$EDITOR` opens during git | Try pager flags | Supply `-m` to the git command |
-| Cargo test loads old `libflux.so` | Patch around missing symbols | Rebuild `../../optics` and check `LD_LIBRARY_PATH` / RUNPATH |
+| Cargo test loads old `libflux.so` | Patch around missing symbols | Rebuild `../optics` and check `FLUX_BUILD_DIR` / RUNPATH |
 | Unsure whether a version bump is patch or minor | Default to minor | Default to patch unless behavior changes |
 | Missing project fact | Guess | Run the pre-flight and inspect current files |
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines how the typio-linux event loop schedules work and
+This document defines how the typio event loop schedules work and
 preserves responsiveness. It covers the ordering constraints between Wayland
 dispatch, GPU rendering, D-Bus, config reload, and voice processing.
 

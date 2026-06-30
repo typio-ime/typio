@@ -1,10 +1,10 @@
 # Control Surfaces
 
-This document covers typio-linux's control surfaces: the transport mechanisms
+This document covers typio's control surfaces: the transport mechanisms
 by which external tools and in-process UI observe and manipulate daemon state.
 
 The business logic behind every operation (config schema, engine registry,
-activation rules, config persistence) is owned by libtypio. typio-linux
+activation rules, config persistence) is owned by libtypio. typio
 provides the transport layer that carries those operations to and from
 consumers.
 
@@ -17,7 +17,7 @@ flowchart TB
         SET["typio-settings (GUI)"]
     end
 
-    subgraph daemon ["typio daemon — typio-linux"]
+    subgraph daemon ["typio daemon — typio"]
         subgraph transport ["Transport layer"]
             UDS["UDS Server<br/>uds_server.c"]
             SVC["StatusService<br/>service.c"]
@@ -178,7 +178,7 @@ User actions from the context menu call libtypio APIs directly:
 |-------------|-------------|
 | `engine:<name>` | `typio_registry_set_active_keyboard()` |
 | `activate` / scroll | `typio_registry_next_keyboard()` / `prev_keyboard()` |
-| `quit` / `restart` | Process lifecycle (typio-linux) |
+| `quit` / `restart` | Process lifecycle (typio) |
 
 ### Communication with the desktop panel
 
@@ -256,4 +256,4 @@ client-side widget initialization.
 
 - [IPC Protocol Reference](../reference/ipc-protocol.md) — TIP v1 method and event catalog.
 - [ADR-0008](../adr/0008-ipc-protocol-resource-namespaces-uds-only.md) — why D-Bus control was removed.
-- [Project Scope](project-scope.md) — typio-linux vs. libtypio responsibilities.
+- [Project Scope](project-scope.md) — host, framework, ABI, and vet responsibilities.

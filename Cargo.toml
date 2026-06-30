@@ -1,11 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["crates/typio-host", "crates/xtask"]
+members = [
+    "crates/libtypio",
+    "crates/typio-abi",
+    "crates/typioctl",
+    "crates/typio-host",
+    "crates/typio-vet",
+    "crates/xtask",
+]
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/ming2k/typio-linux"
+repository = "https://github.com/ming2k/typio"
 rust-version = "1.85"
 
 [workspace.dependencies]
@@ -35,21 +42,20 @@ libc = "0.2"
 zbus = { version = "5", default-features = true, features = ["blocking-api"] }
 xkbcommon = "0.9"
 ab_glyph = "0.2"
-flux-sys = { path = "../../optics/bindings/flux-rs/crates/flux-sys" }
-flux-text-sys = { path = "../../optics/bindings/flux-rs/crates/flux-text-sys" }
+flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
+flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-# The framework library and its ABI headers — published as a sibling repo on
-# GitHub so a fresh `cargo build` from this repo alone resolves everything
-# without checkout-layout assumptions.
-libtypio = { git = "https://github.com/typio-ime/libtypio.git", tag = "v0.5.0" }
-typio-abi = { git = "https://github.com/typio-ime/libtypio.git", tag = "v0.5.0" }
+# The framework library and its ABI headers live in this workspace so host,
+# ABI, and vet changes can land atomically.
+libtypio = { path = "crates/libtypio" }
+typio-abi = { path = "crates/typio-abi" }
 clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 opt-level = 3
 lto = "thin"
-
-

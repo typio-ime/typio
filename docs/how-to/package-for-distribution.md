@@ -1,26 +1,26 @@
 # How to Package for Distribution
 
-Build and install `typio-linux` for system-wide or package-manager
-distribution.
+Build and install Typio for system-wide or package-manager distribution.
 
 ## Build a Release Binary
 
-Build the sibling native dependencies first. These commands run from the
-`typio-linux` repository root:
+Build the native renderer dependency first. These commands run from the
+Typio repository root:
 
 ```bash
-cargo build --release --manifest-path ../libtypio/Cargo.toml
-meson compile -C ../../flux/build    # first time: meson setup ../../flux/build ../../flux
+meson compile -C ../optics/build    # first time: meson setup ../optics/build ../optics -Dtext=true
 ```
 
 Build the host daemon:
 
 ```bash
-export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../flux/build:${LD_LIBRARY_PATH}"
+export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
+cargo build --release -p typioctl
 ```
 
-The output binary is `target/release/typio`.
+The output binaries are `target/release/typio` and `target/release/typioctl`.
 
 ## Stage Package Files
 
@@ -45,25 +45,26 @@ systemd unit. `--destdir` is only the staging root.
 | File | Destination | Purpose |
 |------|-------------|---------|
 | `typio` | `<prefix>/bin/` | Main daemon binary |
+| `typioctl` | `<prefix>/bin/` | Command-line TIP/UDS client |
 | `typio.service` | `<prefix>/lib/systemd/user/` | systemd user service unit |
 | `hicolor/*` | `<prefix>/share/icons/` | Status and tray icons |
 | `core.toml.example` | `<prefix>/share/typio/` | Example core configuration |
 | `platform.toml.example` | `<prefix>/share/typio/` | Example Wayland frontend configuration |
 | `typio-engine-*.toml` | `<prefix>/share/typio/engines/` | Engine manifests installed by engine packages |
 
-Engine manifests are listed for package layout completeness; `typio-linux`
+Engine manifests are listed for package layout completeness; Typio
 does not install engine packages.
 
 ## Runtime Dependencies
 
 The daemon requires:
 
-- `libtypio`
+- `libtypio` from the workspace build
 - `wayland-client` and `xkbcommon`
 - D-Bus runtime support for StatusNotifierItem tray integration
 - `libpipewire-0.3` for voice capture when voice support is used
 - Vulkan loader, FreeType, HarfBuzz, and fontconfig for the candidate Panel
-- `libflux` from the packaged `flux` build
+- `libflux` from the packaged optics/flux build
 
 ## Engine Packages
 

@@ -1,8 +1,12 @@
 # Architecture Decision Records
 
-ADRs are append-only records of significant design decisions in `typio-linux` — the Wayland host (`typiod`) for the Typio input method. Once accepted, they are not edited; a new ADR supersedes an old one if a decision changes.
+ADRs are append-only records of significant design decisions in the Typio
+workspace. Once accepted, they are not edited; a new ADR supersedes an old one
+if a decision changes.
 
-Decisions about the framework core (engine ABI, composition contract) live in the `libtypio` repository's ADR set.
+Historical framework-core decisions (engine ABI, composition contract) now live
+under `crates/libtypio/docs/adr/`. New decisions that affect the combined
+workspace or host/framework integration live in this ADR set.
 
 > **Candidate-popup lag — reading guide for ADR-0006 / 0010–0013.** The popup's
 > candidate-switch lag was diagnosed in four passes, and the first three each
@@ -58,9 +62,11 @@ Decisions about the framework core (engine ABI, composition contract) live in th
 | [ADR-0035](0035-bilingual-migration-to-rust.md) | Bilingual migration of the host to Rust | Accepted |
 | [ADR-0036](0036-soft-present-gate-for-candidate-panel.md) | Soft Present Gate for the Candidate Panel | Accepted (amends ADR-0010/0023) |
 | [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Accepted (amends ADR-0024) |
+| [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Accepted (supersedes ADR-0035 decision D1) |
+| [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038) |
 
 ## Looking for something else?
 
-- Framework core ADRs: see the `libtypio` repository
-- CLI ADRs: see the `typioctl` repository
+- Framework core ADRs: see `crates/libtypio/docs/adr/`
+- Historical CLI ADRs: see `crates/typioctl/docs/adr/`
 - Settings-panel ADRs: see the `typio-settings` repository
