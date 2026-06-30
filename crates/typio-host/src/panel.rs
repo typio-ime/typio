@@ -365,9 +365,15 @@ pub struct FluxPanel {
     /// `wp_viewporter`; in that case the offscreen image is sized exactly
     /// to the content and the per-page reallocation cost returns.
     viewport: Option<WpViewport>,
-    /// Last content width (logical, pre-scale) sent to `wp_viewport`.
+    /// Last source size (physical buffer pixels) sent to `wp_viewport`.
+    /// This must be tracked separately from the logical destination: moving
+    /// the popup from a 1x output to a 2x output can leave the logical panel
+    /// size unchanged while doubling the source rectangle.
+    viewport_source_w_physical: u32,
+    viewport_source_h_physical: u32,
+    /// Last destination size (logical, pre-scale) sent to `wp_viewport`.
     /// Tracked so we only re-issue set_source/set_destination when the
-    /// visible size actually changes, not on every redraw.
+    /// visible mapping actually changes, not on every redraw.
     content_w_logical: i32,
     content_h_logical: i32,
     last_candidate_size_duration: Duration,
@@ -561,6 +567,8 @@ impl FluxPanel {
             height,
             scale: 1.0,
             viewport,
+            viewport_source_w_physical: 0,
+            viewport_source_h_physical: 0,
             content_w_logical: 0,
             content_h_logical: 0,
             last_candidate_size_duration: Duration::ZERO,
@@ -1489,15 +1497,27 @@ impl FluxPanel {
                     }
                 }
             }
-            // Always re-issue the crop so the compositor shows the exact
-            // content rect regardless of buffer size. wp_viewport.set_source
-            // takes buffer (physical) coordinates; set_destination takes
-            // surface (logical) coordinates.
-            if content_w_logical != self.content_w_logical
-                || content_h_logical != self.content_h_logical
-            {
+            // Re-issue the crop whenever either side of the viewport mapping
+            // changes. `wp_viewport.set_source` takes buffer (physical)
+            // coordinates; `set_destination` takes surface (logical)
+            // coordinates. A cross-output scale change can keep the logical
+            // destination identical while changing the physical source, so
+            // caching only the destination leaves the compositor clipping the
+            // old 1x source rectangle out of a newly 2x-rendered buffer.
+            if viewport_mapping_changed(
+                self.viewport_source_w_physical,
+                self.viewport_source_h_physical,
+                self.content_w_logical,
+                self.content_h_logical,
+                phys_width,
+                phys_height,
+                content_w_logical,
+                content_h_logical,
+            ) {
                 viewport.set_source(0.0, 0.0, phys_width as f64, phys_height as f64);
                 viewport.set_destination(content_w_logical, content_h_logical);
+                self.viewport_source_w_physical = phys_width;
+                self.viewport_source_h_physical = phys_height;
                 self.content_w_logical = content_w_logical;
                 self.content_h_logical = content_h_logical;
             }
@@ -1741,6 +1761,22 @@ impl FluxPanel {
     }
 }
 
+fn viewport_mapping_changed(
+    cached_source_w_physical: u32,
+    cached_source_h_physical: u32,
+    cached_dest_w_logical: i32,
+    cached_dest_h_logical: i32,
+    source_w_physical: u32,
+    source_h_physical: u32,
+    dest_w_logical: i32,
+    dest_h_logical: i32,
+) -> bool {
+    cached_source_w_physical != source_w_physical
+        || cached_source_h_physical != source_h_physical
+        || cached_dest_w_logical != dest_w_logical
+        || cached_dest_h_logical != dest_h_logical
+}
+
 impl Drop for FluxPanel {
     fn drop(&mut self) {
         unsafe {
@@ -1891,6 +1927,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(labels, ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]);
         assert_eq!(String::from_utf8_lossy(&candidate_number_label(10)), "11");
+    }
+
+    #[test]
+    fn viewport_mapping_changes_when_scale_changes_but_logical_size_does_not() {
+        assert!(viewport_mapping_changed(100, 40, 100, 40, 200, 80, 100, 40));
+    }
+
+    #[test]
+    fn viewport_mapping_is_stable_when_source_and_destination_match() {
+        assert!(!viewport_mapping_changed(
+            200, 80, 100, 40, 200, 80, 100, 40
+        ));
     }
 
     #[test]

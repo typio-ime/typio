@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Candidate panel viewport after moving between scaled outputs.** When a
+  visible candidate panel moves from a 1× output to a 2× output with the same
+  logical content size, the panel now re-sends the `wp_viewport` physical
+  source rectangle instead of reusing the old 1× crop. This prevents the 2×
+  render from being clipped to only the top-left quarter of the panel.
 - **Keyboard indicator and voice status banner shared one lifecycle.** Voice
   status now uses its own popup owner and auto-hide timer, so language-switch
   feedback and voice-state feedback do not clear each other or affect each
