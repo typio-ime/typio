@@ -24,6 +24,7 @@
 //! ```
 
 use std::ffi::c_void;
+use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 use std::time::{Duration, Instant};
@@ -378,6 +379,10 @@ pub struct FluxPanel {
     /// `wl_buffer.release` reuses a slot. `None` when the compositor lacks
     /// `wl_shm`.
     shm_pool: Option<crate::panel_shm::ShmBufferPool>,
+    /// dma-buf buffer pool for zero-copy present (ADR-0040 follow-on). Used
+    /// when the compositor supports `zwp_linux_dmabuf_v1` and flux exported
+    /// the offscreen image. Falls back to `shm_pool` + readback otherwise.
+    dmabuf_pool: Option<crate::panel_dmabuf::DmabufBufferPool>,
     /// Heap-allocated C string for the pipeline-cache path. Owned by
     /// FluxPanel so it outlives `flux_device_release` (which fires the
     /// save callback). Null when cache persistence is unavailable
@@ -416,25 +421,27 @@ impl FluxPanel {
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
         shm: Option<wl_shm::WlShm>,
+        dmabuf: Option<crate::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
         qh: QueueHandle<crate::input_method::InputMethodState>,
         registry: crate::panel_shm::ShmReleaseRegistry,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        Self::new_inner(wl_surface_ptr, viewport, shm, qh, registry, width, height)
+        Self::new_inner(wl_surface_ptr, viewport, shm, dmabuf, qh, registry, width, height)
     }
 
     fn new_inner(
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
         shm: Option<wl_shm::WlShm>,
+        dmabuf: Option<crate::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
         qh: QueueHandle<crate::input_method::InputMethodState>,
         registry: crate::panel_shm::ShmReleaseRegistry,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
         unsafe {
-            Self::new_inner_unsafe(wl_surface_ptr, viewport, shm, qh, registry, width, height)
+            Self::new_inner_unsafe(wl_surface_ptr, viewport, shm, dmabuf, qh, registry, width, height)
         }
     }
 
@@ -442,6 +449,7 @@ impl FluxPanel {
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
         shm: Option<wl_shm::WlShm>,
+        dmabuf: Option<crate::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
         qh: QueueHandle<crate::input_method::InputMethodState>,
         registry: crate::panel_shm::ShmReleaseRegistry,
         width: u32,
@@ -458,7 +466,33 @@ impl FluxPanel {
         //    VK_KHR_surface / VK_KHR_wayland_surface / VK_KHR_swapchain.
         //    Dropping them also drops Mesa's wl_display-dispatching present
         //    path — the source of the 16 s present deadlock.
-        let device_exts: [*const c_char; 0] = [];
+        //
+        //    When the compositor supports linux-dmabuf, we additionally
+        //    enable the external-memory / DRM-modifier extensions so the
+        //    offscreen image can be exported as a dma-buf (zero-copy present,
+        //    replacing the 12–16 ms GPU→CPU readback). The instance-side
+        //    capability extensions (`VK_KHR_external_memory_capabilities`,
+        //    `VK_KHR_get_physical_device_properties2`) must be requested at
+        //    instance level; the rest are device extensions.
+        let dmabuf_capable = dmabuf.is_some();
+        let instance_ext_list: Vec<&'static CStr> = if dmabuf_capable {
+            vec![c"VK_KHR_external_memory_capabilities",
+                 c"VK_KHR_get_physical_device_properties2"]
+        } else {
+            vec![]
+        };
+        let device_ext_list: Vec<&'static CStr> = if dmabuf_capable {
+            vec![c"VK_KHR_external_memory_fd",
+                 c"VK_EXT_external_memory_dma_buf",
+                 c"VK_EXT_image_drm_format_modifier",
+                 c"VK_EXT_queue_family_foreign"]
+        } else {
+            vec![]
+        };
+        let instance_exts: Vec<*const c_char> =
+            instance_ext_list.iter().map(|s| s.as_ptr()).collect();
+        let device_exts: Vec<*const c_char> =
+            device_ext_list.iter().map(|s| s.as_ptr()).collect();
         // Resolve pipeline-cache path before creating the desc so the
         // load/save callbacks and userdata can be wired in.
         let cache_path_c: *mut c_char = match &pipeline_cache_path() {
@@ -471,8 +505,8 @@ impl FluxPanel {
         };
         let mut device_desc: flux_device_desc = std::mem::zeroed();
         device_desc.type_ = FType::FLUX_TYPE_DEVICE_DESC;
-        device_desc.required_instance_extensions = device_exts.as_ptr();
-        device_desc.required_instance_extension_count = device_exts.len() as u32;
+        device_desc.required_instance_extensions = instance_exts.as_ptr();
+        device_desc.required_instance_extension_count = instance_exts.len() as u32;
         device_desc.required_device_extensions = device_exts.as_ptr();
         device_desc.required_device_extension_count = device_exts.len() as u32;
         device_desc.frames_in_flight = 2;
@@ -570,7 +604,10 @@ impl FluxPanel {
             wl_surface,
             shm_pool: shm
                 .as_ref()
-                .map(|s| crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone(), registry)),
+                .map(|s| crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone(), registry.clone())),
+            dmabuf_pool: dmabuf
+                .as_ref()
+                .map(|d| crate::panel_dmabuf::DmabufBufferPool::new(d.clone(), qh.clone(), registry)),
             pipeline_cache_path: cache_path_c,
             last_layout_key: None,
             last_layout: Vec::new(),
@@ -753,6 +790,23 @@ impl FluxPanel {
             flux_sys::flux_canvas_set_scale(self.canvas, scale);
             flux_text_sys::flux_text_set_scale(self.text, scale);
         }
+    }
+
+    /// Drop the cached per-candidate text layout, forcing the next
+    /// [`Self::draw_candidates`] / [`Self::ensure_candidate_size`] to re-run
+    /// `flux_text_measure`.
+    ///
+    /// The layout cache key ([`Self::last_layout_key`]) covers only the
+    /// candidate strings and the rendering scale — the inputs that move today.
+    /// It deliberately does **not** include font size/family/weight, which are
+    /// currently compile-time constants ([`CANDIDATE_FONT_SIZE`],
+    /// [`FontFamily::FLUX_TEXT_FAMILY_DEFAULT`]). Any path that can change a
+    /// font/style/theme input the measure step depends on must call this so the
+    /// cache cannot serve stale geometry. It is the layout-side counterpart of
+    /// `PanelPresentationGuard`'s presentation invalidation.
+    pub fn invalidate_layout_cache(&mut self) {
+        self.last_layout_key = None;
+        self.last_layout.clear();
     }
 
     /// Draw candidate strings with the selected one highlighted.
@@ -1167,40 +1221,68 @@ impl FluxPanel {
             }
             before_present();
             // Offscreen path: present is a no-op (no swapchain). The actual
-            // "present" is the readback + shm attach below.
+            // "present" is either a dma-buf export (zero-copy) or a readback +
+            // shm attach, below.
             timed!(present_duration, flux_frame_present(frame));
             heartbeat();
 
-            // Read the rendered frame back from the GPU. Bounded by the
-            // frame's fence (GPU completion) — never by the compositor.
-            let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
-            let mut readback_buf: Vec<u8> = vec![0u8; pixel_bytes];
-            let readback_start = Instant::now();
-            let r = flux_surface_read_pixels(
-                self.surface,
-                readback_buf.as_mut_ptr() as *mut c_void,
-                pixel_bytes,
-            );
-            if timing_enabled {
-                readback_duration = readback_start.elapsed();
-            }
-            heartbeat();
-            if !flux_result_is_ok(r) {
-                tracing::warn!(
-                    target: "typio.panel.shm",
-                    "flux_surface_read_pixels failed"
+            if self.dmabuf_pool.is_some() {
+                // ── Zero-copy dma-buf path ───────────────────────────────
+                // Export the submitted frame's GPU memory as a dma-buf fd and
+                // hand it to the compositor. No GPU→CPU pixel copy; the only
+                // wait is the frame fence (GPU render completion), same as
+                // read_pixels but without the staging buffer copy.
+                let mut fd: i32 = -1;
+                let readback_start = Instant::now();
+                let r = flux_sys::flux_surface_export_dmabuf(self.surface, &mut fd);
+                if timing_enabled {
+                    readback_duration = readback_start.elapsed();
+                }
+                heartbeat();
+                if !flux_result_is_ok(r) {
+                    tracing::warn!(
+                        target: "typio.panel.dmabuf",
+                        "flux_surface_export_dmabuf failed"
+                    );
+                    return;
+                }
+                let owned_fd = std::os::fd::FromRawFd::from_raw_fd(fd);
+                self.present_dmabuf(owned_fd);
+                heartbeat();
+                self.log_text_stats();
+            } else {
+                // ── Readback + SHM path (fallback) ───────────────────────
+                // Read the rendered frame back from the GPU. Bounded by the
+                // frame's fence (GPU completion) — never by the compositor.
+                let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
+                let mut readback_buf: Vec<u8> = vec![0u8; pixel_bytes];
+                let readback_start = Instant::now();
+                let r = flux_surface_read_pixels(
+                    self.surface,
+                    readback_buf.as_mut_ptr() as *mut c_void,
+                    pixel_bytes,
                 );
-                return;
-            }
+                if timing_enabled {
+                    readback_duration = readback_start.elapsed();
+                }
+                heartbeat();
+                if !flux_result_is_ok(r) {
+                    tracing::warn!(
+                        target: "typio.panel.shm",
+                        "flux_surface_read_pixels failed"
+                    );
+                    return;
+                }
 
-            // Hand the pixels to the compositor via a host-managed shm
-            // buffer. acquire returns None when all buffers are busy
-            // (compositor hasn't released them) — drop this frame rather
-            // than block. This is the structural fix: a slow compositor
-            // causes dropped frames, never a deadlock.
-            self.present_shm(&readback_buf);
-            heartbeat();
-            self.log_text_stats();
+                // Hand the pixels to the compositor via a host-managed shm
+                // buffer. acquire returns None when all buffers are busy
+                // (compositor hasn't released them) — drop this frame rather
+                // than block. This is the structural fix: a slow compositor
+                // causes dropped frames, never a deadlock.
+                self.present_shm(&readback_buf);
+                heartbeat();
+                self.log_text_stats();
+            }
         }
         if let Some(total_start) = total_start {
             let total_duration = total_start.elapsed();
@@ -1312,6 +1394,13 @@ impl FluxPanel {
         if changed && !self.surface.is_null() {
             unsafe {
                 flux_sys::flux_surface_resize(self.surface, width, height);
+            }
+            // Surface resize recreates the offscreen images, so the dma-buf
+            // pool's wl_buffers (which wrap the old images' memory) are now
+            // stale. Clear them; they'll be recreated at the new size on the
+            // next present.
+            if let Some(pool) = self.dmabuf_pool.as_mut() {
+                pool.clear();
             }
         }
     }
@@ -1533,6 +1622,67 @@ impl FluxPanel {
     /// processes them asynchronously and sends `wl_buffer.release` when the
     /// buffer is reusable. Unlike `vkQueuePresentKHR`, this can never block
     /// the main thread.
+    /// Present via dma-buf: export the frame's GPU memory, ensure a
+    /// `wl_buffer` exists for the submitted slot, and attach it to the
+    /// surface. Zero-copy — the compositor composites the GPU memory
+    /// directly.
+    fn present_dmabuf(&mut self, fd: std::os::fd::OwnedFd) {
+        let Some(pool) = self.dmabuf_pool.as_mut() else {
+            return;
+        };
+
+        // Query the surface's export metadata (modifier + stride), set at
+        // image-creation time by flux.
+        let modifier = unsafe { flux_sys::flux_surface_dmabuf_modifier(self.surface) };
+        let stride = unsafe { flux_sys::flux_surface_dmabuf_stride(self.surface) };
+        if stride == 0 {
+            tracing::warn!(
+                target: "typio.panel.dmabuf",
+                "dmabuf stride is 0 — surface not exportable?"
+            );
+            return;
+        }
+
+        // Which frame slot was just submitted? With frames_in_flight=2 the GPU
+        // alternates between two image slots; each needs its own wl_buffer so
+        // the compositor can hold slot N-1 while we submit slot N.
+        let slot = unsafe { flux_sys::flux_surface_last_slot(self.surface) } as usize;
+
+        // Ensure a buffer exists for this slot (create or reuse on resize).
+        pool.ensure_slot(slot, fd, self.width, self.height, stride, modifier);
+
+        if let Some(buf) = pool.get(slot) {
+            if buf.busy() {
+                // Compositor still holds this slot's previous frame — drop.
+                tracing::trace!(
+                    target: "typio.panel.dmabuf",
+                    slot,
+                    "dmabuf buffer busy — dropping frame"
+                );
+                return;
+            }
+            buf.mark_busy();
+            // Force buffer_scale=1 when wp_viewport is active, exactly as the
+            // SHM path does: the viewport's set_source (physical coords) +
+            // set_destination (logical coords) alone map the buffer. The
+            // compositor's PreferredBufferScale(2) would otherwise shrink the
+            // buffer to buffer_size/2 and make the viewport source exceed it
+            // (protocol error 2).
+            let desired_scale = if self.viewport.is_some() { 1 } else { self.scale as i32 };
+            unsafe {
+                wl_surface_set_buffer_scale(self.wl_surface, desired_scale);
+            }
+            unsafe {
+                wl_surface_attach_commit(
+                    self.wl_surface,
+                    buf.wl_buffer().id().as_ptr() as *mut c_void,
+                    self.width,
+                    self.height,
+                );
+            }
+        }
+    }
+
     fn present_shm(&mut self, pixels: &[u8]) {
         let Some(pool) = self.shm_pool.as_mut() else {
             return;
@@ -1682,28 +1832,47 @@ impl FluxPanel {
                 return;
             }
             before_present();
-            // Offscreen: present is a no-op; readback + shm attach is the
-            // real "present". Same non-blocking path as draw_candidates.
+            // Offscreen: present is a no-op; the real "present" is either a
+            // dma-buf export or readback + shm attach. Same non-blocking path
+            // as draw_candidates.
             flux_frame_present(frame);
             heartbeat();
 
-            let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
-            let mut readback_buf: Vec<u8> = vec![0u8; pixel_bytes];
-            let r = flux_surface_read_pixels(
-                self.surface,
-                readback_buf.as_mut_ptr() as *mut c_void,
-                pixel_bytes,
-            );
-            heartbeat();
-            if !flux_result_is_ok(r) {
-                tracing::warn!(
-                    target: "typio.panel.shm",
-                    "banner read_pixels failed"
+            if self.dmabuf_pool.is_some() {
+                // Zero-copy dma-buf path.
+                let mut fd: i32 = -1;
+                let r = flux_sys::flux_surface_export_dmabuf(self.surface, &mut fd);
+                heartbeat();
+                if !flux_result_is_ok(r) {
+                    tracing::warn!(
+                        target: "typio.panel.dmabuf",
+                        "banner flux_surface_export_dmabuf failed"
+                    );
+                    return;
+                }
+                let owned_fd = std::os::fd::FromRawFd::from_raw_fd(fd);
+                self.present_dmabuf(owned_fd);
+                heartbeat();
+            } else {
+                // Readback + SHM fallback.
+                let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
+                let mut readback_buf: Vec<u8> = vec![0u8; pixel_bytes];
+                let r = flux_surface_read_pixels(
+                    self.surface,
+                    readback_buf.as_mut_ptr() as *mut c_void,
+                    pixel_bytes,
                 );
-                return;
+                heartbeat();
+                if !flux_result_is_ok(r) {
+                    tracing::warn!(
+                        target: "typio.panel.shm",
+                        "banner read_pixels failed"
+                    );
+                    return;
+                }
+                self.present_shm(&readback_buf);
+                heartbeat();
             }
-            self.present_shm(&readback_buf);
-            heartbeat();
         }
     }
 

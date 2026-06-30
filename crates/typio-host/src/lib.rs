@@ -19,14 +19,12 @@ pub mod build_info {
 }
 
 pub mod app;
-pub mod backoff;
 pub mod boundary;
 pub mod candidate_guard;
 pub mod config_watcher;
 pub mod diagnostics;
 pub mod engine_loader;
 pub mod focus_controller;
-pub mod health;
 pub mod icon_badge;
 pub mod indicator;
 pub mod input_method;
@@ -35,11 +33,11 @@ pub mod ipc_bus;
 pub mod keyboard;
 pub mod keyboard_policy;
 pub mod language_display;
-pub mod notifier;
 pub mod panel;
 pub mod panel_coordinator;
 pub mod panel_present_gate;
 pub mod panel_scheduler;
+pub mod panel_dmabuf;
 pub mod panel_shm;
 pub mod preedit;
 pub mod protocols;
@@ -47,7 +45,6 @@ pub mod repeat_timer;
 pub mod resume_signal;
 pub mod service;
 pub mod session_glue;
-pub mod startup_guard;
 pub mod state_controller;
 pub mod text_ui_state;
 pub mod tray_menu;
