@@ -38,48 +38,28 @@
 //! running un-intercepted on this daemon continue to receive every
 //! key. See [`should_consume_key`].
 
-// Constants below mirror the upstream XCB/X11 `XKB_KEY_*` names which
-// use mixed case; we keep the same names so grep'ers can cross-reference
-// against the C version and the xkbcommon-keysyms.h header. We also keep
-// the complete digit set even if unused outside this module — silencing
-// both lints at the module boundary rather than per-constant.
+// XKB keysyms we need that aren't in keyboard_policy's subset. Names mirror
+// the upstream `XKB_KEY_*` (mixed case) so they cross-reference against
+// xkbcommon-keysyms.h and the C ancestor.
 #![allow(non_snake_case)]
 
 use crate::keyboard_policy::Keysym;
 use bitflags::bitflags;
 
-// XKB keysyms we need that aren't in keyboard_policy's subset.
-// All kept here even if unused outside the module — they are the
-// complete digit/space/enter/arrow set the candidate guard consults.
-#[allow(dead_code)]
+// Navigation + commit keysyms consulted by `host_selection_keysym` /
+// `is_navigation_keysym`.
 const XKB_KEY_UP: Keysym = 0xff52;
-#[allow(dead_code)]
 const XKB_KEY_DOWN: Keysym = 0xff54;
-#[allow(dead_code)]
 const XKB_KEY_LEFT: Keysym = 0xff51;
-#[allow(dead_code)]
 const XKB_KEY_RIGHT: Keysym = 0xff53;
-#[allow(dead_code)]
 const XKB_KEY_RETURN: Keysym = 0xff0d;
-#[allow(dead_code)]
 const XKB_KEY_KP_ENTER: Keysym = 0xff8d;
 const XKB_KEY_SPACE: Keysym = 0x0020;
+// Index-pick digits. Only the range endpoints are referenced directly:
+// `host_selection_keysym` tests `XKB_KEY_1..=XKB_KEY_9` and derives the
+// offset arithmetically, and `XKB_KEY_0` is the index-10 special case.
 const XKB_KEY_0: Keysym = 0x0030;
 const XKB_KEY_1: Keysym = 0x0031;
-#[allow(dead_code)]
-const XKB_KEY_2: Keysym = 0x0032;
-#[allow(dead_code)]
-const XKB_KEY_3: Keysym = 0x0033;
-#[allow(dead_code)]
-const XKB_KEY_4: Keysym = 0x0034;
-#[allow(dead_code)]
-const XKB_KEY_5: Keysym = 0x0035;
-#[allow(dead_code)]
-const XKB_KEY_6: Keysym = 0x0036;
-#[allow(dead_code)]
-const XKB_KEY_7: Keysym = 0x0037;
-#[allow(dead_code)]
-const XKB_KEY_8: Keysym = 0x0038;
 const XKB_KEY_9: Keysym = 0x0039;
 
 /// Host-managed-selection key code. Port of `TypioWlHostSelKey`.
@@ -360,6 +340,12 @@ pub fn should_consume_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Intermediate index-pick digits used only as test fixtures; the
+    // production path derives these arithmetically from `XKB_KEY_1`.
+    const XKB_KEY_2: Keysym = 0x0032;
+    const XKB_KEY_3: Keysym = 0x0033;
+    const XKB_KEY_5: Keysym = 0x0035;
 
     #[test]
     fn keysym_classification_basic() {

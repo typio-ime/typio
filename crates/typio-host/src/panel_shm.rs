@@ -52,6 +52,11 @@ pub struct ShmBuffer {
     width: u32,
     height: u32,
     busy: Arc<AtomicBool>,
+    /// The release registry this buffer registered itself in, plus the key it
+    /// used (`wl_buffer` proxy pointer). Held so `Drop` can deregister and
+    /// keep the map from accumulating stale entries across pool reallocations.
+    registry: ShmReleaseRegistry,
+    key: usize,
 }
 
 /// Owned `mmap` region over an anonymous `memfd`/`tmpfile`. Unmapped + fd
@@ -205,6 +210,8 @@ impl ShmBuffer {
             width,
             height,
             busy,
+            registry: registry.clone(),
+            key,
         })
     }
 
@@ -246,16 +253,18 @@ impl ShmBuffer {
 
 impl Drop for ShmBuffer {
     fn drop(&mut self) {
-        // Unregister from the release registry before destroying the proxy.
-        // We can't access the registry from here (it's owned by the pool),
-        // but the Dispatch handler checks for the key and won't find it after
-        // the proxy is destroyed — wayland-client won't deliver events to a
-        // destroyed proxy. The stale entry (if any) is harmless and gets
-        // overwritten when the slot is reused.
-        //
+        // Deregister from the release registry first so the map cannot
+        // accumulate stale entries across pool reallocations (each resize
+        // creates a fresh `wl_buffer` with a new key; without this the old
+        // key would leak forever). Removing the entry before destroying the
+        // proxy is safe: wayland-client won't deliver `release` to a proxy
+        // we're about to destroy, and the key is unique to this buffer.
+        if let Ok(mut reg) = self.registry.lock() {
+            reg.remove(&self.key);
+        }
         // Drop order: buffer first (sends wl_buffer_destroy → compositor
         // releases its ref), then pool, then munmap. ManuallyDrop fields
-        // are dropped explicitly; busy (Arc<AtomicBool>) auto-drops after.
+        // are dropped explicitly; busy + registry (Arc) auto-drop after.
         unsafe {
             ManuallyDrop::drop(&mut self.buffer);
             ManuallyDrop::drop(&mut self.pool);

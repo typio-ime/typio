@@ -632,7 +632,6 @@ impl App {
     }
 
     #[cfg(feature = "wayland")]
-
     /// Reload core/platform configuration and notify listeners.
     fn reload_config(&mut self) {
         let Some(ref mut instance) = self.instance else {
@@ -644,6 +643,20 @@ impl App {
                 tracing::info!(target: "typio.lifecycle", "configuration reloaded");
                 self.indicator_config = self.load_indicator_config();
                 self.refresh_state_surfaces();
+                // A reload may change any panel-rendering input (and, once
+                // fonts/themes become config-driven, the candidate text
+                // geometry). Drop the panel's layout cache and force a
+                // repaint so nothing is served from stale measurements.
+                if let Some(ref mut frontend) = self.frontend {
+                    if let Some(panel) = frontend.panel_mut() {
+                        panel.invalidate_layout_cache();
+                    }
+                    let state = frontend.state_mut();
+                    state.invalidate_panel_presentation();
+                    if !state.composition.candidates.is_empty() {
+                        state.mark_panel_dirty();
+                    }
+                }
             }
             _ => tracing::warn!(target: "typio.lifecycle", "configuration reload failed"),
         }
