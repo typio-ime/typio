@@ -23,6 +23,44 @@ use crate::watchdog::LoopStage;
 
 use super::{arm_repeat, tray::cycle_active_language, App, DaemonEvent};
 
+/// What the candidate-panel flush path actually did this tick.
+///
+/// Replaces an ambiguous `(presented: bool, hid: bool)` pair whose
+/// `(false, false)` variant conflated three structurally different
+/// outcomes — "already shown, nothing to do", "present-path frame drop,
+/// retry", and "no panel surface" — and let the retry guard mis-classify
+/// the already-shown skip as a dropped frame, busy-looping with the
+/// schedule pinned Dirty. One variant per outcome makes the settle
+/// action exhaustive and the convergence invariant local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlushOutcome {
+    /// A fresh buffer was attached and reached the compositor. Settle the
+    /// schedule to Idle, record `composition_seq` as presented, and arm the
+    /// next `wl_surface.frame` callback.
+    Presented,
+    /// The surface was hidden because the candidate list emptied. Clear the
+    /// frame callback and invalidate the presentation record; the schedule
+    /// settles to Idle (a future candidate update re-dirties it).
+    Hidden,
+    /// `composition_seq` was already presented in this generation. Nothing to
+    /// draw, nothing to retry: settle to Idle without touching the
+    /// presentation record.
+    AlreadyPresented,
+    /// Skipped for pacing — anchor not ready, or the present soft-gate wants
+    /// to wait for a frame callback. Keep the schedule Dirty so the waking
+    /// tick re-attempts with the latest coalesced candidates.
+    Throttled,
+    /// `draw_candidates` ran but attached no buffer (dma-buf slot busy, SHM
+    /// pool exhausted, or a flux begin/submit/export failure). The frame
+    /// never reached the compositor, so keep the schedule Dirty and re-arm
+    /// the next tick rather than marking `composition_seq` done and losing
+    /// it.
+    Dropped,
+    /// No panel surface exists this tick. Keep the schedule Dirty so the
+    /// flush re-attempts once the surface is (re)created.
+    NoPanel,
+}
+
 impl App {
     /// The Wayland main loop. Returns the daemon exit code.
     ///
@@ -190,6 +228,9 @@ impl App {
                 if let Some(voice_remaining) = self.voice_status_hide_remaining_ms(now) {
                     reduce_timeout(voice_remaining);
                 }
+                if let Some(remaining) = state.wayland_pending.min_deadline_ms(now) {
+                    reduce_timeout(remaining);
+                }
                 timeout_ms
             };
             let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout_ms) };
@@ -227,6 +268,14 @@ impl App {
                 return 1;
             }
             // If POLLIN was not set, `read_guard` is dropped here and cancels the read.
+
+            // 4b. Diagnose compositor requests that never got a response
+            //     (commit→done, grab→keymap, probe→rect). Emits one warn per
+            //     stalled episode; see `wayland_pending`.
+            {
+                let frontend = self.frontend.as_mut().unwrap();
+                frontend.state_mut().wayland_pending.check_timeouts(Instant::now());
+            }
 
             // 5. Run the focus-controller pipeline.
             wd!().set_stage(LoopStage::AuxIo);
@@ -551,13 +600,13 @@ impl App {
                         && frontend.state().panel_coord().visible_owner() == UiOwner::Candidate
                         && frontend.state().panel_presentation_current(composition_seq);
 
-                    let (presented, hid) = if already_presented {
+                    let outcome = if already_presented {
                         tracing::trace!(
                             target: "typio.panel.host",
                             composition_seq,
                             "panel: skip present reason=already_presented"
                         );
-                        (false, false)
+                        FlushOutcome::AlreadyPresented
                     } else if throttled {
                         if let Some(wait_ms) = frame_wait_ms {
                             tracing::trace!(
@@ -571,12 +620,11 @@ impl App {
                                 "panel: skip present reason=anchor_not_ready"
                             );
                         }
-                        (false, false)
+                        FlushOutcome::Throttled
                     } else if let Some(panel) = frontend.panel_mut() {
                         panel.set_scale(scale);
                         heartbeat();
-                        let mut hid = false;
-                        let presented = if candidates.is_empty() {
+                        if candidates.is_empty() {
                             if owner == UiOwner::Indicator || owner == UiOwner::Voice {
                                 // Surface is loaned to the indicator/voice
                                 // overlay; the candidate path does not own it
@@ -587,6 +635,12 @@ impl App {
                                     owner = ?owner,
                                     "panel: skip-hide reason=empty_on_loan"
                                 );
+                                // The surface is non-empty (an overlay owns
+                                // it) and the candidate list is empty, so
+                                // there is nothing for this path to present
+                                // or hide. Settle to Idle: a future candidate
+                                // update re-dirties if needed.
+                                FlushOutcome::AlreadyPresented
                             } else {
                                 tracing::debug!(
                                     target: "typio.panel.host",
@@ -594,41 +648,93 @@ impl App {
                                     "panel: hide reason=candidates_empty"
                                 );
                                 panel.hide();
-                                hid = true;
+                                FlushOutcome::Hidden
                             }
-                            false
                         } else {
                             panel.ensure_candidate_size(&candidates);
                             heartbeat();
-                            panel.draw_candidates(
+                            // `draw_candidates` returns true only when a
+                            // buffer was actually attached to the surface.
+                            // A false return means the frame was dropped
+                            // before reaching the compositor (dma-buf slot
+                            // still held by the compositor, SHM pool
+                            // exhausted, or a flux frame begin/submit/export
+                            // failure). Treat that the same as throttled:
+                            // keep the schedule Dirty so the next tick
+                            // re-attempts with the latest coalesced
+                            // candidates, rather than marking this
+                            // composition_seq done and losing the frame.
+                            let attached = panel.draw_candidates(
                                 &candidates,
                                 selected,
                                 composition_seq,
                                 &heartbeat,
                                 &enter_present,
                             );
-                            true
-                        };
-                        (presented, hid)
+                            if attached {
+                                FlushOutcome::Presented
+                            } else {
+                                tracing::debug!(
+                                    target: "typio.panel.host",
+                                    composition_seq,
+                                    "panel: present dropped — will retry next tick"
+                                );
+                                FlushOutcome::Dropped
+                            }
+                        }
                     } else {
-                        (false, false)
+                        FlushOutcome::NoPanel
                     };
-                    if throttled {
-                        // Leave the schedule dirty so the tick that wakes
-                        // on the frame callback, soft-gate deadline, or
-                        // anchor fallback
-                        // re-attempts the present with the latest coalesced
-                        // candidates. Do not call complete(): that would
-                        // move to Idle and drop the pending frame.
-                    } else {
-                        if hid {
+                    match outcome {
+                        FlushOutcome::Throttled => {
+                            // Leave the schedule dirty so the tick that wakes
+                            // on the frame callback, soft-gate deadline, or
+                            // anchor fallback re-attempts the present with the
+                            // latest coalesced candidates. Do not call
+                            // complete(): that would move to Idle and drop the
+                            // pending frame.
+                        }
+                        FlushOutcome::Dropped => {
+                            // A present-path drop (draw_candidates attached
+                            // nothing even though candidates were non-empty)
+                            // must also keep the schedule Dirty: we rendered
+                            // but the compositor never got the frame (e.g.
+                            // dma-buf slot busy), so marking it presented +
+                            // Idle would lose it. Re-arm the next tick
+                            // instead, by which point the compositor's
+                            // wl_buffer.release has usually arrived.
+                            tracing::trace!(
+                                target: "typio.panel.host",
+                                composition_seq,
+                                "panel: keeping schedule dirty after present drop"
+                            );
+                        }
+                        FlushOutcome::NoPanel => {
+                            // No surface to draw into; the schedule stays
+                            // Dirty so the flush re-attempts once the panel
+                            // object is (re)created.
+                        }
+                        FlushOutcome::Hidden => {
                             frontend.state_mut().clear_panel_frame_callback();
                             frontend.state_mut().invalidate_panel_presentation();
+                            frontend.state_mut().panel_schedule_state =
+                                panel_scheduler::complete();
                         }
-                        frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
-                        if presented {
+                        FlushOutcome::Presented => {
+                            frontend.state_mut().panel_schedule_state =
+                                panel_scheduler::complete();
                             frontend.state_mut().mark_panel_presented(composition_seq);
                             frontend.arm_panel_frame_callback();
+                        }
+                        FlushOutcome::AlreadyPresented => {
+                            // Nothing to draw and nothing to retry: the latest
+                            // composition_seq is already on screen. Settling
+                            // to Idle here is the fix for the busy-loop where
+                            // a no-op page flip (same candidates, same seq)
+                            // left the schedule pinned Dirty and the
+                            // already-presented skip path retried forever.
+                            frontend.state_mut().panel_schedule_state =
+                                panel_scheduler::complete();
                         }
                     }
                 }

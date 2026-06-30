@@ -19,17 +19,19 @@ pub struct Preedit<'a> {
     pub cursor_pos: i32,
 }
 
-/// Resolve a preedit cursor position against a joined-segment byte length.
+/// Resolve a preedit cursor position against a joined-segment text.
 ///
-/// Non-negative `cursor_pos` is preserved; negative falls back to
-/// `byte_len` (place the cursor at the end), matching the C
-/// implementation's `(int)length` convention also used by libtypio's
-/// `TypioComposition.cursor_pos`.
-pub const fn resolve_cursor(cursor_pos: i32, byte_len: usize) -> usize {
+/// Converts the character-based `cursor_pos` into a byte offset.
+/// Non-negative `cursor_pos` is resolved to the byte boundary of that
+/// character; negative falls back to `text.len()` (place the cursor at the end).
+pub fn resolve_cursor(cursor_pos: i32, text: &str) -> usize {
     if cursor_pos >= 0 {
-        cursor_pos as usize
+        text.char_indices()
+            .nth(cursor_pos as usize)
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| text.len())
     } else {
-        byte_len
+        text.len()
     }
 }
 
@@ -52,7 +54,7 @@ pub fn build_plain_preedit(preedit: Option<&Preedit>) -> (Option<String>, i32) {
         buffer.push_str(segment.text);
     }
 
-    let cursor = resolve_cursor(preedit.cursor_pos, buffer.len()) as i32;
+    let cursor = resolve_cursor(preedit.cursor_pos, &buffer) as i32;
 
     (Some(buffer), cursor)
 }
@@ -111,14 +113,22 @@ mod tests {
 
     #[test]
     fn resolve_cursor_preserves_non_negative() {
-        assert_eq!(resolve_cursor(0, 10), 0);
-        assert_eq!(resolve_cursor(3, 10), 3);
-        assert_eq!(resolve_cursor(10, 10), 10);
+        assert_eq!(resolve_cursor(0, "0123456789"), 0);
+        assert_eq!(resolve_cursor(3, "0123456789"), 3);
+        assert_eq!(resolve_cursor(10, "0123456789"), 10);
     }
 
     #[test]
     fn resolve_cursor_negative_falls_back_to_len() {
-        assert_eq!(resolve_cursor(-1, 10), 10);
-        assert_eq!(resolve_cursor(i32::MIN, 0), 0);
+        assert_eq!(resolve_cursor(-1, "0123456789"), 10);
+        assert_eq!(resolve_cursor(i32::MIN, ""), 0);
+    }
+
+    #[test]
+    fn resolve_cursor_multibyte_chars() {
+        assert_eq!(resolve_cursor(0, "你好"), 0);
+        assert_eq!(resolve_cursor(1, "你好"), 3);
+        assert_eq!(resolve_cursor(2, "你好"), 6);
+        assert_eq!(resolve_cursor(3, "你好"), 6); // clamped
     }
 }

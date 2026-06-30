@@ -17,8 +17,8 @@ pub extern "C" fn typio_instance_set_engine_changed_callback(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.engine_changed_callback = Some(callback);
-    inst.engine_changed_user_data = user_data;
+    inst.callbacks.engine_changed = Some(callback);
+    inst.callbacks.engine_changed_user_data = user_data;
 }
 
 /// Register the voice-engine-changed callback.
@@ -32,8 +32,8 @@ pub extern "C" fn typio_instance_set_voice_engine_changed_callback(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.voice_engine_changed_callback = Some(callback);
-    inst.voice_engine_changed_user_data = user_data;
+    inst.callbacks.voice_engine_changed = Some(callback);
+    inst.callbacks.voice_engine_changed_user_data = user_data;
 }
 
 /// Register the status-icon-changed callback.
@@ -47,8 +47,8 @@ pub extern "C" fn typio_instance_set_status_icon_changed_callback(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.status_icon_changed_callback = Some(callback);
-    inst.status_icon_changed_user_data = user_data;
+    inst.callbacks.status_icon_changed = Some(callback);
+    inst.callbacks.status_icon_changed_user_data = user_data;
 }
 
 /// Notify the host that the status icon has changed.
@@ -66,11 +66,11 @@ pub extern "C" fn typio_instance_notify_status_icon(
         return;
     }
     inst.last_status_icon = CString::new(name.as_bytes()).ok();
-    if let Some(cb) = inst.status_icon_changed_callback {
+    if let Some(cb) = inst.callbacks.status_icon_changed {
         cb(
             instance.cast(),
             icon_name,
-            inst.status_icon_changed_user_data,
+            inst.callbacks.status_icon_changed_user_data,
         );
     }
 }
@@ -113,8 +113,8 @@ pub extern "C" fn typio_instance_set_keyboard_mode_changed_callback(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.mode_changed_callback = Some(callback);
-    inst.mode_changed_user_data = user_data;
+    inst.callbacks.mode_changed = Some(callback);
+    inst.callbacks.mode_changed_user_data = user_data;
 }
 
 /// Notify the host that the active engine mode has changed (engine → framework).
@@ -152,13 +152,13 @@ pub(crate) unsafe fn apply_keyboard_mode(
     mode_ref: &TypioKeyboardEngineMode,
     announce: bool,
 ) {
-    let inst = unsafe { &mut *instance };
+    let inst = &mut *instance;
 
-    if inst.has_mode && engine_mode_equal(&inst.last_mode, mode_ref) {
+    if inst.has_mode && engine_mode_equal(&inst.last_mode.0, mode_ref) {
         return;
     }
 
-    engine_mode_store(&mut inst.last_mode, mode_ref);
+    engine_mode_store(&mut inst.last_mode.0, mode_ref);
     inst.has_mode = true;
 
     if !mode_ref.icon_name.is_null() {
@@ -167,21 +167,21 @@ pub(crate) unsafe fn apply_keyboard_mode(
     }
 
     if announce {
-        if let Some(cb) = inst.mode_changed_callback {
+        if let Some(cb) = inst.callbacks.mode_changed {
             cb(
                 instance.cast(),
-                &inst.last_mode,
-                inst.mode_changed_user_data,
+                &inst.last_mode.0,
+                inst.callbacks.mode_changed_user_data,
             );
         }
     }
 
-    if let Some(cb) = inst.status_icon_changed_callback {
+    if let Some(cb) = inst.callbacks.status_icon_changed {
         if !mode_ref.icon_name.is_null() {
             cb(
                 instance.cast(),
                 mode_ref.icon_name,
-                inst.status_icon_changed_user_data,
+                inst.callbacks.status_icon_changed_user_data,
             );
         }
     }
@@ -245,14 +245,14 @@ pub extern "C" fn typio_instance_clear_keyboard_mode(instance: *mut TypioInstanc
     if !inst.has_mode {
         return;
     }
-    crate::string::typio_free_string(inst.last_mode.id as *mut c_char);
-    crate::string::typio_free_string(inst.last_mode.label as *mut c_char);
-    crate::string::typio_free_string(inst.last_mode.display_label as *mut c_char);
-    crate::string::typio_free_string(inst.last_mode.icon_name as *mut c_char);
-    crate::string::typio_free_string(inst.last_mode.profile_id as *mut c_char);
-    crate::string::typio_free_string(inst.last_mode.profile_label as *mut c_char);
-    crate::string::typio_free_string(inst.last_mode.description as *mut c_char);
-    inst.last_mode = TypioKeyboardEngineMode {
+    crate::string::typio_free_string(inst.last_mode.0.id as *mut c_char);
+    crate::string::typio_free_string(inst.last_mode.0.label as *mut c_char);
+    crate::string::typio_free_string(inst.last_mode.0.display_label as *mut c_char);
+    crate::string::typio_free_string(inst.last_mode.0.icon_name as *mut c_char);
+    crate::string::typio_free_string(inst.last_mode.0.profile_id as *mut c_char);
+    crate::string::typio_free_string(inst.last_mode.0.profile_label as *mut c_char);
+    crate::string::typio_free_string(inst.last_mode.0.description as *mut c_char);
+    inst.last_mode = crate::wrappers::InstanceLastMode(TypioKeyboardEngineMode {
         id: ptr::null(),
         label: ptr::null(),
         display_label: ptr::null(),
@@ -261,7 +261,7 @@ pub extern "C" fn typio_instance_clear_keyboard_mode(instance: *mut TypioInstanc
         profile_label: ptr::null(),
         description: ptr::null(),
         salience: TypioStatusSalience::TypioStatusSalienceQuiet,
-    };
+    });
     inst.has_mode = false;
 }
 
@@ -277,7 +277,7 @@ pub extern "C" fn typio_instance_get_last_keyboard_mode(
     if !inst.has_mode {
         return ptr::null();
     }
-    &inst.last_mode
+    &inst.last_mode.0
 }
 
 /// Register the engine-availability-changed callback (host-side, ADR-0014).
@@ -291,8 +291,8 @@ pub extern "C" fn typio_instance_set_engine_availability_changed_callback(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.availability_changed_callback = Some(callback);
-    inst.availability_changed_user_data = user_data;
+    inst.callbacks.availability_changed = Some(callback);
+    inst.callbacks.availability_changed_user_data = user_data;
 }
 
 /// Notify the host that the active engine's availability changed
@@ -322,7 +322,7 @@ pub extern "C" fn typio_instance_notify_engine_availability(
     inst.last_availability = state;
     inst.last_availability_reason = next_reason;
 
-    if let Some(cb) = inst.availability_changed_callback {
+    if let Some(cb) = inst.callbacks.availability_changed {
         let reason_ptr = inst
             .last_availability_reason
             .as_ref()
@@ -331,7 +331,7 @@ pub extern "C" fn typio_instance_notify_engine_availability(
             instance.cast(),
             state,
             reason_ptr,
-            inst.availability_changed_user_data,
+            inst.callbacks.availability_changed_user_data,
         );
     }
 }
@@ -357,8 +357,12 @@ pub extern "C" fn typio_instance_notify_engine_changed(
         return;
     }
     let inst = unsafe { &*instance };
-    if let Some(cb) = inst.engine_changed_callback {
-        cb(instance.cast(), engine, inst.engine_changed_user_data);
+    if let Some(cb) = inst.callbacks.engine_changed {
+        cb(
+            instance.cast(),
+            engine,
+            inst.callbacks.engine_changed_user_data,
+        );
     }
 }
 
@@ -372,8 +376,12 @@ pub extern "C" fn typio_instance_notify_voice_engine_changed(
         return;
     }
     let inst = unsafe { &*instance };
-    if let Some(cb) = inst.voice_engine_changed_callback {
-        cb(instance.cast(), engine, inst.voice_engine_changed_user_data);
+    if let Some(cb) = inst.callbacks.voice_engine_changed {
+        cb(
+            instance.cast(),
+            engine,
+            inst.callbacks.voice_engine_changed_user_data,
+        );
     }
 }
 
@@ -390,8 +398,8 @@ pub extern "C" fn typio_instance_set_languages_changed_callback(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.languages_changed_callback = Some(callback);
-    inst.languages_changed_user_data = user_data;
+    inst.callbacks.languages_changed = Some(callback);
+    inst.callbacks.languages_changed_user_data = user_data;
 }
 
 /// Notify the host that an engine's declared languages changed.
@@ -407,11 +415,11 @@ pub extern "C" fn typio_instance_notify_languages_changed(
         return;
     }
     let inst = unsafe { &*instance };
-    if let Some(cb) = inst.languages_changed_callback {
+    if let Some(cb) = inst.callbacks.languages_changed {
         cb(
             instance.cast(),
             engine_name,
-            inst.languages_changed_user_data,
+            inst.callbacks.languages_changed_user_data,
         );
     }
 }

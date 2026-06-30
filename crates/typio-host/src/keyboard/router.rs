@@ -361,7 +361,7 @@ impl KeyboardRouter {
                     // negative falls back to end) so left/right navigation
                     // inside the preedit actually moves the visible caret
                     // instead of always parking at the right edge.
-                    let cursor = crate::preedit::resolve_cursor(cursor_pos, preedit_len) as u32;
+                    let cursor = crate::preedit::resolve_cursor(cursor_pos, &preedit) as u32;
                     // Compare against what we last actually sent to the
                     // compositor. Up/Down candidate navigation is the
                     // canonical case where the engine emits a composition

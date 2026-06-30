@@ -13,7 +13,6 @@ pub use config_ops::*;
 pub use context::*;
 
 use crate::c_api::registry as c_registry;
-use crate::c_api::registry::TypioRegistry;
 use crate::config;
 use crate::config_schema;
 use crate::input_context;
@@ -90,8 +89,8 @@ pub(super) fn build_config_path(config_dir: &str, file_name: &str) -> String {
 /// Core Typio instance holding configuration, registry, contexts, and callbacks.
 #[allow(dead_code)]
 pub struct TypioInstance {
-    pub(crate) registry: *mut TypioRegistry,
-    pub(crate) config: *mut config::Config,
+    pub(crate) registry: crate::wrappers::RegistryPtr,
+    pub(crate) config: crate::wrappers::ConfigPtr,
 
     pub(crate) config_dir: Option<CString>,
     pub(crate) data_dir: Option<CString>,
@@ -104,36 +103,20 @@ pub struct TypioInstance {
     pub(crate) plugin_loader: Option<TypioPluginLoaderFunc>,
     pub(crate) plugin_loader_user_data: *mut c_void,
 
-    pub(crate) contexts: Vec<*mut input_context::TypioInputContext>,
+    pub(crate) contexts: Vec<crate::wrappers::InputContextPtr>,
     pub(crate) focused_context: *mut input_context::TypioInputContext,
 
-    pub(crate) engine_changed_callback: Option<TypioEngineChangedCallback>,
-    pub(crate) engine_changed_user_data: *mut c_void,
-    pub(crate) voice_engine_changed_callback: Option<TypioVoiceEngineChangedCallback>,
-    pub(crate) voice_engine_changed_user_data: *mut c_void,
+    pub(crate) callbacks: crate::wrappers::InstanceCallbacks,
 
-    pub(crate) status_icon_changed_callback: Option<TypioStatusIconChangedCallback>,
-    pub(crate) status_icon_changed_user_data: *mut c_void,
     pub(crate) last_status_icon: Option<CString>,
-
-    pub(crate) mode_changed_callback: Option<TypioKeyboardModeChangedCallback>,
-    pub(crate) mode_changed_user_data: *mut c_void,
-    pub(crate) last_mode: TypioKeyboardEngineMode,
+    pub(crate) last_mode: crate::wrappers::InstanceLastMode,
     pub(crate) has_mode: bool,
 
-    pub(crate) availability_changed_callback: Option<TypioEngineAvailabilityChangedCallback>,
-    pub(crate) availability_changed_user_data: *mut c_void,
     pub(crate) last_availability: TypioEngineAvailability,
     pub(crate) last_availability_reason: Option<CString>,
 
-    /* Dynamic engine capabilities (ADR-0034): fired when an engine updates
-     * its declared languages at runtime. Lets the host rebuild the language
-     * menu and validate the active language without polling. */
-    pub(crate) languages_changed_callback: Option<TypioLanguagesChangedCallback>,
-    pub(crate) languages_changed_user_data: *mut c_void,
-
     pub(crate) initialized: bool,
-    pub(crate) voice_session: *mut TypioVoiceSession,
+    pub(crate) voice_session: crate::wrappers::VoiceSessionPtr,
 }
 
 impl Drop for TypioInstance {
@@ -141,34 +124,7 @@ impl Drop for TypioInstance {
         if self.initialized {
             self.shutdown();
         }
-
-        for &ctx in &self.contexts {
-            if !ctx.is_null() {
-                input_context::typio_input_context_free(ctx);
-            }
-        }
         self.contexts.clear();
-
-        if !self.registry.is_null() {
-            c_registry::typio_registry_free(self.registry);
-        }
-
-        if !self.config.is_null() {
-            config::typio_config_free(self.config);
-        }
-
-        crate::string::typio_free_string(self.last_mode.id as *mut std::ffi::c_char);
-        crate::string::typio_free_string(self.last_mode.label as *mut std::ffi::c_char);
-        crate::string::typio_free_string(self.last_mode.display_label as *mut std::ffi::c_char);
-        crate::string::typio_free_string(self.last_mode.icon_name as *mut std::ffi::c_char);
-        crate::string::typio_free_string(self.last_mode.profile_id as *mut std::ffi::c_char);
-        crate::string::typio_free_string(self.last_mode.profile_label as *mut std::ffi::c_char);
-        crate::string::typio_free_string(self.last_mode.description as *mut std::ffi::c_char);
-
-        if !self.voice_session.is_null() {
-            unsafe { typio_voice_session_free(self.voice_session) };
-            self.voice_session = ptr::null_mut();
-        }
     }
 }
 
@@ -181,12 +137,12 @@ impl TypioInstance {
 
     pub(crate) fn ensure_config(&mut self) -> TypioResult {
         if self.config.is_null() {
-            self.config = config::typio_config_new();
+            self.config = crate::wrappers::ConfigPtr(config::typio_config_new());
         }
         if self.config.is_null() {
             return TypioResult::TypioErrorOutOfMemory;
         }
-        config_schema::typio_config_apply_defaults(self.config);
+        config_schema::typio_config_apply_defaults(self.config.0);
         TypioResult::TypioOk
     }
 
@@ -206,7 +162,7 @@ impl TypioInstance {
         };
         let path = build_config_path(&config_dir, TYPIO_CONFIG_FILE_NAME);
         let path_c = CString::new(path).unwrap();
-        config::typio_config_save_file(self.config, path_c.as_ptr())
+        config::typio_config_save_file(self.config.0, path_c.as_ptr())
     }
 }
 
@@ -264,8 +220,8 @@ impl TypioInstance {
             .collect();
 
         Box::new(TypioInstance {
-            registry: ptr::null_mut(),
-            config: ptr::null_mut(),
+            registry: crate::wrappers::RegistryPtr(ptr::null_mut()),
+            config: crate::wrappers::ConfigPtr(ptr::null_mut()),
             config_dir,
             data_dir,
             state_dir,
@@ -276,16 +232,9 @@ impl TypioInstance {
             plugin_loader_user_data: ptr::null_mut(),
             contexts: Vec::with_capacity(8),
             focused_context: ptr::null_mut(),
-            engine_changed_callback: None,
-            engine_changed_user_data: ptr::null_mut(),
-            voice_engine_changed_callback: None,
-            voice_engine_changed_user_data: ptr::null_mut(),
-            status_icon_changed_callback: None,
-            status_icon_changed_user_data: ptr::null_mut(),
+            callbacks: Default::default(),
             last_status_icon: None,
-            mode_changed_callback: None,
-            mode_changed_user_data: ptr::null_mut(),
-            last_mode: TypioKeyboardEngineMode {
+            last_mode: crate::wrappers::InstanceLastMode(TypioKeyboardEngineMode {
                 id: ptr::null(),
                 label: ptr::null(),
                 display_label: ptr::null(),
@@ -294,16 +243,12 @@ impl TypioInstance {
                 profile_label: ptr::null(),
                 description: ptr::null(),
                 salience: TypioStatusSalience::TypioStatusSalienceQuiet,
-            },
+            }),
             has_mode: false,
             initialized: false,
-            voice_session: ptr::null_mut(),
+            voice_session: crate::wrappers::VoiceSessionPtr(ptr::null_mut()),
             last_availability: TypioEngineAvailability::TypioEngineReady,
             last_availability_reason: None,
-            availability_changed_callback: None,
-            availability_changed_user_data: ptr::null_mut(),
-            languages_changed_callback: None,
-            languages_changed_user_data: ptr::null_mut(),
         })
     }
 
@@ -351,7 +296,7 @@ impl TypioInstance {
         // SAFETY: `self.registry` is set by init_rust to a valid
         // `*mut TypioRegistry` allocated via Box::into_raw, and is
         // freed only in Drop. We hold &self so no concurrent free.
-        Some(unsafe { &(*self.registry).inner })
+        Some(unsafe { &(*self.registry.0).inner })
     }
 
     /// Mutable typed accessor for the engine registry. Returns `None`
@@ -373,7 +318,7 @@ impl TypioInstance {
         // surface may still reenter through callback dispatch, but
         // that path is guarded by the instance's own interior
         // synchronisation, identical to `typio_instance_init`.
-        Some(unsafe { &mut (*self.registry).inner })
+        Some(unsafe { &mut (*self.registry.0).inner })
     }
 
     /// Typed accessor for the config tree. Returns `None` before
@@ -383,7 +328,7 @@ impl TypioInstance {
             return None;
         }
         // SAFETY: same justification as registry_rust.
-        Some(unsafe { &(*self.config) })
+        Some(unsafe { &(*self.config.0) })
     }
 }
 
@@ -469,8 +414,8 @@ pub extern "C" fn typio_instance_new_with_config(
     };
 
     let instance = Box::new(TypioInstance {
-        registry: ptr::null_mut(),
-        config: ptr::null_mut(),
+        registry: crate::wrappers::RegistryPtr(ptr::null_mut()),
+        config: crate::wrappers::ConfigPtr(ptr::null_mut()),
         config_dir,
         data_dir,
         state_dir,
@@ -481,22 +426,9 @@ pub extern "C" fn typio_instance_new_with_config(
         plugin_loader_user_data,
         contexts: Vec::with_capacity(8),
         focused_context: ptr::null_mut(),
-        engine_changed_callback: None,
-        engine_changed_user_data: ptr::null_mut(),
-        voice_engine_changed_callback: None,
-        voice_engine_changed_user_data: ptr::null_mut(),
-        status_icon_changed_callback: None,
-        status_icon_changed_user_data: ptr::null_mut(),
+        callbacks: Default::default(),
         last_status_icon: None,
-        mode_changed_callback: None,
-        mode_changed_user_data: ptr::null_mut(),
-        availability_changed_callback: None,
-        availability_changed_user_data: ptr::null_mut(),
-        last_availability: TypioEngineAvailability::TypioEngineReady,
-        last_availability_reason: None,
-        languages_changed_callback: None,
-        languages_changed_user_data: ptr::null_mut(),
-        last_mode: TypioKeyboardEngineMode {
+        last_mode: crate::wrappers::InstanceLastMode(TypioKeyboardEngineMode {
             id: ptr::null(),
             label: ptr::null(),
             display_label: ptr::null(),
@@ -505,10 +437,12 @@ pub extern "C" fn typio_instance_new_with_config(
             profile_label: ptr::null(),
             description: ptr::null(),
             salience: TypioStatusSalience::TypioStatusSalienceQuiet,
-        },
+        }),
         has_mode: false,
         initialized: false,
-        voice_session: ptr::null_mut(),
+        voice_session: crate::wrappers::VoiceSessionPtr(ptr::null_mut()),
+        last_availability: TypioEngineAvailability::TypioEngineReady,
+        last_availability_reason: None,
     });
 
     Box::into_raw(instance)
@@ -555,9 +489,9 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
         None => return TypioResult::TypioErrorInvalidArgument,
     };
     let path_c = CString::new(config_path).unwrap();
-    inst.config = config::typio_config_load_file(path_c.as_ptr());
+    inst.config = crate::wrappers::ConfigPtr(config::typio_config_load_file(path_c.as_ptr()));
     if inst.config.is_null() {
-        inst.config = config::typio_config_new();
+        inst.config = crate::wrappers::ConfigPtr(config::typio_config_new());
     }
     let result = inst.ensure_config();
     if result != TypioResult::TypioOk {
@@ -565,7 +499,7 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
         return result;
     }
 
-    inst.registry = c_registry::typio_registry_new(instance);
+    inst.registry = crate::wrappers::RegistryPtr(c_registry::typio_registry_new(instance));
     if inst.registry.is_null() {
         log::error!("Failed to create engine registry");
         return TypioResult::TypioError;
@@ -575,7 +509,9 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     // last-used keyboard and voice engine pairs across restarts.
     if let Some(ref dir) = inst.state_dir {
         unsafe {
-            (*inst.registry).inner.set_state_dir(&dir.to_string_lossy());
+            (*inst.registry.0)
+                .inner
+                .set_state_dir(&dir.to_string_lossy());
         }
     }
 
@@ -587,7 +523,7 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     // typio_registry_register_engine_process for each engine it accepts.
     if let Some(loader) = inst.plugin_loader {
         for dir in &inst.engine_dirs {
-            let loaded = loader(inst.registry, dir.as_ptr(), inst.plugin_loader_user_data);
+            let loaded = loader(inst.registry.0, dir.as_ptr(), inst.plugin_loader_user_data);
             log::info!(
                 "Host loader registered {} engine(s) from {}",
                 loaded,
@@ -604,7 +540,7 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     // or declared, restore the persisted active language — it retargets the
     // keyboard and voice slots through language resolution. The legacy
     // per-modality chain below runs only when no language is available.
-    if c_registry::typio_registry_restore_language(inst.registry) == TypioResult::TypioOk {
+    if c_registry::typio_registry_restore_language(inst.registry.0) == TypioResult::TypioOk {
         inst.initialized = true;
         log::info!("Typio instance initialized (language-first activation)");
         return TypioResult::TypioOk;
@@ -615,7 +551,7 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     // to the first available keyboard engine.
     let kb_engine = if !inst.config.is_null() {
         let key = CString::new("keyboard.engine").unwrap();
-        let val = config::typio_config_get_string(inst.config, key.as_ptr(), ptr::null());
+        let val = config::typio_config_get_string(inst.config.0, key.as_ptr(), ptr::null());
         if !val.is_null() {
             Some(
                 unsafe { CStr::from_ptr(val) }
@@ -631,20 +567,21 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     if let Some(ref name) = kb_engine {
         if !name.is_empty() {
             let name_c = CString::new(name.as_str()).unwrap();
-            let r = c_registry::typio_registry_set_active_keyboard(inst.registry, name_c.as_ptr());
+            let r =
+                c_registry::typio_registry_set_active_keyboard(inst.registry.0, name_c.as_ptr());
             if r != TypioResult::TypioOk {
                 log::warn!(
                     "Configured keyboard engine '{}' not found, falling back to last-used",
                     name
                 );
-                let result = unsafe { (*inst.registry).inner.activate_last_used_keyboard() };
+                let result = unsafe { (*inst.registry.0).inner.activate_last_used_keyboard() };
                 if let Err(ref e) = result {
                     log::warn!("Failed to activate keyboard engine: {:?}", e);
                 }
             }
         }
     } else {
-        let result = unsafe { (*inst.registry).inner.activate_last_used_keyboard() };
+        let result = unsafe { (*inst.registry.0).inner.activate_last_used_keyboard() };
         if let Err(ref e) = result {
             log::warn!("Failed to activate keyboard engine: {:?}", e);
         }
@@ -654,7 +591,7 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     // state-persistence > first available voice engine.
     let voice_engine = if !inst.config.is_null() {
         let key = CString::new("voice.engine").unwrap();
-        let val = config::typio_config_get_string(inst.config, key.as_ptr(), ptr::null());
+        let val = config::typio_config_get_string(inst.config.0, key.as_ptr(), ptr::null());
         if !val.is_null() {
             Some(
                 unsafe { CStr::from_ptr(val) }
@@ -670,20 +607,20 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
     if let Some(ref name) = voice_engine {
         if !name.is_empty() {
             let name_c = CString::new(name.as_str()).unwrap();
-            let r = c_registry::typio_registry_set_active_voice(inst.registry, name_c.as_ptr());
+            let r = c_registry::typio_registry_set_active_voice(inst.registry.0, name_c.as_ptr());
             if r != TypioResult::TypioOk {
                 log::warn!(
                     "Configured voice engine '{}' not found, falling back to last-used",
                     name
                 );
-                let result = unsafe { (*inst.registry).inner.activate_last_used_voice() };
+                let result = unsafe { (*inst.registry.0).inner.activate_last_used_voice() };
                 if let Err(ref e) = result {
                     log::debug!("No voice engine to activate: {:?}", e);
                 }
             }
         }
     } else {
-        let result = unsafe { (*inst.registry).inner.activate_last_used_voice() };
+        let result = unsafe { (*inst.registry.0).inner.activate_last_used_voice() };
         if let Err(ref e) = result {
             log::debug!("No voice engine to activate: {:?}", e);
         }
@@ -712,7 +649,7 @@ pub extern "C" fn typio_instance_get_voice_session(
     if instance.is_null() {
         return ptr::null_mut();
     }
-    unsafe { (*instance).voice_session }
+    unsafe { (*instance).voice_session.0 }
 }
 
 /// Set the voice session associated with this instance.
@@ -725,7 +662,7 @@ pub extern "C" fn typio_instance_set_voice_session(
         return;
     }
     unsafe {
-        (*instance).voice_session = session;
+        (*instance).voice_session = crate::wrappers::VoiceSessionPtr(session);
     }
 }
 

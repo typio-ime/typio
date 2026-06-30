@@ -126,7 +126,7 @@ pub extern "C" fn typio_instance_get_config(instance: *mut TypioInstance) -> *mu
     if instance.is_null() {
         return ptr::null_mut();
     }
-    unsafe { (*instance).config }
+    unsafe { (*instance).config.0 }
 }
 
 /// Get the configuration section for the named engine.
@@ -139,7 +139,7 @@ pub extern "C" fn typio_instance_get_engine_config(
         return ptr::null_mut();
     }
     let inst = unsafe { &*instance };
-    if inst.config.is_null() {
+    if inst.config.0.is_null() {
         return ptr::null_mut();
     }
     let name = unsafe { CStr::from_ptr(engine_name) }.to_string_lossy();
@@ -148,7 +148,7 @@ pub extern "C" fn typio_instance_get_engine_config(
     }
     let section = format!("engines.{}", name);
     let section_c = CString::new(section).unwrap();
-    config::typio_config_get_section(inst.config, section_c.as_ptr())
+    config::typio_config_get_section(inst.config.0, section_c.as_ptr())
 }
 
 /// Reload configuration from disk and apply defaults.
@@ -169,17 +169,17 @@ pub extern "C" fn typio_instance_reload_config(instance: *mut TypioInstance) -> 
     let new_config = config::typio_config_load_file(path_c.as_ptr());
     if !new_config.is_null() {
         config_schema::typio_config_apply_defaults(new_config);
-        if !inst.config.is_null() {
-            config::typio_config_free(inst.config);
+        if !inst.config.0.is_null() {
+            config::typio_config_free(inst.config.0);
         }
-        inst.config = new_config;
+        inst.config.0 = new_config;
     }
-    if inst.config.is_null() {
-        inst.config = config::typio_config_new();
-        if inst.config.is_null() {
+    if inst.config.0.is_null() {
+        inst.config.0 = config::typio_config_new();
+        if inst.config.0.is_null() {
             return TypioResult::TypioErrorOutOfMemory;
         }
-        config_schema::typio_config_apply_defaults(inst.config);
+        config_schema::typio_config_apply_defaults(inst.config.0);
     }
 
     // Engine config reload is now driven by the registry — the engine's
@@ -187,8 +187,8 @@ pub extern "C" fn typio_instance_reload_config(instance: *mut TypioInstance) -> 
     // Note: default engine activation has been removed; the framework now
     // persists and resumes the last-used engine via engine-state.toml.
     unsafe {
-        if !inst.registry.is_null() {
-            (*inst.registry).inner.reload_active_config();
+        if !inst.registry.0.is_null() {
+            (*inst.registry.0).inner.reload_active_config();
         }
     }
 
@@ -212,10 +212,10 @@ pub extern "C" fn typio_instance_get_config_text(instance: *mut TypioInstance) -
         return ptr::null_mut();
     }
     let inst = unsafe { &*instance };
-    if inst.config.is_null() {
+    if inst.config.0.is_null() {
         return ptr::null_mut();
     }
-    config::typio_config_to_string(inst.config)
+    config::typio_config_to_string(inst.config.0)
 }
 
 /// Parse the given TOML string and replace the current configuration.
@@ -234,10 +234,10 @@ pub extern "C" fn typio_instance_set_config_text(
         return TypioResult::TypioError;
     }
 
-    let old_key_count = if inst.config.is_null() {
+    let old_key_count = if inst.config.0.is_null() {
         0
     } else {
-        config::typio_config_key_count(inst.config)
+        config::typio_config_key_count(inst.config.0)
     };
     let new_key_count = config::typio_config_key_count(parsed);
     if old_key_count > 0 && new_key_count == 0 {
@@ -261,11 +261,11 @@ pub extern "C" fn typio_instance_set_config_text(
 
     config_schema::typio_config_apply_defaults(parsed);
 
-    let old_config = inst.config;
-    inst.config = parsed;
+    let old_config = inst.config.0;
+    inst.config.0 = parsed;
     let save_result = inst.save_config();
     if save_result != TypioResult::TypioOk {
-        inst.config = old_config;
+        inst.config.0 = old_config;
         config::typio_config_free(parsed);
         return save_result;
     }
@@ -288,7 +288,7 @@ pub extern "C" fn typio_instance_set_engine_config_key(
         return TypioResult::TypioErrorInvalidArgument;
     }
     let inst = unsafe { &*instance };
-    if inst.config.is_null() {
+    if inst.config.0.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
     }
 
@@ -309,7 +309,8 @@ pub extern "C" fn typio_instance_set_engine_config_key(
         unsafe { CStr::from_ptr(value) }.to_string_lossy()
     };
     let val_c = CString::new(val_str.as_ref()).unwrap();
-    let result = config::typio_config_set_string(inst.config, full_key_c.as_ptr(), val_c.as_ptr());
+    let result =
+        config::typio_config_set_string(inst.config.0, full_key_c.as_ptr(), val_c.as_ptr());
     if result != TypioResult::TypioOk {
         return result;
     }
@@ -319,7 +320,7 @@ pub extern "C" fn typio_instance_set_engine_config_key(
         return save_result;
     }
 
-    let registry = inst.registry;
+    let registry = inst.registry.0;
     if !registry.is_null() {
         let reg = unsafe { &mut *registry };
         let name_owned = name_str.into_owned();

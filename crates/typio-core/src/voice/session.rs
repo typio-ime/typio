@@ -290,7 +290,7 @@ fn run_voice_inference(instance: *mut TypioInstance, audio: Vec<f32>) -> Option<
         log::warn!("Voice inference: no instance available");
         return None;
     }
-    let registry = unsafe { (*instance).registry };
+    let registry = unsafe { (*instance).registry.0 };
     if registry.is_null() {
         log::warn!("Voice inference: no registry available");
         return None;
@@ -412,7 +412,7 @@ pub extern "C" fn typio_voice_session_is_available(session: *const TypioVoiceSes
     if instance.is_null() {
         return false;
     }
-    let registry = unsafe { (*instance).registry };
+    let registry = unsafe { (*instance).registry.0 };
     if registry.is_null() {
         return false;
     }
@@ -436,7 +436,7 @@ pub extern "C" fn typio_voice_session_get_unavail_reason(
     if instance.is_null() {
         return c"no instance".as_ptr();
     }
-    let registry = unsafe { (*instance).registry };
+    let registry = unsafe { (*instance).registry.0 };
     if registry.is_null() {
         return c"no registry".as_ptr();
     }
@@ -454,7 +454,7 @@ fn do_reload_engine(session: &VoiceSession) {
     if instance.is_null() {
         return;
     }
-    let registry = unsafe { (*instance).registry };
+    let registry = unsafe { (*instance).registry.0 };
     if registry.is_null() {
         return;
     }

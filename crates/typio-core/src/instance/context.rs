@@ -11,7 +11,7 @@ pub extern "C" fn typio_instance_get_registry(instance: *mut TypioInstance) -> *
     if instance.is_null() {
         return ptr::null_mut();
     }
-    unsafe { (*instance).registry }
+    unsafe { (*instance).registry.0 }
 }
 
 /// Create a new input context attached to this instance.
@@ -27,7 +27,7 @@ pub extern "C" fn typio_instance_create_context(
     if ctx.is_null() {
         return ptr::null_mut();
     }
-    inst.contexts.push(ctx);
+    inst.contexts.push(crate::wrappers::InputContextPtr(ctx));
     ctx
 }
 
@@ -41,7 +41,7 @@ pub extern "C" fn typio_instance_destroy_context(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.contexts.retain(|&c| c != ctx);
+    inst.contexts.retain(|c| c.0 != ctx);
     if inst.focused_context == ctx {
         inst.focused_context = ptr::null_mut();
     }

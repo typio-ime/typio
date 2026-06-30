@@ -44,11 +44,11 @@ fn preferences_enabled(instance: *mut TypioInstance) -> bool {
         return false;
     }
     let inst = unsafe { &*instance };
-    if inst.config.is_null() {
+    if inst.config.0.is_null() {
         return true;
     }
     let key = CString::new("keyboard.per_app_preferences").unwrap();
-    config::typio_config_get_bool(inst.config, key.as_ptr(), true)
+    config::typio_config_get_bool(inst.config.0, key.as_ptr(), true)
 }
 
 /* -------------------------------------------------------------------------- */

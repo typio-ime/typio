@@ -33,7 +33,7 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::time::Instant;
 
 use wayland_backend::client::ReadEventsGuard;
-use wayland_client::globals::{registry_queue_init, GlobalListContents};
+use wayland_client::globals::{registry_queue_init, Global, GlobalListContents};
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::{
     wl_callback, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_surface,
@@ -320,6 +320,10 @@ pub struct InputMethodState {
     /// constants) until then. A rate of `0` is the protocol signal for
     /// "do not repeat".
     pub compositor_repeat_info: Option<(i32, i32)>,
+    /// Tracks in-flight Wayland requests awaiting a compositor response
+    /// (`commit`→`done`, `grab_keyboard`→`keymap`, probe→`text_input_rectangle`).
+    /// Diagnoses "compositor did not send X" stalls; see [`crate::wayland_pending`].
+    pub wayland_pending: crate::wayland_pending::PendingRequestTracker,
 }
 
 impl InputMethodState {
@@ -469,6 +473,7 @@ impl InputMethodState {
         if self.panel_coord.should_probe_anchor() {
             self.set_preedit_and_flush("", 0);
             self.panel_coord.record_probe_sent();
+            self.wayland_pending.note_probe_sent(Instant::now());
         }
     }
 
@@ -505,6 +510,7 @@ impl InputMethodState {
             tracing::debug!(target: "typio.wayland.grab", "create");
             self.keyboard_grab = Some(self.input_method.grab_keyboard(qh, ()));
             self.keymap_received_this_epoch = false;
+            self.wayland_pending.note_grab_sent(Instant::now());
         }
     }
 
@@ -514,16 +520,18 @@ impl InputMethodState {
             tracing::debug!(target: "typio.wayland.grab", "destroy");
             drop(grab);
             self.keymap_received_this_epoch = false;
+            self.wayland_pending.note_keymap_received(Instant::now());
         }
     }
 
     /// Commit pending state to the compositor. Silently dropped before
     /// the first `done` — matching the C serial chokepoint.
-    pub fn commit(&self) {
+    pub fn commit(&mut self) {
         if !self.initialized {
             return;
         }
         self.input_method.commit(self.serial);
+        self.wayland_pending.note_commit_sent(Instant::now());
     }
 
     /// Forward a key to the focused app via the virtual keyboard.
@@ -579,6 +587,7 @@ impl InputMethodState {
         }
         self.input_method.commit_string(text.to_string());
         self.input_method.commit(self.serial);
+        self.wayland_pending.note_commit_sent(Instant::now());
     }
 
     /// Send preedit text to the compositor (shows inline composition
@@ -590,6 +599,7 @@ impl InputMethodState {
         self.input_method
             .set_preedit_string(text.to_string(), cursor as i32, cursor as i32);
         self.input_method.commit(self.serial);
+        self.wayland_pending.note_commit_sent(Instant::now());
     }
 
     /// Clear any preedit and commit nothing (used on key release or
@@ -600,6 +610,7 @@ impl InputMethodState {
         }
         self.input_method.set_preedit_string(String::new(), 0, 0);
         self.input_method.commit(self.serial);
+        self.wayland_pending.note_commit_sent(Instant::now());
     }
 
     /// Load an XKB keymap from a compositor-provided file descriptor.
@@ -724,23 +735,92 @@ impl InputMethodFrontend {
             registry_queue_init::<InputMethodState>(&conn).map_err(ConnectError::RegistryFailed)?;
         let qh = queue.handle();
 
+        // Log what the compositor actually advertises for the input-method
+        // protocol family. This is the ground truth for "does this
+        // compositor support IM at all, and at what version" — it answers
+        // the recurring "is it us or the compositor?" question at startup.
+        // The registry roundtrip inside `registry_queue_init` has already
+        // populated the list, so no extra roundtrip is needed.
+        globals.contents().with_list(|list: &[Global]| {
+            const IM_RELEVANT: &[&str] = &[
+                "wl_seat",
+                "wl_compositor",
+                "wl_shm",
+                "wp_viewporter",
+                "zwp_input_method_manager_v2",
+                "zwp_virtual_keyboard_manager_v1",
+                "zwp_text_input_v3",
+                "zwp_text_input_manager_v3",
+                "zwp_input_method_v1",
+                "zwp_linux_dmabuf_v1",
+                "wp_fractional_scale_manager_v1",
+                "wp_presentation",
+                "xdg_wm_base",
+                "ext_foreign_toplevel_list_v1",
+                "zwlr_foreign_toplevel_manager_v1",
+            ];
+            let advertised: Vec<&Global> = list
+                .iter()
+                .filter(|g| IM_RELEVANT.contains(&g.interface.as_str()))
+                .collect();
+            if advertised.is_empty() {
+                tracing::warn!(
+                    target: "typio.wayland.frontend",
+                    total_globals = list.len(),
+                    "compositor advertises NO input-method-relevant globals — \
+                     input-method-v2 likely unsupported here; expect bind failures"
+                );
+            } else {
+                let summary: Vec<String> = advertised
+                    .iter()
+                    .map(|g| format!("{} v{}", g.interface, g.version))
+                    .collect();
+                tracing::info!(
+                    target: "typio.wayland.frontend",
+                    total_globals = list.len(),
+                    advertised = summary.join(", "),
+                    "compositor global registry snapshot (input-method-relevant interfaces)"
+                );
+            }
+        });
+
         let seat: wl_seat::WlSeat = globals
             .bind(&qh, 1..=9, ())
             .map_err(|e| ConnectError::BindFailed("wl_seat", format!("{e:?}")))?;
+        tracing::debug!(
+            target: "typio.wayland.frontend",
+            version = seat.version(),
+            "bound wl_seat"
+        );
 
         let im_manager: ZwpInputMethodManagerV2 = globals.bind(&qh, 1..=1, ()).map_err(|e| {
             ConnectError::BindFailed("zwp_input_method_manager_v2", format!("{e:?}"))
         })?;
+        tracing::info!(
+            target: "typio.wayland.frontend",
+            version = im_manager.version(),
+            "bound zwp_input_method_manager_v2 — input-method protocol active"
+        );
 
         let _vk_manager: ZwpVirtualKeyboardManagerV1 =
             globals.bind(&qh, 1..=1, ()).map_err(|e| {
                 ConnectError::BindFailed("zwp_virtual_keyboard_manager_v1", format!("{e:?}"))
             })?;
+        tracing::debug!(
+            target: "typio.wayland.frontend",
+            version = _vk_manager.version(),
+            "bound zwp_virtual_keyboard_manager_v1"
+        );
 
         // Bind wl_compositor (for creating panel surfaces).
         let compositor: WlCompositor = globals
             .bind(&qh, 1..=6, ())
             .map_err(|e| ConnectError::BindFailed("wl_compositor", format!("{e:?}")))?;
+        tracing::debug!(
+            target: "typio.wayland.frontend",
+            version = compositor.version(),
+            "bound wl_compositor"
+        );
 
         // Bind wp_viewporter if the compositor advertises it. ADR-0013's
         // grow-only sizing is retained for the offscreen image: without a
@@ -775,21 +855,41 @@ impl InputMethodFrontend {
             ),
         }
 
-        // Bind zwp_linux_dmabuf_v1 for the zero-copy panel present path
-        // (ADR-0040 follow-on). When available, flux exports the offscreen
-        // image as a dma-buf and the compositor composites it directly —
-        // eliminating the 12–16 ms GPU→CPU readback fence stall. Falls back
-        // to the wl_shm + readback path when absent.
+        // Bind zwp_linux_dmabuf_v1 for the optional zero-copy panel present
+        // path (ADR-0040 follow-on). When available *and* opted in, flux
+        // exports the offscreen image as a dma-buf and the compositor
+        // composites it directly — eliminating the GPU→CPU readback stall.
+        //
+        // Defaults to OFF: the SHM readback path (~0.75-1 ms/frame for a
+        // candidate row) is universally supported — no DRM-modifier
+        // negotiation, no compositor-specific dmabuf quirks — while several
+        // compositors (notably niri/Smithay) silently drop input-popup
+        // dmabuf buffers they advertise as supported, making the candidate
+        // panel disappear. The Wayland dmabuf protocol offers no failure
+        // feedback on the create_immed path, so the host cannot detect this
+        // and self-heal. Set TYPIO_PANEL_DMABUF=1 to opt back into
+        // zero-copy on compositors known to handle it correctly.
+        let dmabuf_enabled = std::env::var("TYPIO_PANEL_DMABUF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let dmabuf: Option<crate::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1> =
-            globals.bind(&qh, 3..=4, ()).ok();
+            if dmabuf_enabled {
+                globals.bind(&qh, 3..=4, ()).ok()
+            } else {
+                None
+            };
         match &dmabuf {
             Some(_) => tracing::info!(
                 target: "typio.wayland.dmabuf",
-                "compositor advertises zwp_linux_dmabuf_v1 (zero-copy panel present active)"
+                "compositor advertises zwp_linux_dmabuf_v1 (zero-copy panel present active — TYPIO_PANEL_DMABUF=1)"
             ),
-            None => tracing::warn!(
+            None if dmabuf_enabled => tracing::warn!(
                 target: "typio.wayland.dmabuf",
-                "compositor lacks zwp_linux_dmabuf_v1 — falling back to wl_shm readback path"
+                "TYPIO_PANEL_DMABUF=1 but compositor lacks zwp_linux_dmabuf_v1 — falling back to wl_shm readback path"
+            ),
+            None => tracing::info!(
+                target: "typio.wayland.shm",
+                "panel present via wl_shm readback (set TYPIO_PANEL_DMABUF=1 to try zero-copy)"
             ),
         }
 
@@ -861,6 +961,7 @@ impl InputMethodFrontend {
             panel_coord: PanelCoordinator::new(),
             buffer_scale: 1.0,
             compositor_repeat_info: None,
+            wayland_pending: crate::wayland_pending::PendingRequestTracker::default(),
         };
 
         Ok(Self {
@@ -1228,6 +1329,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 state.fire(LifecycleEvent::Done {
                     serial: state.serial,
                 });
+                state.wayland_pending.note_done_received(Instant::now());
             }
             Event::Unavailable => {
                 state.stopped = true;
@@ -1344,6 +1446,7 @@ impl Dispatch<ZwpInputPopupSurfaceV2, ()> for InputMethodState {
         state.text_input_rect = Some((x, y, width, height));
         state.panel_coord.note_caret_rect();
         state.panel_coord.mark_anchor_ready();
+        state.wayland_pending.note_rect_received(Instant::now());
     }
 }
 
@@ -1364,6 +1467,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                     "Keymap event received, format={format:?} size={size}"
                 );
                 state.keymap_received_this_epoch = true;
+                state.wayland_pending.note_keymap_received(Instant::now());
                 let fmt_raw: u32 = match &format {
                     wayland_client::WEnum::Value(v) => *v as u32,
                     wayland_client::WEnum::Unknown(u) => *u,

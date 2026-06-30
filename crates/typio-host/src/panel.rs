@@ -825,6 +825,16 @@ impl FluxPanel {
     /// stage marker is retained so timing logs and watchdog state keep a
     /// stable boundary between GPU submission and readback/SHM attach. Tests
     /// pass `&|| {}`.
+    /// Draw the candidate panel and present it to the compositor.
+    ///
+    /// Returns `true` iff a frame was actually attached to the surface (i.e.
+    /// it will become visible). Returns `false` when the frame was dropped
+    /// *before* reaching the compositor — either an early-out on a failed
+    /// flux frame begin/submit, or a present-path drop (dma-buf buffer still
+    /// held by the compositor, or the SHM pool exhausted). The event loop
+    /// treats `false` as "not presented": it keeps the schedule `Dirty` and
+    /// retries the frame next tick with the latest coalesced candidates,
+    /// instead of marking that composition_seq done and forgetting it.
     pub fn draw_candidates(
         &mut self,
         candidates: &[String],
@@ -832,7 +842,7 @@ impl FluxPanel {
         composition_seq: u64,
         heartbeat: &dyn Fn(),
         before_present: &dyn Fn(),
-    ) {
+    ) -> bool {
         let timing_trace_enabled =
             tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::TRACE);
         let timing_info_enabled =
@@ -884,7 +894,7 @@ impl FluxPanel {
         // `unsafe` block because `layout_candidates` takes `&mut self`
         // and so cannot share the borrow with the FFI calls below.
         let layout = timed!(measure_duration, self.layout_candidates(candidates));
-        unsafe {
+        let presented = unsafe {
             flux_arena_reset(&mut self.arena);
             heartbeat();
 
@@ -900,7 +910,7 @@ impl FluxPanel {
             );
             heartbeat();
             if !flux_result_is_ok(r) {
-                return;
+                return false;
             }
 
             // Transparent clear: the rounded-rect fill below covers the body,
@@ -915,13 +925,13 @@ impl FluxPanel {
             );
             heartbeat();
             if !flux_result_is_ok(r) {
-                return;
+                return false;
             }
 
             timed!(draw_duration, self.draw_panel_background());
             heartbeat();
             if !flux_result_is_ok(r) {
-                return;
+                return false;
             }
 
             let text_color = flux_color_rgba(240, 240, 240, 255);
@@ -1217,7 +1227,7 @@ impl FluxPanel {
             let r = timed!(submit_duration, flux_frame_submit(frame));
             heartbeat();
             if !flux_result_is_ok(r) {
-                return;
+                return false;
             }
             before_present();
             // Offscreen path: present is a no-op (no swapchain). The actual
@@ -1244,12 +1254,13 @@ impl FluxPanel {
                         target: "typio.panel.dmabuf",
                         "flux_surface_export_dmabuf failed"
                     );
-                    return;
+                    return false;
                 }
                 let owned_fd = std::os::fd::FromRawFd::from_raw_fd(fd);
-                self.present_dmabuf(owned_fd);
+                let presented = self.present_dmabuf(owned_fd);
                 heartbeat();
                 self.log_text_stats();
+                presented
             } else {
                 // ── Readback + SHM path (fallback) ───────────────────────
                 // Read the rendered frame back from the GPU. Bounded by the
@@ -1271,7 +1282,7 @@ impl FluxPanel {
                         target: "typio.panel.shm",
                         "flux_surface_read_pixels failed"
                     );
-                    return;
+                    return false;
                 }
 
                 // Hand the pixels to the compositor via a host-managed shm
@@ -1279,11 +1290,15 @@ impl FluxPanel {
                 // (compositor hasn't released them) — drop this frame rather
                 // than block. This is the structural fix: a slow compositor
                 // causes dropped frames, never a deadlock.
-                self.present_shm(&readback_buf);
+                let presented = self.present_shm(&readback_buf);
                 heartbeat();
                 self.log_text_stats();
+                presented
             }
-        }
+        };
+        // Timing emission happens after the present result is known so the
+        // slow-frame log can also report whether the frame actually reached
+        // the compositor.
         if let Some(total_start) = total_start {
             let total_duration = total_start.elapsed();
             let slow = total_duration >= PANEL_TIMING_SLOW_THRESHOLD;
@@ -1347,6 +1362,7 @@ impl FluxPanel {
                 );
             }
         }
+        presented
     }
 
     /// Emit glyph-cache + atlas stats to stderr. Throttled to once every
@@ -1626,9 +1642,18 @@ impl FluxPanel {
     /// `wl_buffer` exists for the submitted slot, and attach it to the
     /// surface. Zero-copy — the compositor composites the GPU memory
     /// directly.
-    fn present_dmabuf(&mut self, fd: std::os::fd::OwnedFd) {
+    /// Present the submitted frame's GPU memory to the compositor.
+    ///
+    /// Returns `true` iff a buffer was actually attached to the surface.
+    /// `false` means the frame was dropped *without* reaching the
+    /// compositor (no dma-buf pool, stride-0/unexportable surface, or the
+    /// target slot's previous buffer is still held by the compositor). The
+    /// caller must treat `false` as "not presented" so the frame is retried
+    /// on a later tick instead of being silently forgotten — otherwise the
+    /// schedule moves to Idle and that composition_seq is never redrawn.
+    fn present_dmabuf(&mut self, fd: std::os::fd::OwnedFd) -> bool {
         let Some(pool) = self.dmabuf_pool.as_mut() else {
-            return;
+            return false;
         };
 
         // Query the surface's export metadata (modifier + stride), set at
@@ -1640,7 +1665,7 @@ impl FluxPanel {
                 target: "typio.panel.dmabuf",
                 "dmabuf stride is 0 — surface not exportable?"
             );
-            return;
+            return false;
         }
 
         // Which frame slot was just submitted? With frames_in_flight=2 the GPU
@@ -1654,12 +1679,16 @@ impl FluxPanel {
         if let Some(buf) = pool.get(slot) {
             if buf.busy() {
                 // Compositor still holds this slot's previous frame — drop.
-                tracing::trace!(
+                // (debug, not trace: a dropped candidate frame is a real
+                // user-visible regression, not internal noise. The loop's
+                // retry path keeps the schedule Dirty so the frame is
+                // re-attempted next tick instead of being lost.)
+                tracing::debug!(
                     target: "typio.panel.dmabuf",
                     slot,
-                    "dmabuf buffer busy — dropping frame"
+                    "dmabuf buffer busy — dropping frame (will retry)"
                 );
-                return;
+                return false;
             }
             buf.mark_busy();
             // Force buffer_scale=1 when wp_viewport is active, exactly as the
@@ -1680,19 +1709,42 @@ impl FluxPanel {
                     self.height,
                 );
             }
+            true
+        } else {
+            // No buffer exists for this slot yet (first present after a
+            // resize/clear that drained the pool). ensure_slot above only
+            // creates when needs_create is true *and* it can; a None here
+            // means the pool has no buffer for this slot at all — drop, and
+            // let the retry path re-attempt once ensure_slot has rebuilt it.
+            tracing::debug!(
+                target: "typio.panel.dmabuf",
+                slot,
+                "no dmabuf buffer for slot — dropping frame (will retry)"
+            );
+            false
         }
     }
 
-    fn present_shm(&mut self, pixels: &[u8]) {
+    /// Present rendered pixels to the compositor via a host-managed SHM buffer.
+    ///
+    /// Returns `true` iff a buffer was actually attached. `false` means the
+    /// frame was dropped *without* reaching the compositor (no SHM pool, or
+    /// all buffers busy because the compositor hasn't released them yet). The
+    /// caller treats `false` as "not presented" so the loop retries the frame
+    /// instead of marking it done.
+    fn present_shm(&mut self, pixels: &[u8]) -> bool {
         let Some(pool) = self.shm_pool.as_mut() else {
-            return;
+            return false;
         };
         let Some(idx) = pool.acquire(self.width, self.height) else {
-            tracing::trace!(
+            // All buffers busy (compositor hasn't released them) — drop this
+            // frame rather than block. (debug, not trace: same rationale as
+            // the dmabuf path — a dropped candidate frame is user-visible.)
+            tracing::debug!(
                 target: "typio.panel.shm",
-                "shm buffer pool exhausted — dropping frame"
+                "shm buffer pool exhausted — dropping frame (will retry)"
             );
-            return;
+            return false;
         };
         let buf = pool.get(idx).expect("acquire returned a valid index");
         let dst = buf.pixels();
@@ -1735,6 +1787,7 @@ impl FluxPanel {
                 self.height,
             );
         }
+        true
     }
 
     /// Draw the status banner — a single centred text label used by the
@@ -1750,17 +1803,35 @@ impl FluxPanel {
     /// `flux_frame_present` so the caller can transition the watchdog
     /// to the longer-threshold `Present` stage; see
     /// [`FluxPanel::draw_candidates`] for the rationale.
+    /// Draw the status banner and present it to the compositor.
+    ///
+    /// Returns `true` iff a frame was actually attached to the surface. See
+    /// [`FluxPanel::draw_candidates`] for the `false` contract — callers
+    /// (`render_indicator_banner` / `render_voice_status_banner`) currently
+    /// ignore the result because banners are fire-and-forget (re-shown on the
+    /// next trigger), but the contract is kept symmetric so a future retry
+    /// path is a drop-in.
+    ///
+    /// Empty labels are ignored (return `false`) — caller should `hide()`
+    /// instead.
+    ///
+    /// `heartbeat` mirrors [`FluxPanel::draw_candidates`]: invoked
+    /// between blocking FFI calls so a slow compositor does not trip
+    /// the watchdog. `before_present` is invoked immediately before
+    /// `flux_frame_present` so the caller can transition the watchdog
+    /// to the longer-threshold `Present` stage; see
+    /// [`FluxPanel::draw_candidates`] for the rationale.
     pub fn draw_status_banner(
         &mut self,
         label: &str,
         heartbeat: &dyn Fn(),
         before_present: &dyn Fn(),
-    ) {
+    ) -> bool {
         if label.is_empty() {
-            return;
+            return false;
         }
         heartbeat();
-        unsafe {
+        let presented = unsafe {
             flux_arena_reset(&mut self.arena);
             heartbeat();
 
@@ -1773,24 +1844,51 @@ impl FluxPanel {
             let r = flux_surface_begin_frame(self.surface, &frame_desc, &mut frame);
             heartbeat();
             if !flux_result_is_ok(r) {
-                return;
+                false
+            } else {
+                // Transparent clear so the rounded-banner corners blend away
+                // (matches draw_candidates).
+                let clear_color = flux_color_rgba(0, 0, 0, 0);
+                let r = flux_canvas_begin(self.canvas, frame, &clear_color);
+                heartbeat();
+                if !flux_result_is_ok(r) {
+                    false
+                } else {
+                    self.draw_panel_background();
+                    heartbeat();
+                    if !flux_result_is_ok(r) {
+                        false
+                    } else {
+                        self.draw_banner_inner(
+                            label,
+                            frame,
+                            heartbeat,
+                            before_present,
+                        )
+                    }
+                }
             }
+        };
+        presented
+    }
 
-            // Transparent clear so the rounded-banner corners blend away
-            // (matches draw_candidates).
-            let clear_color = flux_color_rgba(0, 0, 0, 0);
-            let r = flux_canvas_begin(self.canvas, frame, &clear_color);
-            heartbeat();
-            if !flux_result_is_ok(r) {
-                return;
-            }
-
-            self.draw_panel_background();
-            heartbeat();
-            if !flux_result_is_ok(r) {
-                return;
-            }
-
+    /// Banner rendering + present shared by [`Self::draw_status_banner`].
+    /// Assumes the caller has already begun the frame and canvas, drawn the
+    /// background, and verified flux result codes. Returns `true` iff a frame
+    /// was attached to the surface; `false` on any flux failure or
+    /// present-path drop (dmabuf busy / shm exhausted).
+    ///
+    /// Split out so the ladder of flux early-out checks in
+    /// `draw_status_banner` stays shallow instead of a deeply nested
+    /// `match`/`else` tower.
+    unsafe fn draw_banner_inner(
+        &mut self,
+        label: &str,
+        frame: *mut flux_frame,
+        heartbeat: &dyn Fn(),
+        before_present: &dyn Fn(),
+    ) -> bool {
+        unsafe {
             let text_color = flux_color_rgba(240, 240, 240, 255);
             let style = flux_text_sys::flux_text_style {
                 size_px: BANNER_FONT_SIZE,
@@ -1809,7 +1907,8 @@ impl FluxPanel {
             );
             heartbeat();
 
-            let text_y = BANNER_PADDING + (BANNER_FONT_SIZE * 1.3 - metrics.height).max(0.0) / 2.0;
+            let text_y =
+                BANNER_PADDING + (BANNER_FONT_SIZE * 1.3 - metrics.height).max(0.0) / 2.0;
             let text_x = BANNER_PADDING;
 
             flux_text_draw(
@@ -1829,7 +1928,7 @@ impl FluxPanel {
             let r = flux_frame_submit(frame);
             heartbeat();
             if !flux_result_is_ok(r) {
-                return;
+                return false;
             }
             before_present();
             // Offscreen: present is a no-op; the real "present" is either a
@@ -1848,11 +1947,12 @@ impl FluxPanel {
                         target: "typio.panel.dmabuf",
                         "banner flux_surface_export_dmabuf failed"
                     );
-                    return;
+                    return false;
                 }
                 let owned_fd = std::os::fd::FromRawFd::from_raw_fd(fd);
-                self.present_dmabuf(owned_fd);
+                let presented = self.present_dmabuf(owned_fd);
                 heartbeat();
+                presented
             } else {
                 // Readback + SHM fallback.
                 let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
@@ -1868,10 +1968,11 @@ impl FluxPanel {
                         target: "typio.panel.shm",
                         "banner read_pixels failed"
                     );
-                    return;
+                    return false;
                 }
-                self.present_shm(&readback_buf);
+                let presented = self.present_shm(&readback_buf);
                 heartbeat();
+                presented
             }
         }
     }

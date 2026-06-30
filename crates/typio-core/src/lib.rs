@@ -9,7 +9,6 @@
 // signature and only adds noise, so the lint is allowed crate-wide. The safety
 // contract lives at the call sites in `daemon/` and the engine plugins.
 #![warn(missing_docs)]
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 pub mod c_api;
 pub mod config;
@@ -23,8 +22,10 @@ pub mod log;
 pub mod shortcut;
 pub mod string;
 pub mod types;
-/// Voice input and processing.
+/// Voice related operations
 pub mod voice;
+/// RAII wrappers for C pointers
+pub mod wrappers;
 
 // Re-export at crate root so cbindgen can see them easily
 pub use config::*;

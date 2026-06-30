@@ -50,6 +50,7 @@ pub mod text_ui_state;
 pub mod tray_menu;
 pub mod tray_sni;
 pub mod uds_server;
+pub mod wayland_pending;
 #[cfg(feature = "wayland")]
 pub mod voice;
 pub mod watchdog;
