@@ -148,6 +148,14 @@ impl PanelCoordinator {
         self.position_anchor_has_caret = false;
     }
 
+    /// Whether the compositor has sent a real caret rectangle for the current
+    /// anchor generation (as opposed to the popup being shown via the anchor
+    /// timeout fallback). Diagnostic only — the timeout fallback now applies
+    /// to every owner regardless.
+    pub fn has_caret_rect(&self) -> bool {
+        self.position_anchor_has_caret
+    }
+
     /// Record that the compositor sent a text-input rectangle for this popup.
     pub fn note_caret_rect(&mut self) {
         self.position_anchor_has_caret = true;
@@ -315,17 +323,22 @@ impl PanelCoordinator {
         if elapsed_ms < self.config.anchor_timeout_ms {
             return None;
         }
-        let caret_fallback = self.position_anchor_has_caret
-            || matches!(
-                self.positioned_ui_pending_owner,
-                UiOwner::Indicator | UiOwner::Voice
-            );
-        if caret_fallback {
-            self.mark_anchor_ready();
-            return self.flush_pending();
-        }
-        self.cancel_pending();
-        None
+        // The anchor probe timed out. Fall back to the compositor's default
+        // popup placement and show anyway rather than stranding the popup
+        // off-screen: a missing or slow `text_input_rectangle` (common right
+        // after startup, and on compositors that never emit one for an empty
+        // preedit probe) must not hold a positioned popup indefinitely.
+        //
+        // This fallback applies to *every* owner, including the candidate
+        // panel. Previously only Indicator/Voice fell back and a pending
+        // Candidate was cancelled here, so the candidate panel could vanish
+        // after a few keystrokes and only reappear once a real caret rect
+        // finally arrived. The popup surface is positioned by the compositor
+        // via the input-method-v2 popup protocol, so committing without a
+        // caret rect is safe — a later `text_input_rectangle` refines the
+        // position in place.
+        self.mark_anchor_ready();
+        self.flush_pending()
     }
 
     /// Remaining milliseconds until the pending anchor probe deadline, or
@@ -421,6 +434,31 @@ mod tests {
             Some((UiOwner::Voice, "Voice: no audio source".to_string()))
         );
         assert_eq!(coord.visible_owner(), UiOwner::Voice);
+    }
+
+    #[test]
+    fn candidate_panel_falls_back_after_anchor_timeout() {
+        // Regression: a missing/slow `text_input_rectangle` must not strand
+        // the candidate panel. After the anchor timeout the pending candidate
+        // is shown via the fallback anchor, not cancelled.
+        let mut coord =
+            PanelCoordinator::with_config(PanelCoordinatorConfig::from_values(true, 50));
+        coord.reset_anchor();
+        assert_eq!(
+            coord.decide_positioned_flush(UiOwner::Candidate, "candidate"),
+            FlushDecision::Pending
+        );
+        // No caret rect ever arrives.
+        assert!(!coord.has_caret_rect());
+
+        let later = Instant::now() + std::time::Duration::from_millis(60);
+        assert_eq!(
+            coord.flush_pending_with_timeout(later),
+            Some((UiOwner::Candidate, "candidate".to_string()))
+        );
+        assert_eq!(coord.visible_owner(), UiOwner::Candidate);
+        assert!(coord.anchor_ready());
+        assert!(!coord.has_pending());
     }
 
     #[test]
