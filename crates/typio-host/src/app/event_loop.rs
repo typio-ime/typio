@@ -514,7 +514,7 @@ impl App {
                     context_focused,
                 );
                 if schedule_state != panel_scheduler::PanelScheduleState::Idle {
-                    tracing::debug!(
+                    tracing::trace!(
                         target: "typio.panel.scheduler",
                         schedule_state = ?schedule_state,
                         should_flush,
@@ -525,6 +525,35 @@ impl App {
                         has_context,
                         context_focused,
                         "panel scheduler tick"
+                    );
+                }
+                // Idle-escape valve. A `Dirty` schedule only exits `Dirty`
+                // through the flush path below, which is gated on focus +
+                // candidates. When neither can ever satisfy the gate this
+                // tick — empty candidate list, or the context/session has
+                // dropped out from under us (e.g. focus moved to a surface
+                // that keeps the input context alive without reporting
+                // `is_focused`, the browser case) — the flush block is
+                // skipped and the schedule would pin `Dirty` forever,
+                // spinning the trace log on every loop iteration. Settling
+                // here is safe: there is nothing on screen to lose, and a
+                // future `mark_dirty` (candidates arrive, focus returns)
+                // re-arms the path.
+                if panel_scheduler::should_settle(
+                    schedule_state,
+                    candidate_count,
+                    has_context,
+                    has_session,
+                ) {
+                    frontend.state_mut().panel_schedule_state =
+                        panel_scheduler::complete();
+                    tracing::debug!(
+                        target: "typio.panel.scheduler",
+                        composition_seq,
+                        candidate_count,
+                        has_context,
+                        has_session,
+                        "panel: settle Dirty → Idle (no flushable work)"
                     );
                 }
                 if should_flush {
