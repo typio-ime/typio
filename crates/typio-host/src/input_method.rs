@@ -35,7 +35,9 @@ use std::time::Instant;
 use wayland_backend::client::ReadEventsGuard;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::wl_compositor::WlCompositor;
-use wayland_client::protocol::{wl_callback, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_surface};
+use wayland_client::protocol::{
+    wl_callback, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::focus_controller::InputFacts;
@@ -243,8 +245,8 @@ pub struct InputMethodState {
     #[allow(dead_code)]
     viewporter: Option<WpViewporter>,
     /// `wp_viewport` attached to `popup_surface_obj`. Used by the panel
-    /// to crop an oversized, grow-only swapchain to the exact content
-    /// rect (ADR-0013).
+    /// to crop an oversized, grow-only offscreen image to the exact content
+    /// rect (ADR-0013, adapted by ADR-0040).
     #[allow(dead_code)]
     panel_viewport: Option<WpViewport>,
     /// `wl_shm` global — the shared-memory buffer factory. Used by the
@@ -648,12 +650,11 @@ impl InputMethodState {
 pub struct InputMethodFrontend {
     // Drop order matters here. Rust drops fields in declaration order, so
     // the panel MUST be declared before the Wayland connection: the panel
-    // owns Vulkan resources that reference the wl_surface, and libflux's
-    // teardown still makes Wayland protocol calls. If `conn` or `state`
-    // is dropped first, libflux hits a closed connection or freed proxy
-    // and segfaults. Order:
-    //   1. panel     — releases Vulkan surface/canvas/text/arena
-    //   2. state     — frees wl_surface / vk / grab proxies
+    // owns flux resources and attaches host-managed buffers to the popup
+    // wl_surface. If `conn` or `state` is dropped first, teardown can touch
+    // a closed connection or freed proxy. Order:
+    //   1. panel     — releases flux surface/canvas/text/arena
+    //   2. state     — frees wl_surface / grab proxies
     //   3. queue     — releases event queue
     //   4. conn      — closes the display socket last
     panel: Option<FluxPanel>,
@@ -666,7 +667,7 @@ impl InputMethodFrontend {
     /// Connect to the Wayland display, bind globals, create the
     /// input-method object, and attempt to create the GPU panel.
     pub fn connect(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
-        let mut frontend = Self::connect_internal(callback, true)?;
+        let mut frontend = Self::connect_internal(callback)?;
 
         let surface_ptr = frontend.state.popup_surface_raw_ptr();
         let viewport = frontend.state.panel_viewport.clone();
@@ -707,13 +708,10 @@ impl InputMethodFrontend {
         Ok(frontend)
     }
 
-    /// Shared connection setup. When `create_panel` is false the GPU panel is
-    /// not created; this keeps unit tests that only exercise the protocol
-    /// state machine from crashing in environments without a Vulkan surface.
-    fn connect_internal(
-        callback: Option<LifecycleCallback>,
-        _create_panel: bool,
-    ) -> Result<Self, ConnectError> {
+    /// Shared connection setup. The GPU panel is created by [`Self::connect`]
+    /// after the protocol state is ready; tests use this helper directly to
+    /// exercise the state machine without creating flux resources.
+    fn connect_internal(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
         let conn = Connection::connect_to_env().map_err(ConnectError::ConnectionFailed)?;
         let (globals, queue) =
             registry_queue_init::<InputMethodState>(&conn).map_err(ConnectError::RegistryFailed)?;
@@ -737,21 +735,20 @@ impl InputMethodFrontend {
             .bind(&qh, 1..=6, ())
             .map_err(|e| ConnectError::BindFailed("wl_compositor", format!("{e:?}")))?;
 
-        // Bind wp_viewporter if the compositor advertises it. ADR-0013
-        // requires this for the grow-only swapchain: without a viewport
-        // the buffer must equal the content exactly, which forces a
-        // swapchain rebuild (vkDeviceWaitIdle + WSI roundtrips) on every
-        // candidate-page width change — the watchdog-killing stall.
-        // Compositors without viewporter fall back to exact-size resize.
+        // Bind wp_viewporter if the compositor advertises it. ADR-0013's
+        // grow-only sizing is retained for the offscreen image: without a
+        // viewport the SHM buffer must equal the content exactly, so content
+        // size changes resize the offscreen image instead of just updating a
+        // crop.
         let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
         match &viewporter {
             Some(_) => tracing::info!(
                 target: "typio.wayland.viewporter",
-                "compositor advertises wp_viewporter (grow-only swapchain active)"
+                "compositor advertises wp_viewporter (grow-only offscreen image active)"
             ),
             None => tracing::warn!(
                 target: "typio.wayland.viewporter",
-                "compositor lacks wp_viewporter — candidate-page width changes rebuild the swapchain (watchdog-killing stall); see ADR-0013"
+                "compositor lacks wp_viewporter — candidate-page size changes resize the offscreen image; see ADR-0013/ADR-0040"
             ),
         }
 
@@ -850,7 +847,7 @@ impl InputMethodFrontend {
 
     #[cfg(test)]
     fn connect_test() -> Result<Self, ConnectError> {
-        Self::connect_internal(None, false)
+        Self::connect_internal(None)
     }
 
     /// Immutable access to the state (serial, active flag, etc.).
@@ -904,27 +901,6 @@ impl InputMethodFrontend {
         self.queue.as_fd().as_raw_fd()
     }
 
-    /// Raw `wl_display*` pointer. Needed for creating raw Wayland
-    /// objects (like the panel's wl_surface) that share this
-    /// connection.
-    ///
-    /// # Safety
-    /// The caller must not close the display or use it after the
-    /// frontend is dropped.
-    /// Get the raw wl_display* from this connection. Needed for flux
-    /// panel surface creation on the SAME Wayland connection.
-    pub fn raw_display_ptr(&self) -> *mut std::ffi::c_void {
-        let display_id = self.conn.backend().display_id();
-        let proxy_ptr = display_id.as_ptr();
-
-        #[link(name = "wayland-client")]
-        extern "C" {
-            fn wl_proxy_get_display(proxy: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-        }
-
-        unsafe { wl_proxy_get_display(proxy_ptr as *mut std::ffi::c_void) }
-    }
-
     /// Non-blocking dispatch of pending Wayland events.
     pub fn dispatch(&mut self) -> io::Result<()> {
         // Split borrow: `self.queue` and `self.state` are disjoint fields.
@@ -952,12 +928,11 @@ impl InputMethodFrontend {
         let qh = self.queue.handle();
         let cb = self.state.popup_surface_obj.frame(&qh, ());
         // A `wl_surface.frame` request only takes effect on the *next*
-        // `wl_surface.commit` (Wayland spec). flux's `flux_frame_present`
-        // has already attached + committed the buffer for this frame via
-        // Mesa's WSI, so the request just queued would otherwise sit
-        // un-committed until the next present. Issue a bare commit (no new
-        // buffer) so a healthy compositor can send `done` at the next
-        // refresh instead of waiting for the soft-gate fallback.
+        // `wl_surface.commit` (Wayland spec). The SHM attach path already
+        // committed the buffer for this frame, so the request just queued
+        // would otherwise sit uncommitted until the next present. Issue a
+        // bare commit (no new buffer) so a healthy compositor can send `done`
+        // at the next refresh instead of waiting for the soft-gate fallback.
         self.state.popup_surface_obj.commit();
         // The soft gate may re-arm while a callback is outstanding. Keeping
         // `panel_frame_missing_since` across that replacement preserves a

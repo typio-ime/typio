@@ -17,7 +17,7 @@ use crate::ipc_bus::IpcBus;
 use crate::keyboard::router::RepeatOutcome;
 use crate::panel_coordinator::UiOwner;
 use crate::panel_present_gate::PresentDecision;
-use crate::panel_scheduler::{self, PanelUpdateResult};
+use crate::panel_scheduler;
 use crate::session_glue::FocusTransition;
 use crate::watchdog::LoopStage;
 
@@ -156,8 +156,7 @@ impl App {
                 slot.revents = 0;
             }
 
-            // 3. Poll. Let the panel scheduler and the panel anchor deadline
-            //    shorten the timeout.
+            // 3. Poll. Let panel/anchor/status deadlines shorten the timeout.
             wd!().set_stage(LoopStage::Poll);
             wd!().heartbeat();
             let timeout_ms = {
@@ -170,8 +169,7 @@ impl App {
                     !router.ctx().is_null(),
                     router.is_focused(),
                 );
-                let mut timeout_ms =
-                    panel_scheduler::poll_timeout_ms(state.panel_schedule_state, flushable, -1);
+                let mut timeout_ms = -1;
                 let now = Instant::now();
                 let mut reduce_timeout = |remaining: i32| {
                     if timeout_ms < 0 || remaining < timeout_ms {
@@ -520,16 +518,14 @@ impl App {
                         }
                     }
 
-                    // Frame pacing. flux presents synchronously on this
-                    // thread (the async present thread was dropped from flux
-                    // because Mesa's Wayland WSI dispatches wl_display
-                    // events inside vkQueuePresentKHR and races the loop).
-                    // `wl_surface.frame` is a refresh hint, but not a hard
-                    // lock: if the compositor drops callbacks for an input
-                    // popup, the soft gate wakes on a timer and presents the
-                    // latest coalesced candidates instead of freezing until a
-                    // long watchdog timeout. Hides are never throttled — they
-                    // detach the buffer and cannot block.
+                    // Frame pacing. The panel renders offscreen and attaches
+                    // host-owned SHM buffers on this thread. `wl_surface.frame`
+                    // is a refresh hint, not a hard lock: if the compositor
+                    // drops callbacks for an input popup, the soft gate wakes
+                    // on a timer and submits the latest coalesced candidates
+                    // instead of freezing until a long watchdog timeout. Hides
+                    // are never throttled — they detach the buffer and cannot
+                    // block.
                     //
                     // We still hold candidates if the anchor is not ready, to
                     // avoid committing a popup buffer before the compositor
@@ -555,13 +551,13 @@ impl App {
                         && frontend.state().panel_coord().visible_owner() == UiOwner::Candidate
                         && frontend.state().panel_presentation_current(composition_seq);
 
-                    let (result, presented, hid) = if already_presented {
+                    let (presented, hid) = if already_presented {
                         tracing::trace!(
                             target: "typio.panel.host",
                             composition_seq,
                             "panel: skip present reason=already_presented"
                         );
-                        (PanelUpdateResult::Done, false, false)
+                        (false, false)
                     } else if throttled {
                         if let Some(wait_ms) = frame_wait_ms {
                             tracing::trace!(
@@ -575,7 +571,7 @@ impl App {
                                 "panel: skip present reason=anchor_not_ready"
                             );
                         }
-                        (PanelUpdateResult::Done, false, false)
+                        (false, false)
                     } else if let Some(panel) = frontend.panel_mut() {
                         panel.set_scale(scale);
                         heartbeat();
@@ -613,9 +609,9 @@ impl App {
                             );
                             true
                         };
-                        (PanelUpdateResult::Done, presented, hid)
+                        (presented, hid)
                     } else {
-                        (PanelUpdateResult::Done, false, false)
+                        (false, false)
                     };
                     if throttled {
                         // Leave the schedule dirty so the tick that wakes
@@ -629,8 +625,7 @@ impl App {
                             frontend.state_mut().clear_panel_frame_callback();
                             frontend.state_mut().invalidate_panel_presentation();
                         }
-                        frontend.state_mut().panel_schedule_state =
-                            panel_scheduler::complete(result);
+                        frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                         if presented {
                             frontend.state_mut().mark_panel_presented(composition_seq);
                             frontend.arm_panel_frame_callback();

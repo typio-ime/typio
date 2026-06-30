@@ -18,8 +18,10 @@ The daemon binds five Wayland protocol layers. The input-method layer is the one
 | `zwp_input_method_keyboard_grab_v2` | `grab_keyboard()` → receives raw key/modifier/keymap events for the focused input context |
 | `zwp_input_popup_surface_v2` | `get_input_popup_surface()` → positions the Panel near the cursor |
 | `zwp_text_input_manager_v3` | The daemon does not bind this directly, but relies on the compositor exposing it so client applications can participate in the text-input session |
-| `wl_compositor` | `create_surface()` → creates the Panel `wl_surface` backed by a Vulkan swapchain |
-| `wl_output` | Listens to `scale` events so the Panel renders at the correct DPI for each monitor |
+| `wl_compositor` | `create_surface()` → creates the Panel `wl_surface` used for SHM buffer attaches |
+| `wl_surface` preferred scale | Tracks compositor scale hints so the Panel renders at the correct DPI for each monitor |
+| `wl_shm` | Creates host-managed buffers for the offscreen-rendered Panel |
+| `wp_viewporter` | Crops a grow-only offscreen image to the exact logical Panel size |
 
 ### Client-provided interfaces (daemon depends on their presence)
 
@@ -217,8 +219,8 @@ heavyweight clients like Chrome.
 | `zwp_input_method_keyboard_grab_v2` | `crates/typio-host/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | Grab create/destroy, key/modifiers/repeat listeners, keymap handoff to vk |
 | Key generation + tracking | `crates/typio-host/src/keyboard_policy.rs`, `crates/typio-host/src/keyboard/router.rs` | Generation fence and symmetric press/release |
 | `zwp_virtual_keyboard_v1` | `crates/typio-host/src/input_method.rs` (`forward_key`, `forward_modifiers`) | Keymap forward, modifier mirror, unhandled-key forwarding |
-| `zwp_input_popup_surface_v2` | `crates/typio-host/src/input_method.rs`, `crates/typio-host/src/panel.rs` | Panel geometry, present, retry-on-stall |
-| Panel rendering | `crates/typio-host/src/panel.rs` | Vulkan swapchain on `wl_surface` |
+| `zwp_input_popup_surface_v2` | `crates/typio-host/src/input_method.rs`, `crates/typio-host/src/panel.rs` | Panel positioning, frame pacing, SHM commits |
+| Panel rendering | `crates/typio-host/src/panel.rs`, `crates/typio-host/src/panel_shm.rs` | Offscreen flux render, readback, host-managed SHM attach |
 | Resume detection | `crates/typio-host/src/resume_signal.rs` | logind + boottime heuristic (records facts) |
 | Protocol XML | `protocols/input-method-unstable-v2.xml` | Wayland protocol definition (upstream) |
 
@@ -226,4 +228,4 @@ heavyweight clients like Chrome.
 
 - [Input-Method Session](input-method-session.md) — declared lifecycle phase, observed axes, key generation fencing, and daemon resilience (suspend/resume, compositor restart, silent grab loss)
 - [Event Loop Scheduling](event-loop-scheduling.md) — event-loop scheduling, GPU bounds, D-Bus dispatch, and poll deadlines
-- [Panel Appearance](../dev/panel-appearance.md) — Vulkan Panel rendering pipeline
+- [Panel Appearance](../dev/panel-appearance.md) — offscreen Panel rendering pipeline

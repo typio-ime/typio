@@ -34,18 +34,24 @@ The candidate Panel is rendered once per loop iteration from the Panel
 Scheduler's `DIRTY` / `RETRY` state, never inline in the composition callback
 or key routing path.
 
-### Swapchain acquire
+### Offscreen frame
 
-`flux_surface_begin_frame` uses a finite timeout so a compositor that stops
-releasing swapchain images (display asleep / occluded after a lock or suspend)
-cannot block the loop. A timed-out present skips the frame and re-arms the
-panel update, and repeated stalls recreate the swapchain (ADR-0006).
+The candidate Panel renders to a flux offscreen image, not a Vulkan WSI
+swapchain. `flux_surface_begin_frame` uses a finite timeout so GPU frame setup
+cannot block the loop indefinitely.
 
-### Swapchain present
+### Readback and SHM attach
 
-The swapchain uses a **non-blocking present mode** (`vsync=false` →
-MAILBOX/IMMEDIATE) so `vkQueuePresentKHR` does not block waiting for the
-compositor to release a buffer (ADR-0010).
+After GPU submission, the host reads the offscreen image back and attaches the
+pixels through a double-buffered `wl_shm` pool. If every SHM buffer is still
+busy, the panel drops the frame and waits for the next dirty tick instead of
+blocking on compositor buffer release (ADR-0040).
+
+### Frame callback pacing
+
+`wl_surface.frame` callbacks pace healthy compositors at refresh rate. Missing
+callbacks are treated as a soft gate: the event loop wakes on a deadline and
+submits the latest coalesced candidate state rather than freezing.
 
 ### Glyph atlas
 
@@ -67,7 +73,7 @@ indicator timer, the config-reload debounce — wake the loop themselves and nee
 no timeout. Only deadlines *not* backed by an fd shorten the timeout, each via a
 `-1`-aware minimum (`poll_timeout_min`):
 
-- the panel retry cadence while a deferred flush is pending (ADR-0023),
+- the panel frame-callback soft gate while a deferred flush is pending,
 - the positioned-UI anchor-probe deadline while a popup awaits its caret anchor
   (ADR-0017) — previously covered only implicitly by a fixed baseline tick,
 - the virtual-keyboard keymap deadline while the grab is `needs_keymap`.
@@ -169,8 +175,8 @@ deadline is the primary clue that the grab→keymap→vk chain did not close.
 
 - config reload bursts coalesce into a single runtime reload once the
   filesystem settles
-- the Panel's GPU present runs on the loop thread and must stay bounded on
-  both the acquire and the present side
+- the Panel's GPU render/readback/SHM attach path runs on the loop thread and
+  must stay bounded
 - glyphs are drawn from a shared, persistent glyph atlas; no synchronous
   upload per text run
 

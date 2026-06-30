@@ -138,19 +138,20 @@ mod tests {
 
     #[test]
     fn rapid_re_arm_never_allows_back_to_back_presents() {
-        // Regression guard for the rapid-paging freeze: while a callback is
+        // Regression guard for callback-loss pacing: while a callback is
         // outstanding, a speculative present is only allowed once the
         // soft-limit ceiling elapses, and re-arming after that present
-        // restarts the full wait. This enforces "at most one outstanding
-        // swapchain image", which is what keeps the synchronous
-        // `vkQueuePresentKHR` from blocking on image exhaustion. Whatever
-        // cadence the caller drives `decide()` at, two `Present` results can
-        // never land closer together than the soft limit.
+        // restarts the full wait. Whatever cadence the caller drives
+        // `decide()` at, two timer-paced `Present` results can never land
+        // closer together than the soft limit.
         let soft = PANEL_FRAME_CALLBACK_SOFT_LIMIT;
         let base = Instant::now();
 
         // Fresh callback armed at `base`: nothing may present before the ceiling.
-        assert!(matches!(decide(Some(base), base), PresentDecision::WaitUntil(_)));
+        assert!(matches!(
+            decide(Some(base), base),
+            PresentDecision::WaitUntil(_)
+        ));
         assert!(matches!(
             decide(Some(base), base + soft / 2),
             PresentDecision::WaitUntil(_)
@@ -164,7 +165,10 @@ mod tests {
             decide(Some(re_arm), re_arm + Duration::from_micros(1)),
             PresentDecision::WaitUntil(_)
         ));
-        assert_eq!(decide(Some(re_arm), re_arm + soft), PresentDecision::Present);
+        assert_eq!(
+            decide(Some(re_arm), re_arm + soft),
+            PresentDecision::Present
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ key → engine (libtypio/Rime) → CompositionState.candidates
     → FluxPanel::draw_candidates
         → layout_candidates  (flux_text_measure, cached)
         → flux_text_draw     → glyph cache → atlas (FreeType raster)
-        → flux_frame_present → Vulkan swapchain → Wayland compositor
+        → offscreen flux image → readback → wl_shm buffer → Wayland compositor
 ```
 
 Each stage has a distinct failure mode and a distinct probe:
@@ -28,7 +28,7 @@ Each stage has a distinct failure mode and a distinct probe:
 |------|---------------|------------------|-------|
 | Glyph atlas | Atlas saturates → re-raster every frame | Yes (CJK working set) | `typio.panel.probe=debug` `atlas_clears` |
 | Present gate | `wl_surface.frame` `done` never arrives → timer-paced fallback | Yes (after focus/occlusion) | `typio.panel.host` stall warning |
-| Swapchain | No `wp_viewporter` → rebuild per page | Constant, not growing | startup `typio.wayland.viewporter` warning |
+| Viewport fallback | No `wp_viewporter` → exact-size offscreen resize per page | Constant, not growing | startup `typio.wayland.viewporter` warning |
 | Engine | Rime userdb / state grows | Yes | watchdog stage attribution |
 
 ## Step 0 — Confirm you are on a fixed build
@@ -137,8 +137,8 @@ Read three numbers across successive windows:
 - **`glyph_evictions_delta` consistently `> 0`** → the glyph cache is over
   its working set; every evicted glyph re-rasterises via FreeType on its
   next appearance. Tolerable in bursts, suspicious when sustained.
-- **`present_max_ms` climbing** → the cost is in `flux_frame_present`,
-  i.e. compositor / swapchain back-pressure (Dimension B), not glyphs.
+- **`present_max_ms` climbing** → the cost is in GPU submit/readback or the
+  SHM attach path (Dimension B), not glyphs.
 
 If all three stay flat while the lag is real, the cost is upstream of the
 panel — suspect the engine (Dimension C).
@@ -178,14 +178,14 @@ and [Vulkan/flux rendering](../explanation/vulkan-flux-rendering.md).
 **Signature:** `present_max_ms` climbing while `atlas_clears`/`evict` stay
 flat; or the panel visibly freezes and then catches up in a burst.
 
-**Why it happens:** after each present the daemon arms a
+**Why it happens:** after each SHM attach the daemon arms a
 `wl_surface.frame` callback and uses it as a soft present gate. A healthy
-callback wakes the panel at compositor refresh so the synchronous
-`vkQueuePresentKHR` does not run faster than buffer release. If the
-compositor stops delivering `done` — popup occluded, on an unfocused
-output, or a buggy frame scheduler — the panel waits only for the soft
-limit and then presents the latest coalesced candidate state anyway. See
-[ADR-0036](../adr/0036-soft-present-gate-for-candidate-panel.md).
+callback wakes the panel at compositor refresh so the host does not spam
+`wl_surface.attach`/`commit`. If the compositor stops delivering `done` —
+popup occluded, on an unfocused output, or a buggy frame scheduler — the
+panel waits only for the soft limit and then submits the latest coalesced
+candidate state anyway. See
+[ADR-0040](../adr/0040-offscreen-render-shm-buffers.md).
 
 Current builds still report the condition: an uninterrupted
 missing-callback episode older than the diagnostic threshold logs one
@@ -206,24 +206,23 @@ callbacks for the popup. The daemon recovers by timer-pacing candidates,
 but a high count still points at the compositor's frame scheduling (file
 upstream with the compositor name/version).
 
-### Dimension B′ — Missing `wp_viewporter`
+### Dimension B' — Missing `wp_viewporter`
 
 **Signature:** constant per-page lag (not growing), present timing
 correlates with `resized=true` in the timing log.
 
-Without `wp_viewporter` the swapchain buffer must equal the content
-exactly, so every candidate-page width change rebuilds the swapchain
-(`vkDeviceWaitIdle` + WSI roundtrips). Check at startup:
+Without `wp_viewporter` the SHM buffer must equal the content exactly, so
+every candidate-page width change resizes the offscreen image instead of just
+updating a crop. Check at startup:
 
 ```bash
 wayland-info | grep -i viewport
 journalctl --user -u typio | rg "wp_viewporter"
 ```
 
-If the daemon logged *"compositor lacks wp_viewporter"*, this is your
-cause. There is no host-side fix — the grow-only swapchain
-([ADR-0013](../adr/0013-grow-only-popup-swapchain.md)) requires the
-protocol. Use a compositor that advertises `wp_viewporter`.
+If the daemon logged *"compositor lacks wp_viewporter"*, this is your cause.
+There is no host-side equivalent to the grow-only crop without the protocol.
+Use a compositor that advertises `wp_viewporter`.
 
 ### Dimension C — Engine (libtypio / Rime)
 
@@ -244,8 +243,8 @@ FFI path, not `Present`, points at the engine. Try
 ```text
 atlas_clears rising?          → Dimension A (glyph atlas)   → ADR-0019/0020
   else stall warning present? → Dimension B (frame callback) → compositor frame sched
-  else "lacks wp_viewporter"? → Dimension B′                → switch compositor
-  else present_max_ms rising? → Dimension B (swapchain back-pressure)
+  else "lacks wp_viewporter"? → Dimension B'                → switch compositor
+  else present_max_ms rising? → Dimension B (GPU/readback/SHM path)
   else (all flat, lag real)   → Dimension C (engine)        → watchdog stage attribution
 ```
 

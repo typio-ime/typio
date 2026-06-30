@@ -101,24 +101,27 @@ Responsibilities:
 - translate XKB keyboard state into `TypioKeyEvent`
 - forward commit and preedit callbacks back into Wayland protocol requests
 
-Within the Wayland host, responsibilities are intentionally split by layer (`src/wayland/`):
+Within the Wayland host, responsibilities are intentionally split by module
+under `crates/typio-host/src/`:
 
-- `wl_input_method.c` — protocol-facing text entry updates and preedit round-trip decisions
-- `text_ui_backend.c` — backend boundary for Typio-managed text UI
-- `popup/candidate_panel.cc` — Wayland-native popup backend over `zwp_input_popup_surface_v2`
-- `popup/candidate_panel_layout.cc` — text measurement and geometry computation
-- `popup/candidate_panel_paint.cc` — Flux pixel rendering
-- `key_route.c` — key-routing decisions
-- `wl_keyboard.c` — keyboard-grab event handling, XKB updates, emergency-exit fast path
-- `wl_event_loop.c` — polling loop, Wayland dispatch, watchdog, auxiliary-fd integration
-- `wl_runtime_config.c` — runtime config reload, shortcut refresh, config-watch rearming
-- `wl_frontend.c` — frontend construction, registry/global binding, teardown glue
+- `input_method.rs` — protocol binding, serial chokepoint, keyboard-grab
+  events, XKB updates, and popup-surface setup.
+- `keyboard/router.rs` and `keyboard_policy.rs` — key-routing decisions,
+  generation fencing, and emergency-exit handling.
+- `panel_coordinator.rs` — Panel ownership, anchor readiness, and positioned UI
+  policy.
+- `panel.rs` and `panel_shm.rs` — flux offscreen rendering, text measurement,
+  readback, and host-managed SHM presentation.
+- `app/event_loop.rs` — polling loop, Wayland dispatch, watchdog stages, and
+  auxiliary-fd integration.
+- `config_watcher.rs` — runtime config reload and config-watch rearming.
 
 Observability ownership follows the same boundary split. Control-surface binding rules live in the `typio-settings` repository's `docs/explanation/control-surfaces.md`.
 
 ### `typioctl`
 
-Lives in the `typioctl` repository (Rust). Built as the `typioctl` binary.
+Lives in `crates/typioctl/` in the main workspace. Built as the `typioctl`
+binary.
 
 A standalone command-line client (`typioctl engine`, `typioctl status`, …) that interacts with a running host over UDS (Unix Domain Socket). It links nothing from `libtypio`.
 
@@ -298,7 +301,12 @@ Text measurement and `TypioTextLayout` objects are owned by `PopupRenderCtx`, a 
 
 `candidate_popup_paint.c` records the popup into a flux canvas: the background is the canvas clear colour, the border / selection highlight / mode divider are solid `flux_canvas_fill_rect` calls, and text is filled glyph outlines (`typio_flux_fill_layout`).
 
-The popup coordinator (`candidate_popup.cc`) owns the GPU frame lifecycle. It creates a flux (Vulkan) **swapchain** directly on the input-popup `wl_surface` (`vkCreateWaylandSurfaceKHR` → `flux_surface_create` → `flux_canvas_create`), and per update runs `flux_surface_begin_frame` → `flux_canvas_begin(clear)` → record → `flux_canvas_end` → `flux_frame_submit` → `flux_frame_present`. The swapchain is resized with `flux_surface_resize` when the popup size changes. Because the swapchain owns frame pacing and buffering, there is no SHM buffer pool and no manual frame-callback throttle.
+The host panel owns the GPU frame lifecycle. It creates a flux offscreen
+surface, records each update into a `flux_canvas`, submits the frame, reads the
+pixels back, and attaches them to the input-popup `wl_surface` through
+host-managed SHM buffers. `wp_viewporter`, when available, crops a grow-only
+offscreen image to the exact logical popup size; otherwise content-size changes
+resize the offscreen image.
 
 The present runs synchronously on the event-loop thread, so
 `flux_surface_begin_frame` uses a bounded timeout. See the `typio` ADR

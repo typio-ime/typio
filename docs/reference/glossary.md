@@ -9,7 +9,7 @@ in depth.
 | Term | Definition | Primary source |
 |------|-----------|----------------|
 | **Panel** | The single floating IME UI surface. Aggregates candidates, preedit decoration, status banners, and future toolbar/waveform zones. | [Panel Architecture](../explanation/panel-architecture.md) |
-| **Panel Surface** | The Wayland/Vulkan presentation object behind the Panel. Owns the `zwp_input_popup_surface_v2`, swapchain, present/recover loop, scale, and output tracking. | [Panel Architecture](../explanation/panel-architecture.md) |
+| **Panel Surface** | The Wayland presentation object behind the Panel. Owns the `zwp_input_popup_surface_v2`, offscreen flux image, SHM buffer attach path, scale, and output tracking. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Panel Content** | Display-agnostic data describing what the Panel should show. Contains no Wayland or GPU types. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Zone** | A bounded area inside Panel Content (Candidate, Preedit, Status, future Toolbar). A zone is a concrete triple: a content fragment, its geometry fragment, and the painter that draws it. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Panel Geometry** | The immutable positioned snapshot produced by the Layout step from Panel Content + Theme + Scale. | [ADR-0014](../adr/0014-canonical-panel-vocabulary.md) |

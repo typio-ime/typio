@@ -150,22 +150,17 @@ highlight briefly lags behind. This is the central design property
 established in [ADR-0006](../adr/0006-resilient-candidate-popup-present.md)
 and revisited in [Frontend Graphics](frontend-graphics.md#a-corollary-graphics-and-input-correctness-are-decoupled).
 
-When `vkQueuePresentKHR` or `vkAcquireNextImageKHR` blocks because the
-compositor is not releasing swapchain images — display asleep, surface
-occluded, compositor stalled — the panel scheduler enters the `Retry`
-state:
+The current panel path does not use Vulkan WSI present. It renders to a flux
+offscreen image, reads the pixels back, and attaches them through a host-owned
+`wl_shm` buffer. If the compositor is slow to release buffers, the SHM pool
+reports no free slot and the daemon drops that frame instead of blocking the
+input loop. The next dirty tick renders the newest coalesced candidate state.
 
-1. The current present returns `PanelUpdateResult::Retry`; the
-   Panel's `selected` / `visible` fields are **not** updated.
-2. The event loop poll timeout is shortened to
-   `RETRY_POLL_MS` (16 ms) so the scheduler keeps retrying at
-   vsync cadence without waking the loop excessively.
-3. After `PANEL_PRESENT_RECOVER_STREAK` consecutive timeouts the
-   swapchain is rebuilt via `flux_surface_resize`, discarding the
-   per-frame semaphores left dangling by the stalled acquires.
-4. The watchdog's `PanelUpdate` stage tolerates up to 15 s before
-   treating the loop as hung, so legitimate present stalls do not
-   trigger a `SIGKILL`.
+`wl_surface.frame` callbacks are still used as a soft pacing hint. A healthy
+callback wakes the panel at compositor refresh. If a callback goes missing, the
+soft gate waits only for its deadline and then submits the latest candidate
+state anyway; an extended missing-callback episode logs a warning for
+diagnosis.
 
 The visible effect to the user is that the highlight briefly freezes
 during the stall and then jumps to the correct candidate when the
@@ -197,10 +192,10 @@ font keys (`display.font.*`) affect appearance but not lifecycle; see
 | Inline preedit cursor resolution | `crates/typio-host/src/preedit.rs` |
 | Host-managed-selection key interception (pure rules) | `crates/typio-host/src/candidate_guard.rs` |
 | Owner arbitration + anchor generation + caret fallback | `crates/typio-host/src/panel_coordinator.rs` |
-| Panel dirty/retry schedule state | `crates/typio-host/src/panel_scheduler.rs` |
+| Panel dirty schedule state | `crates/typio-host/src/panel_scheduler.rs` |
 | Preedit/panel sync plan and positioned-UI timeout | `crates/typio-host/src/text_ui_state.rs` |
 | Focus effects pipeline (clear_preedit, focus_out, reset) | `crates/typio-host/src/session_glue.rs`, `crates/typio-host/src/focus_controller.rs` |
-| Vulkan swapchain present + retry/recover | `crates/typio-host/src/panel.rs` |
+| Offscreen flux render + SHM attach | `crates/typio-host/src/panel.rs`, `crates/typio-host/src/panel_shm.rs` |
 | Per-stage watchdog thresholds (`PanelUpdate`, `Present`) | `crates/typio-host/src/watchdog.rs` |
 
 ## See also
@@ -210,7 +205,7 @@ font keys (`display.font.*`) affect appearance but not lifecycle; see
 - [Panel Appearance](../dev/panel-appearance.md) — fonts, theme, layout cache invalidation
 - [Wayland Input Method Protocol](wayland-input-method.md) — protocol-layer events and serial chokepoint
 - [Input-Method Session](input-method-session.md) — focus_in / focus_out / reactivate lifecycle
-- [ADR-0006](../adr/0006-resilient-candidate-popup-present.md) / [ADR-0010](../adr/0010-non-blocking-candidate-popup-present.md) — present-side resilience
+- [ADR-0040](../adr/0040-offscreen-render-shm-buffers.md) — offscreen render and host-managed SHM buffers
 - [ADR-0014](../adr/0014-canonical-panel-vocabulary.md) — Panel / Zone / popup vocabulary
 - [ADR-0017](../adr/0017-positioned-ui-arbitration.md) — owner arbitration rules
-- [ADR-0022](../adr/0022-panel-retry-result-owned-by-update.md) / [ADR-0023](../adr/0023-panel-scheduler-state-machine.md) — retry result and scheduler state machine
+- [ADR-0023](../adr/0023-panel-scheduler-state-machine.md) — panel scheduler history

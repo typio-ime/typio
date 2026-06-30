@@ -52,14 +52,11 @@ pub enum LoopStage {
 }
 
 impl LoopStage {
-    /// Stages where blocking indefinitely is legitimate. flux presents
-    /// synchronously on the main thread (`flux_frame_present` →
-    /// `vkQueuePresentKHR`); the panel's `wl_surface.frame` throttle
-    /// keeps that call non-blocking by never out-pacing the compositor,
-    /// but a stall in `Present` is still a genuine bug — the main loop
-    /// cannot heartbeat through a single blocking FFI call — so
-    /// `Present` is not restful and is killed once the per-stage
-    /// threshold elapses.
+    /// Stages where blocking indefinitely is legitimate. `Present` marks the
+    /// panel's GPU submit/readback/SHM-attach boundary. The main loop cannot
+    /// heartbeat through a single blocking FFI call in that boundary, so
+    /// `Present` is not restful and is killed once the per-stage threshold
+    /// elapses.
     fn is_restful(&self) -> bool {
         matches!(self, LoopStage::Poll | LoopStage::Idle)
     }
@@ -81,10 +78,9 @@ impl LoopStage {
         }
     }
 
-    /// Per-stage stuck threshold. `Present` gets a longer window because
-    /// `vkQueuePresentKHR` can block inside the WSI/driver for several
-    /// seconds during compositor back-pressure and a single FFI call
-    /// cannot heartbeat; other non-restful stages use the default.
+    /// Per-stage stuck threshold. `Present` gets a longer window because a
+    /// slow GPU fence/readback can occupy one FFI call without a heartbeat;
+    /// other non-restful stages use the default.
     fn stuck_threshold_ms(&self) -> u64 {
         match self {
             LoopStage::Present => PRESENT_STUCK_MS,
@@ -331,10 +327,9 @@ mod tests {
 
     #[test]
     fn present_stage_is_not_restful() {
-        // flux_frame_present runs synchronously on the main loop and calls
-        // vkQueuePresentKHR directly. A stall here is a genuine hang (the
-        // panel's wl_surface.frame throttle should prevent it in steady
-        // state), so Present must stay non-restful.
+        // Present covers the panel's GPU submit/readback/SHM-attach boundary.
+        // A stall here is a genuine main-loop hang, so it must stay
+        // non-restful.
         assert!(!LoopStage::Present.is_restful());
         assert!(LoopStage::Poll.is_restful());
     }

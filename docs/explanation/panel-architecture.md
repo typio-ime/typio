@@ -18,7 +18,7 @@ The Panel system is split into two large areas.
 
 The frontend knows about Wayland focus, input-method commits, voice state,
 engine mode changes, and browser anchor quirks. That policy belongs under
-`src/wayland/`.
+`crates/typio-host/src/`.
 
 The main frontend policy object is the **Panel Coordinator**. It answers:
 
@@ -30,15 +30,16 @@ The main frontend policy object is the **Panel Coordinator**. It answers:
 
 ### Panel rendering
 
-Rendering belongs under `src/ui/panel/`. It answers:
+Rendering belongs in `crates/typio-host/src/panel.rs` and
+`crates/typio-host/src/panel_shm.rs`. It answers:
 
-- how content becomes geometry;
-- how geometry becomes paint commands;
+- how candidates and status banners become geometry;
+- how geometry becomes flux canvas commands;
 - how glyphs are shaped and cached;
-- how the surface presents and recovers from compositor stalls.
+- how the offscreen image is read back and attached through SHM buffers.
 
 Rendering does not know whether content came from voice, indicator, or
-candidate composition. It receives `TypioPanelContent` and draws it.
+candidate composition. Ownership policy runs before the renderer is called.
 
 ## Owners and mutual exclusion
 
@@ -127,7 +128,8 @@ Rendering is downstream and should not contain ownership policy.
 
 1. Do not let producers call `TypioPanel` directly. Route through the Panel
    Coordinator.
-2. Do not put owner or anchor policy in `src/ui/panel/`. That tree is rendering.
+2. Do not put owner or anchor policy in `panel.rs` or `panel_shm.rs`. Those
+   modules are rendering and presentation.
 3. Do not let stale owner events hide the current owner.
 4. Do not show positioned status UI at an untrusted anchor.
 5. Treat candidates as both UI content and anchor-producing evidence.
@@ -135,7 +137,7 @@ Rendering is downstream and should not contain ownership policy.
 
 ## See also
 
-- [Candidate Panel Behavior](candidate-panel-behavior.md) — UI-level lifecycle of the candidate box (show/hide, anchor, retry, input → visible effect)
+- [Candidate Panel Behavior](candidate-panel-behavior.md) — UI-level lifecycle of the candidate box (show/hide, anchor, input → visible effect)
 - [Glossary](../reference/glossary.md) — term definitions
 - [Frontend Graphics](frontend-graphics.md) — render pipeline
 - [Wayland Input Method Protocol](wayland-input-method.md)

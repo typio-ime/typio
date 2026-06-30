@@ -47,42 +47,34 @@ use wayland_sys::{
     common::wl_argument,
 };
 
-
 use crate::protocols::viewporter::wp_viewport::WpViewport;
 
 use flux_struct_type as FType;
 use flux_text_family as FontFamily;
 
-/// Frame-acquire timeout for panel rendering (200 ms). Short enough that
-/// a stuck `vkAcquireNextImageKHR` (e.g. popup surface not yet configured
-/// by the compositor) fails fast instead of blocking the main loop past
-/// the watchdog's 3-second stuck threshold.
+/// Frame-begin timeout for offscreen panel rendering (200 ms). Short enough
+/// that a stuck GPU frame setup fails fast instead of blocking the main loop
+/// past the watchdog's 3-second stuck threshold.
 const PANEL_FRAME_TIMEOUT_NS: u64 = 200_000_000;
-/// Swapchain width quantum (ADR-0013). The buffer is allocated in
+/// Offscreen image width quantum (ADR-0013, adapted by ADR-0040). The buffer is allocated in
 /// multiples of this and grows only; sub-quantum widenings reuse the
-/// existing swapchain and are cropped to the exact content rect with
+/// existing offscreen image and are cropped to the exact content rect with
 /// `wp_viewport`. 64 px is large enough that typical candidate-row
 /// width variation stays inside one quantum, so after a short warm-up
-/// `flux_surface_resize` (and its `vkDeviceWaitIdle` + WSI roundtrips)
-/// is never called again during steady-state paging.
+/// `flux_surface_resize` is never called again during steady-state paging.
 const SURFACE_WIDTH_QUANTUM: u32 = 64;
 /// Height quantum (same grow-only logic as width). Banner and
 /// candidate rows are both ~40 px at scale 1; a 32 px quantum rounds
 /// the first request up to 64 px, fitting inside the pre-allocation
 /// in `InputMethodFrontend::connect` and so avoiding a first-render
-/// `flux_surface_resize` (which blocks the loop on the compositor's
-/// swapchain release and trips the 3 s watchdog on the very first
-/// indicator banner). Without this, height was exact-matched while
+/// `flux_surface_resize` on the very first indicator banner. Without this,
+/// height was exact-matched while
 /// width was grow-only — a quiet asymmetry that made every panel
-/// flush in a new process pay a full swapchain recreate.
+/// flush in a new process pay a resize.
 const SURFACE_HEIGHT_QUANTUM: u32 = 32;
-/// Initial swapchain size passed to `FluxPanel::new_from_surface` by
+/// Initial offscreen image size passed to `FluxPanel::new_from_surface` by
 /// `InputMethodFrontend::connect`. Sized to skip the first automatic
-/// indicator banner's `flux_surface_resize` (and its `vkDeviceWaitIdle`
-/// + compositor swapchain release) at the common display scales, where
-/// the watchdog is armed but unforgiving — see the audit after the
-/// 0a91080 height-quantisation fix that still tripped the watchdog on
-/// width at scale 2.
+/// indicator banner's `flux_surface_resize` at the common display scales.
 ///
 /// Banner geometry for the longest observed default indicator label
 /// `"中 · Rime · 懿拼音"` (text metric 119.3 px logical, plus
@@ -118,7 +110,7 @@ const CANDIDATE_NUMBER_GAP: f32 = 4.0;
 /// Status-banner (indicator / voice) layout constants. Kept separate from
 /// the candidate-row metrics above: the banner is a single centred text
 /// segment, not a two-column "number + candidate" row, so its padding and
-/// font size are tuned independently. The same VkSurface / flux_text /
+/// font size are tuned independently. The same offscreen surface / flux_text /
 /// atlas stack is shared (ADR-0017 — one popup surface, mutually exclusive
 /// owners).
 const BANNER_PADDING: f32 = 10.0;
@@ -179,7 +171,7 @@ fn panel_probe_enabled() -> bool {
 /// The three numbers to watch over a long session:
 ///   * `atlas_clears` climbing       → glyph atlas thrash (see atlas.c)
 ///   * `evict/win` consistently > 0  → glyph cache over its working set
-///   * `present_max_ms` climbing     → compositor / swapchain back-pressure
+///   * `present_max_ms` climbing     → GPU submit/readback or SHM attach cost
 fn emit_panel_probe(
     present: Duration,
     total: Duration,
@@ -330,12 +322,12 @@ fn free_cache_path(p: *mut c_char) {
     }
 }
 
-/// A candidate panel backed by flux on a raw Wayland surface.
+/// A candidate panel backed by flux offscreen rendering and Wayland SHM
+/// presentation.
 ///
-/// Created from a raw `wl_display*` (obtainable from
-/// `Connection::backend().display_ptr()`). The panel creates its own
-/// wl_surface via the raw C API, uses it for VkSurfaceKHR, and
-/// renders candidates via flux_text_draw.
+/// The panel renders candidates through flux into an offscreen image, reads
+/// the pixels back, and attaches them to the input-method popup `wl_surface`
+/// via host-managed `wl_shm` buffers.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelStyle {
@@ -363,7 +355,7 @@ pub struct FluxPanel {
     /// offscreen image to the exact content rect (ADR-0013, adapted to the
     /// offscreen+shm path). `None` only when the compositor lacks
     /// `wp_viewporter`; in that case the offscreen image is sized exactly
-    /// to the content and the per-page reallocation cost returns.
+    /// to the content and the per-page resize cost returns.
     viewport: Option<WpViewport>,
     /// Last source size (physical buffer pixels) sent to `wp_viewport`.
     /// This must be tracked separately from the logical destination: moving
@@ -441,7 +433,9 @@ impl FluxPanel {
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        unsafe { Self::new_inner_unsafe(wl_surface_ptr, viewport, shm, qh, registry, width, height) }
+        unsafe {
+            Self::new_inner_unsafe(wl_surface_ptr, viewport, shm, qh, registry, width, height)
+        }
     }
 
     unsafe fn new_inner_unsafe(
@@ -574,9 +568,9 @@ impl FluxPanel {
             last_candidate_size_duration: Duration::ZERO,
             last_candidate_size_resized: false,
             wl_surface,
-            shm_pool: shm.as_ref().map(|s| {
-                crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone(), registry)
-            }),
+            shm_pool: shm
+                .as_ref()
+                .map(|s| crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone(), registry)),
             pipeline_cache_path: cache_path_c,
             last_layout_key: None,
             last_layout: Vec::new(),
@@ -763,27 +757,20 @@ impl FluxPanel {
 
     /// Draw candidate strings with the selected one highlighted.
     ///
-    /// `heartbeat` is invoked between each blocking FFI call
+    /// `heartbeat` is invoked between each potentially blocking FFI call
     /// (`flux_surface_begin_frame`, `flux_frame_submit`,
-    /// `flux_frame_present`, …) so the daemon's watchdog sees
-    /// progress even when a single call blocks past the 3-second
-    /// stuck threshold — the documented failure mode under rapid
-    /// candidate cycling, where the Wayland compositor cannot
-    /// release swapchain images as fast as the engine emits
-    /// composition callbacks and `vkQueuePresentKHR`/`vkAcquireNext-
-    /// ImageKHR` stall waiting for them. Heartbeating between
-    /// sub-steps distinguishes "slow but progressing" from a true
-    /// hang; a genuinely deadlocked FFI call stops heartbeating too
-    /// and the watchdog still fires. Callers pass `&|| wd!().heart-
-    /// beat()` from the loop; tests pass `&|| {}`.
+    /// `flux_surface_read_pixels`, …) so the daemon's watchdog sees progress
+    /// when GPU work or readback is slow. Heartbeating between sub-steps
+    /// distinguishes "slow but progressing" from a true hang; a genuinely
+    /// deadlocked FFI call stops heartbeating too and the watchdog still
+    /// fires. Callers pass `&|| wd!().heartbeat()` from the loop; tests pass
+    /// `&|| {}`.
     ///
     /// `before_present` is invoked immediately before
-    /// `flux_frame_present` — the one FFI call that can block
-    /// inside the WSI/driver for several seconds under compositor
-    /// back-pressure with no opportunity to heartbeat from the same
-    /// thread. Callers set the watchdog stage to `Present` so the
-    /// per-stage threshold (15 s) tolerates the transient stall
-    /// instead of SIGKILLing a recovering panel. Tests pass `&|| {}`.
+    /// `flux_frame_present`. On the offscreen path this is a no-op, but the
+    /// stage marker is retained so timing logs and watchdog state keep a
+    /// stable boundary between GPU submission and readback/SHM attach. Tests
+    /// pass `&|| {}`.
     pub fn draw_candidates(
         &mut self,
         candidates: &[String],
@@ -865,8 +852,8 @@ impl FluxPanel {
             // Transparent clear: the rounded-rect fill below covers the body,
             // leaving the four corners outside the arc at alpha 0 so the
             // compositor blends them away and the panel reads as a floating
-            // rounded rectangle. Requires the swapchain to be presented with a
-            // non-opaque composite-alpha mode (see flux surface.c).
+            // rounded rectangle. The SHM path attaches ARGB buffers, so alpha
+            // is preserved without a WSI composite-alpha mode.
             let clear_color = flux_color_rgba(0, 0, 0, 0);
             let r = timed!(
                 canvas_begin_duration,
@@ -1411,7 +1398,7 @@ impl FluxPanel {
     ///   `flux_surface_resize` is never called again during steady-state
     ///   paging.
     ///
-    /// - **Without `wp_viewport` (legacy).** The SHM buffer must equal the
+    /// - **Without `wp_viewport` (fallback).** The SHM buffer must equal the
     ///   content exactly (the buffer maps 1:1 to the surface), so any width
     ///   change reallocates the offscreen image. This is costlier than the
     ///   viewport path but no longer watchdog-killing — there is no WSI
@@ -1460,18 +1447,17 @@ impl FluxPanel {
         }
     }
 
-    /// Grow-only swapchain sizing shared by the candidate and banner
+    /// Grow-only offscreen-image sizing shared by the candidate and banner
     /// paths (ADR-0013, extended to height). Both axes are quantised
     /// up and never shrink, so any content change that stays inside
-    /// the current quantum reuses the existing swapchain and only
+    /// the current quantum reuses the existing offscreen image and only
     /// re-issues a `wp_viewport` crop. This keeps `flux_surface_resize`
-    /// — and its `vkDeviceWaitIdle` + WSI roundtrip — out of the
-    /// steady-state render path, including the first indicator banner
-    /// of every fresh daemon (where the watchdog is unforgiving).
+    /// out of the steady-state render path, including the first indicator
+    /// banner of every fresh daemon.
     ///
     /// Falls back to exact-size `resize()` when the compositor lacks
-    /// `wp_viewporter`; that path rebuilds the swapchain on every
-    /// change, which ADR-0013 documented as the watchdog-killing case.
+    /// `wp_viewporter`; that path resizes the offscreen image on every
+    /// content-size change.
     fn apply_grow_only_size(
         &mut self,
         phys_width: u32,
@@ -1579,7 +1565,11 @@ impl FluxPanel {
         // On the legacy no-viewport path, set buffer_scale to self.scale so
         // the exact-sized physical buffer is interpreted at the right logical
         // size.
-        let desired_scale = if self.viewport.is_some() { 1 } else { self.scale as i32 };
+        let desired_scale = if self.viewport.is_some() {
+            1
+        } else {
+            self.scale as i32
+        };
         unsafe {
             wl_surface_set_buffer_scale(self.wl_surface, desired_scale);
         }
@@ -1599,8 +1589,8 @@ impl FluxPanel {
 
     /// Draw the status banner — a single centred text label used by the
     /// indicator (engine · mode feedback) and voice status overlays. Shares
-    /// the candidate panel's VkSurface and flux text stack per ADR-0017
-    /// (one positioned popup surface, mutually exclusive owners).
+    /// the candidate panel's offscreen surface and flux text stack per
+    /// ADR-0017 (one positioned popup surface, mutually exclusive owners).
     ///
     /// Empty labels are ignored — caller should `hide()` instead.
     ///
@@ -1721,8 +1711,8 @@ impl FluxPanel {
     /// Mirrors `ensure_candidate_size`'s two-path strategy (ADR-0013):
     /// grow-only with `wp_viewport` when available, exact-size resize
     /// otherwise. Banner rows are usually narrower than candidate rows, so
-    /// after a candidate-panel showing the swapchain typically reuses the
-    /// existing quantum without any `vkDeviceWaitIdle`.
+    /// after a candidate-panel showing the offscreen image typically reuses
+    /// the existing quantum.
     pub fn ensure_banner_size(&mut self, label: &str) {
         let style = flux_text_sys::flux_text_style {
             size_px: BANNER_FONT_SIZE,

@@ -1,28 +1,35 @@
 # Panel Appearance Development Notes
 
-Rendering pipeline for the candidate Panel: GPU present, stall recovery, font loading, theme resolution, and cache invalidation.
+Rendering pipeline for the candidate Panel: offscreen GPU rendering, SHM
+presentation, font loading, theme resolution, and cache invalidation.
 
 ---
 
-## GPU present pipeline
+## GPU render and SHM present pipeline
 
-The Panel presents a flux (Vulkan) swapchain onto its `zwp_input_popup_surface_v2` `wl_surface`. The swapchain owns frame pacing and buffering — no SHM buffer pool, no CPU pixel buffer, no readback.
+The Panel renders with flux (Vulkan) into an offscreen image and attaches the
+result to its `zwp_input_popup_surface_v2` `wl_surface` through host-managed
+`wl_shm` buffers. There is no Vulkan WSI swapchain and no
+`vkQueuePresentKHR` in the panel path; see
+[ADR-0040](../adr/0040-offscreen-render-shm-buffers.md).
 
-`TypioPanelSurface` (`surface.c`) drives the present pipeline:
+`FluxPanel` (`crates/typio-host/src/panel.rs`) drives the render pipeline:
 
-- `ensure_fx_surface()` creates the `VkSurfaceKHR` (`vkCreateWaylandSurfaceKHR`),
-  the `flux_surface` (non-blocking present — MAILBOX/IMMEDIATE, falling back to
-  FIFO; see [ADR-0010](../adr/0010-non-blocking-candidate-popup-present.md)), a
-  `flux_canvas`, and a small arena; it grows the swapchain when the panel's
-  physical extent (logical × scale) exceeds the current buffer
-  ([ADR-0013](../adr/0013-grow-only-popup-swapchain.md)).
-- `panel_surface_present()` records one frame: `flux_surface_begin_frame` →
-  `flux_canvas_begin` (clear to the premultiplied background colour) →
-  `panel_record` (paint) → `flux_canvas_end` → `flux_frame_submit` →
-  `flux_frame_present`.
-- `wl_surface_set_buffer_scale` (or a `wp_viewport` on fractional-scale setups)
-  is derived from `geom->scale` so a HiDPI panel shows at the correct logical
-  size and stays crisp.
+- `FluxPanel::new_from_surface()` creates a flux device without WSI extensions,
+  an offscreen `flux_surface` (`vk_surface_khr = NULL`), a `flux_canvas`, a
+  `flux_text` context, and a small arena.
+- `ensure_candidate_size()` / `ensure_banner_size()` grow the offscreen image in
+  quantised physical pixels. When `wp_viewporter` is available,
+  `wp_viewport.set_source` / `set_destination` crop the oversized image to the
+  exact logical panel size ([ADR-0013](../adr/0013-grow-only-popup-swapchain.md),
+  adapted by ADR-0040).
+- `draw_candidates()` and `draw_status_banner()` record one frame:
+  `flux_surface_begin_frame` → `flux_canvas_begin` → paint → `flux_canvas_end`
+  → `flux_frame_submit` → `flux_frame_present` (offscreen no-op) →
+  `flux_surface_read_pixels`.
+- `present_shm()` copies the readback into a free SHM buffer, sets
+  `wl_surface.set_buffer_scale`, attaches the `wl_buffer`, damages the full
+  buffer, and commits the popup surface.
 
 Text is drawn from a **shared, colour-independent glyph atlas**
 ([ADR-0012](../adr/0012-glyph-atlas-shared-texture.md)). Each glyph is rasterised
@@ -41,27 +48,24 @@ CJK input sessions.
 
 ---
 
-## Present pacing and stall recovery (lock / suspend)
+## Present pacing and buffer back-pressure
 
-`panel_surface_present` runs synchronously on the single-threaded event loop. To keep the loop responsive when a compositor stops releasing swapchain images (display asleep, surface occluded), the acquire is bounded and self-recovering.
+The panel render path runs synchronously on the single-threaded event loop. To
+keep the loop responsive when a compositor stops releasing buffers, the host
+owns the SHM pool and never waits for compositor release.
 
-- `flux_surface_begin_frame` is called with `PANEL_PRESENT_TIMEOUT_NS` (2 ms)
-  instead of an infinite wait. The healthy on-demand path acquires in <100 μs, so
-  this budget is only consumed during a real stall.
-- On `FLUX_ERROR_TIMEOUT`, `panel_surface_present` returns `PANEL_PRESENT_RETRY`:
-  `selected`/`visible` are **not** updated. The retry is propagated as
-  `TYPIO_PANEL_UPDATE_RETRY`; the frontend maps it to
-  `TYPIO_WL_PANEL_SCHEDULE_RETRY` so a later event-loop Panel stage presents
-  the newest candidate state. Retry is not stored as durable surface state; see
-  [ADR-0022](../adr/0022-panel-retry-result-owned-by-update.md) and
-  [ADR-0023](../adr/0023-panel-scheduler-state-machine.md).
-- After `PANEL_PRESENT_RECOVER_STREAK` consecutive timeouts the swapchain is
-  rebuilt with `flux_surface_resize` (to its current extent), discarding the
-  per-frame semaphores left dangling by the stalled acquires.
-- The same `flux_surface_resize` recovery is used for `FLUX_ERROR_SURFACE_LOST`
-  (driver-reported `OUT_OF_DATE`/`SUBOPTIMAL`).
+- `flux_surface_begin_frame` is called with `PANEL_FRAME_TIMEOUT_NS` (200 ms)
+  instead of an infinite wait.
+- `ShmBufferPool::acquire()` returns `None` if every SHM buffer is busy. The
+  panel drops that frame and lets the next dirty tick render the newest
+  candidate state.
+- `wl_surface.frame` callbacks pace healthy compositors. If a callback goes
+  missing, `panel_present_gate` waits only for the soft limit and then allows a
+  timer-paced submit. An extended missing-callback episode logs a warning.
 
-A stalled present never freezes key handling: input events queue on the Wayland fd while a frame is skipped, so navigation stays correct even while the on-screen highlight is briefly behind.
+A skipped frame never freezes key handling: input events queue on the Wayland
+fd while the compositor catches up, so navigation stays correct even while the
+on-screen highlight is briefly behind.
 
 ---
 

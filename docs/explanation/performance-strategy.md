@@ -39,7 +39,7 @@ timeout infinite when none is pending:
 
 | Deadline | When active | Source |
 |----------|-------------|--------|
-| Panel retry cadence | a deferred panel flush is pending | [ADR-0023](../adr/0023-panel-scheduler-state-machine.md) |
+| Panel frame-callback soft gate | a deferred panel flush is waiting for pacing | [ADR-0040](../adr/0040-offscreen-render-shm-buffers.md) |
 | Positioned-UI anchor probe | a popup waits for a caret anchor that may never re-arrive | [ADR-0017](../adr/0017-positioned-ui-arbitration.md) |
 | Virtual-keyboard keymap | the grab is `needs_keymap` | grab → keymap → vk chain |
 

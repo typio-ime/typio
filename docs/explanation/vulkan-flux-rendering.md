@@ -20,12 +20,12 @@ Core flux concepts used by the host:
 | Concept | flux type | Role |
 |---------|-----------|------|
 | GPU context | `flux_device` | Process-wide shared device; created once at startup |
-| Window target | `flux_surface` | Swapchain bound to the input-popup `wl_surface` |
-| Frame lifecycle | `flux_surface_begin_frame` → `flux_frame_present` | Acquire, record, submit, present |
+| Offscreen target | `flux_surface` | GPU image used as the Panel render target |
+| Frame lifecycle | `flux_surface_begin_frame` → `flux_frame_submit` → `flux_surface_read_pixels` | Record, submit, and read back the rendered frame |
 | Recording target | `flux_canvas` | Immediate-mode: clear, fill rect, blit coverage |
 | GPU image | `flux_image` | Refcounted texture; atlas is one `flux_image` |
 
-Frame lifecycle in `surface.c`:
+Frame lifecycle in `FluxPanel`:
 
 ```c
 flux_surface_begin_frame(surface, &(flux_frame_begin_desc){ .timeout_ns = ... }, &frame);
@@ -33,7 +33,8 @@ flux_canvas_begin(canvas, frame, &clear_color);
 panel_record(panel, canvas, geometry);   /* pure recorder */
 flux_canvas_end(canvas);
 flux_frame_submit(frame);
-flux_frame_present(frame);
+flux_frame_present(frame);               /* offscreen no-op */
+flux_surface_read_pixels(surface, pixels, len);
 ```
 
 The host's drawing reduces to three primitives: **clear**, **fill rect**,
@@ -113,7 +114,7 @@ superseding [ADR-0019](../adr/0019-atlas-hash-compaction.md)).
 Without it the texture filled and new glyphs rendered blank permanently — the
 original "panel goes stale after a while" bug.
 
-## Swapchain Management
+## Offscreen Image and SHM Presentation
 
 ### Grow-only, size-quantised
 
@@ -121,41 +122,37 @@ The popup width varies with candidate string length. Previously, every width
 change rebuilt the swapchain (`vkDeviceWaitIdle` + WSI roundtrips), stalling
 the single-threaded IME loop.
 
-The fix: buffer sizes are quantised to 64 px and **grow only**. Shrinks and
-sub-quantum widenings reuse the existing swapchain. `wp_viewport_set_source`
-crops the oversized buffer to the exact content rect. After a short warm-up
-(the widest candidate row seen), `flux_surface_resize` is never called again
-during steady-state paging
-([ADR-0013](../adr/0013-grow-only-popup-swapchain.md)).
+The current fix keeps the same grow-only idea on the offscreen image: physical
+buffer sizes are quantised and **grow only**. Shrinks and sub-quantum
+widenings reuse the existing image. `wp_viewport.set_source` crops the
+oversized buffer to the exact content rect. After a short warm-up (the widest
+candidate row seen), `flux_surface_resize` is never called again during
+steady-state paging ([ADR-0013](../adr/0013-grow-only-popup-swapchain.md),
+adapted by [ADR-0040](../adr/0040-offscreen-render-shm-buffers.md)).
 
-### Non-blocking present mode
+### Host-managed SHM buffers
 
-The popup is an on-demand surface — it commits a frame only when content
-changes. Under FIFO (vsync), `vkQueuePresentKHR` blocks until the compositor
-releases a buffer, but the compositor has no reason to release buffers promptly
-for a surface it is not scheduling frames for. Profiling showed ~86 % of
-wall-clock time in `vkQueuePresentKHR`.
+The panel no longer presents through Vulkan WSI. It renders to an offscreen
+flux surface (`vk_surface_khr = NULL`), reads the pixels back, and attaches
+them through a double-buffered `wl_shm` pool. `wl_buffer.release` is delivered
+to the host event queue, so the daemon controls buffer reuse directly. If all
+buffers are busy, the frame is dropped and the next dirty tick renders the
+newest candidate state.
 
-The swapchain is created with `vsync = false`. flux selects `MAILBOX`, then
-`IMMEDIATE`, then falls back to `FIFO`. Non-blocking present returns without
-waiting on buffer release
-([ADR-0010](../adr/0010-non-blocking-candidate-popup-present.md)).
+### Frame callback pacing
 
-### Bounded acquire
-
-After screen lock, DPMS-off, or suspend, the compositor stops releasing
-swapchain images. `flux_surface_begin_frame` is called with a bounded timeout
-(~32 ms, two vblanks at 60 Hz). On timeout the frame is skipped and retried;
-after consecutive timeouts the swapchain is recreated
-([ADR-0006](../adr/0006-resilient-candidate-popup-present.md)).
+`wl_surface.frame` remains a pacing hint. A healthy compositor sends `done` at
+refresh rate; a missing callback only delays until the soft gate expires. The
+daemon then submits the latest coalesced candidates and logs an extended
+missing-callback episode for diagnosis.
 
 The two protections are complementary:
 
 | Concern | Protection |
 |---------|------------|
-| Acquire stall after lock/suspend | Bounded timeout + recover streak (ADR-0006) |
-| Steady-state present throttle | Non-blocking present mode (ADR-0010) |
-| Per-page swapchain rebuild | Grow-only quantised buffers (ADR-0013) |
+| Compositor does not release buffers | Drop frame when SHM pool is busy (ADR-0040) |
+| Steady-state commit throttle | `wl_surface.frame` soft gate |
+| Per-page resize | Grow-only quantised offscreen image (ADR-0013/0040) |
 
 ## Font Cache Management
 
@@ -191,9 +188,9 @@ patterns. Each addresses a distinct measured cause:
 | Text colour | Per-colour glyph duplication | Coverage + draw-time tint | 0011 |
 | Atlas reclaim | Texture saturates / hash table degrades over a session | Wholesale rebuild on packer exhaustion or 75 % load | 0020 |
 | Fallback fonts | `FcFontSort` re-run per layout under LRU churn | Per-codepoint resolution memo | 0020 |
-| Swapchain | `vkDeviceWaitIdle` on every width change | Grow-only quantised buffers | 0013 |
-| Present | FIFO blocks on compositor buffer release | Non-blocking present (MAILBOX) | 0010 |
-| Acquire | Compositor holds all images after resume | Bounded timeout + swapchain recovery | 0006 |
+| Offscreen image | Resize on every width change | Grow-only quantised buffers | 0013/0040 |
+| Present | WSI present blocks on compositor buffer release | Host-managed SHM buffers; drop when busy | 0040 |
+| Pacing | Missing frame callbacks freeze redraws | Soft frame-callback gate | 0036/0040 |
 | Fonts | Fontconfig unbounded cache growth | Purge on config reload | 0009 |
 | Snapshot | Full deep-copy on selection-only changes | Content-equality fast-path | 0009 |
 

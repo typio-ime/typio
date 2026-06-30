@@ -119,9 +119,10 @@ structural:
 - **Input responsiveness.** The event loop is single-threaded. Every GPU
   frame, D-Bus dispatch, config reload, and voice audio buffer competes with
   key processing for the same loop tick. The host must bound every non-input
-  operation so a keypress never waits behind a swapchain rebuild, a glyph
-  upload, or a compositor stall. See [Event Loop Scheduling](event-loop-scheduling.md)
-  and [Vulkan and Flux Rendering](vulkan-flux-rendering.md).
+  operation so a keypress never waits behind an offscreen-image resize, a
+  glyph upload, or a compositor stall. See
+  [Event Loop Scheduling](event-loop-scheduling.md) and
+  [Vulkan and Flux Rendering](vulkan-flux-rendering.md).
 
 - **Visual consistency.** The candidate panel, preedit decoration, tray icon,
   and mode indicator must all reflect the same state at the same time. The

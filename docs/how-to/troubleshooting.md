@@ -119,7 +119,7 @@ typio &
 The underlying leak is patched in the current source. Rebuilding and reinstalling eliminates it permanently.
 
 If candidate switching is still sluggish on a current build, the cause is
-one of the glyph-atlas, present-throttle, swapchain, or engine paths.
+one of the glyph-atlas, present-throttle, viewport fallback, or engine paths.
 Work through [How to Diagnose Candidate-Switching
 Lag](diagnose-candidate-lag.md), which uses the `typio.panel.probe=debug`
 tracing target and a decision tree for telling those four apart.

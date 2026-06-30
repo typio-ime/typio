@@ -47,7 +47,7 @@ Entries link to detailed documentation where applicable; related terms are cross
   *See also: [Session](#s), [Input context](#i).*
 
 **Frontend**
-: The Wayland-facing part of the `typio` daemon (`src/wayland/`). It
+: The Wayland-facing part of the `typio` daemon (`crates/typio-host/src/`). It
   binds compositor protocols, manages the keyboard **grab**, translates
   `wl_keyboard` events into `TypioKeyEvent`, and turns engine output into
   Wayland requests.
@@ -91,7 +91,7 @@ Entries link to detailed documentation where applicable; related terms are cross
 ## P
 
 **Popup**
-: The floating window that displays the **candidate** list near the text cursor. On Wayland it is implemented through `zwp_input_popup_surface_v2` and rendered with a Vulkan swapchain (no SHM buffers).
+: The floating window that displays the **candidate** list near the text cursor. On Wayland it is implemented through `zwp_input_popup_surface_v2`; the host renders it through an offscreen flux image and attaches host-managed SHM buffers.
 
   *See also: [Candidate](#c), [Preedit](#p), [Frontend](#f).*
 
