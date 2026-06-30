@@ -40,6 +40,7 @@ pub mod panel;
 pub mod panel_coordinator;
 pub mod panel_present_gate;
 pub mod panel_scheduler;
+pub mod panel_shm;
 pub mod preedit;
 pub mod protocols;
 pub mod repeat_timer;

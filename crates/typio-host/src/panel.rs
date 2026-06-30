@@ -1,19 +1,26 @@
-//! Candidate panel — flux text rendering on a raw Wayland surface.
+//! Candidate panel — flux offscreen rendering + host-managed SHM buffer.
 //!
-//! Uses wayland-sys (raw FFI to libwayland-client) to create a
-//! wl_surface independently of wayland-client's safe wrappers. This
-//! surface is passed to flux for VkSurfaceKHR creation, bypassing the
-//! pointer-isolation problem between wayland-client's opaque Proxy
-//! type and flux's need for a raw `wl_surface*`.
+//! flux renders to an **offscreen** Vulkan image (no swapchain, no WSI), the
+//! host reads the pixels back via `flux_surface_read_pixels`, and attaches
+//! them to the `wl_surface` through a `wl_shm` `wl_buffer` the host owns.
+//! This removes `vkQueuePresentKHR` from the panel's critical path entirely:
+//! the WSI present call that could block the main thread for 16 s while
+//! Mesa's Wayland WSI waited for the compositor to recycle swapchain images
+//! is never invoked. A compositor that stops recycling buffers now only
+//! causes dropped frames — the host's `wl_buffer.release` handler is a
+//! normal event-loop event, so the main thread keeps pumping.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! libwayland-client.so (raw C API via wayland-sys)
-//!   → wl_display (shared with wayland-client's Connection)
-//!     → wl_compositor → wl_surface
-//!       → VkSurfaceKHR (via flux_device + vkCreateWaylandSurfaceKHR)
-//!         → flux_surface → flux_canvas → flux_text_draw
+//! Vulkan device (no WSI extensions)
+//!   → flux_surface (offscreen: vk_surface_khr = NULL, owns RGBA8 images)
+//!     → flux_canvas → flux_text_draw  (GPU render, unchanged)
+//!       → flux_frame_submit
+//!         → flux_surface_read_pixels  (GPU→CPU, bounded by fence timeout)
+//!           → host: memcpy into a free ShmBuffer
+//!             → wl_surface.attach + damage + commit  (raw FFI, returns instantly)
+//!               → compositor composites; wl_buffer.release reuses the slot
 //! ```
 
 use std::ffi::c_void;
@@ -24,19 +31,22 @@ use std::time::{Duration, Instant};
 use flux_sys::{
     flux_arena, flux_arena_destroy, flux_arena_init, flux_arena_reset, flux_canvas,
     flux_canvas_begin, flux_canvas_desc, flux_canvas_destroy, flux_canvas_end, flux_color_rgba,
-    flux_device, flux_device_create, flux_device_desc, flux_device_release,
-    flux_device_vk_instance, flux_error_info, flux_frame, flux_frame_begin_desc,
-    flux_frame_present, flux_frame_submit, flux_get_last_error, flux_struct_type, flux_surface,
-    flux_surface_begin_frame, flux_surface_create, flux_surface_desc, flux_surface_release,
+    flux_device, flux_device_create, flux_device_desc, flux_device_release, flux_error_info,
+    flux_frame, flux_frame_begin_desc, flux_frame_present, flux_frame_submit, flux_get_last_error,
+    flux_struct_type, flux_surface, flux_surface_begin_frame, flux_surface_create,
+    flux_surface_desc, flux_surface_read_pixels, flux_surface_release,
 };
 use flux_text_sys::{
     flux_text, flux_text_create, flux_text_desc, flux_text_destroy, flux_text_draw,
     flux_text_family, flux_text_metrics,
 };
+use wayland_client::protocol::wl_shm;
+use wayland_client::{Proxy, QueueHandle};
 use wayland_sys::{
     client::{wl_proxy, wl_proxy_marshal_array},
     common::wl_argument,
 };
+
 
 use crate::protocols::viewporter::wp_viewport::WpViewport;
 
@@ -350,10 +360,10 @@ pub struct FluxPanel {
     height: u32,
     scale: f32,
     /// `wp_viewport` on the panel surface, used to crop the grow-only
-    /// swapchain to the exact content rect (ADR-0013). `None` only when
-    /// the compositor lacks `wp_viewporter`; in that case the swapchain
-    /// is sized exactly to the content and the per-page resize cost
-    /// returns.
+    /// offscreen image to the exact content rect (ADR-0013, adapted to the
+    /// offscreen+shm path). `None` only when the compositor lacks
+    /// `wp_viewporter`; in that case the offscreen image is sized exactly
+    /// to the content and the per-page reallocation cost returns.
     viewport: Option<WpViewport>,
     /// Last content width (logical, pre-scale) sent to `wp_viewport`.
     /// Tracked so we only re-issue set_source/set_destination when the
@@ -362,8 +372,14 @@ pub struct FluxPanel {
     content_h_logical: i32,
     last_candidate_size_duration: Duration,
     last_candidate_size_resized: bool,
-    // Keep the raw wl_surface alive for the panel's lifetime.
-    _wl_surface: *mut c_void,
+    // Keep the raw wl_surface alive for the panel's lifetime; the host
+    // attaches shm buffers to it directly (no VkSurfaceKHR anymore).
+    wl_surface: *mut c_void,
+    /// Host-managed SHM buffer pool (double-buffered). Replaces the WSI
+    /// swapchain: `acquire` returns a free buffer or `None` (drop frame),
+    /// `wl_buffer.release` reuses a slot. `None` when the compositor lacks
+    /// `wl_shm`.
+    shm_pool: Option<crate::panel_shm::ShmBufferPool>,
     /// Heap-allocated C string for the pipeline-cache path. Owned by
     /// FluxPanel so it outlives `flux_device_release` (which fires the
     /// save callback). Null when cache persistence is unavailable
@@ -382,46 +398,52 @@ pub struct FluxPanel {
 }
 
 impl FluxPanel {
-    /// Create a panel backed by a Wayland surface via Vulkan.
+    /// Create a panel that renders offscreen via flux and presents through a
+    /// host-managed `wl_shm` buffer on `wl_surface`.
     ///
-    /// `wl_display_ptr` must be a valid `*mut wl_display` obtained
-    /// from the same Wayland connection the input-method frontend
-    /// uses (via `Connection::backend().display_ptr()`).
+    /// `wl_surface_ptr` must be a valid `*mut wl_surface` from the same
+    /// Wayland connection the input-method frontend uses. It must outlive the
+    /// panel.
     ///
-    /// `viewport`, when present, attaches a `wp_viewport` to the
-    /// surface so the swapchain can be allocated grow-only and cropped
-    /// to exact content (ADR-0013). `None` falls back to exact-size
-    /// resize.
+    /// `shm` is the bound `wl_shm` global; `qh` is the event queue that will
+    /// receive `wl_buffer.release` events for the panel's buffers.
+    ///
+    /// `viewport`, when present, attaches a `wp_viewport` to the surface so
+    /// the offscreen image can be allocated grow-only and cropped to exact
+    /// content (ADR-0013). `None` falls back to exact-size reallocation.
     ///
     /// # Safety
-    /// `wl_display_ptr` must be valid for the panel's lifetime.
-    /// Create a panel backed by an EXISTING wl_surface (e.g. one that's
-    /// already connected to zwp_input_popup_surface_v2 for positioning).
-    /// The surface must outlive the panel.
+    /// `wl_surface_ptr` must be valid for the panel's lifetime.
     pub unsafe fn new_from_surface(
-        wl_display_ptr: *mut c_void,
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
+        shm: Option<wl_shm::WlShm>,
+        qh: QueueHandle<crate::input_method::InputMethodState>,
+        registry: crate::panel_shm::ShmReleaseRegistry,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        Self::new_inner(wl_display_ptr, wl_surface_ptr, viewport, width, height)
+        Self::new_inner(wl_surface_ptr, viewport, shm, qh, registry, width, height)
     }
 
     fn new_inner(
-        wl_display_ptr: *mut c_void,
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
+        shm: Option<wl_shm::WlShm>,
+        qh: QueueHandle<crate::input_method::InputMethodState>,
+        registry: crate::panel_shm::ShmReleaseRegistry,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        unsafe { Self::new_inner_unsafe(wl_display_ptr, wl_surface_ptr, viewport, width, height) }
+        unsafe { Self::new_inner_unsafe(wl_surface_ptr, viewport, shm, qh, registry, width, height) }
     }
 
     unsafe fn new_inner_unsafe(
-        wl_display_ptr: *mut c_void,
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
+        shm: Option<wl_shm::WlShm>,
+        qh: QueueHandle<crate::input_method::InputMethodState>,
+        registry: crate::panel_shm::ShmReleaseRegistry,
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
@@ -431,12 +453,12 @@ impl FluxPanel {
             return Err("wl_surface is null".into());
         }
 
-        // 2. Create Vulkan device with Wayland surface + swapchain extensions.
-        let instance_exts: [*const c_char; 2] = [
-            c"VK_KHR_surface".as_ptr(),
-            c"VK_KHR_wayland_surface".as_ptr(),
-        ];
-        let device_exts: [*const c_char; 1] = [c"VK_KHR_swapchain".as_ptr()];
+        // 2. Create Vulkan device WITHOUT WSI extensions. The offscreen
+        //    surface needs no swapchain, no VkSurfaceKHR, no
+        //    VK_KHR_surface / VK_KHR_wayland_surface / VK_KHR_swapchain.
+        //    Dropping them also drops Mesa's wl_display-dispatching present
+        //    path — the source of the 16 s present deadlock.
+        let device_exts: [*const c_char; 0] = [];
         // Resolve pipeline-cache path before creating the desc so the
         // load/save callbacks and userdata can be wired in.
         let cache_path_c: *mut c_char = match &pipeline_cache_path() {
@@ -449,8 +471,8 @@ impl FluxPanel {
         };
         let mut device_desc: flux_device_desc = std::mem::zeroed();
         device_desc.type_ = FType::FLUX_TYPE_DEVICE_DESC;
-        device_desc.required_instance_extensions = instance_exts.as_ptr();
-        device_desc.required_instance_extension_count = instance_exts.len() as u32;
+        device_desc.required_instance_extensions = device_exts.as_ptr();
+        device_desc.required_instance_extension_count = device_exts.len() as u32;
         device_desc.required_device_extensions = device_exts.as_ptr();
         device_desc.required_device_extension_count = device_exts.len() as u32;
         device_desc.frames_in_flight = 2;
@@ -467,19 +489,15 @@ impl FluxPanel {
             return Err(flux_last_error_string("flux_device_create"));
         }
 
-        // 3. Create VkSurfaceKHR from the wl_surface.
-        let vk_instance = flux_device_vk_instance(device) as *mut c_void;
-        let vk_surface = create_wayland_vk_surface(vk_instance, wl_display_ptr, wl_surface)?;
-        if vk_surface.is_null() {
-            flux_device_release(device);
-            free_cache_path(cache_path_c);
-            return Err("vkCreateWaylandSurfaceKHR returned NULL".into());
-        }
-
-        // 4. Create flux surface.
+        // 3. Create an OFFSCREEN flux surface (no VkSurfaceKHR, no swapchain,
+        //    no WSI). flux owns RGBA8 images at width×height; the frame loop
+        //    is unchanged (begin → draw → submit → present is a no-op for
+        //    offscreen); flux_surface_read_pixels reads the result back.
+        //    This is the structural fix for the present deadlock: there is no
+        //    vkQueuePresentKHR in this path.
         let mut surface_desc: flux_surface_desc = std::mem::zeroed();
         surface_desc.type_ = FType::FLUX_TYPE_SURFACE_DESC;
-        surface_desc.vk_surface_khr = vk_surface;
+        surface_desc.vk_surface_khr = ptr::null_mut(); // NULL → offscreen (ADR-0013)
         surface_desc.width = width;
         surface_desc.height = height;
 
@@ -547,7 +565,10 @@ impl FluxPanel {
             content_h_logical: 0,
             last_candidate_size_duration: Duration::ZERO,
             last_candidate_size_resized: false,
-            _wl_surface: wl_surface,
+            wl_surface,
+            shm_pool: shm.as_ref().map(|s| {
+                crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone(), registry)
+            }),
             pipeline_cache_path: cache_path_c,
             last_layout_key: None,
             last_layout: Vec::new(),
@@ -791,6 +812,7 @@ impl FluxPanel {
         let mut draw_duration = Duration::ZERO;
         let mut submit_duration = Duration::ZERO;
         let mut present_duration = Duration::ZERO;
+        let mut readback_duration = Duration::ZERO;
 
         macro_rules! timed {
             ($slot:ident, $expr:expr) => {{
@@ -1149,7 +1171,39 @@ impl FluxPanel {
                 return;
             }
             before_present();
+            // Offscreen path: present is a no-op (no swapchain). The actual
+            // "present" is the readback + shm attach below.
             timed!(present_duration, flux_frame_present(frame));
+            heartbeat();
+
+            // Read the rendered frame back from the GPU. Bounded by the
+            // frame's fence (GPU completion) — never by the compositor.
+            let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
+            let mut readback_buf: Vec<u8> = vec![0u8; pixel_bytes];
+            let readback_start = Instant::now();
+            let r = flux_surface_read_pixels(
+                self.surface,
+                readback_buf.as_mut_ptr() as *mut c_void,
+                pixel_bytes,
+            );
+            if timing_enabled {
+                readback_duration = readback_start.elapsed();
+            }
+            heartbeat();
+            if !flux_result_is_ok(r) {
+                tracing::warn!(
+                    target: "typio.panel.shm",
+                    "flux_surface_read_pixels failed"
+                );
+                return;
+            }
+
+            // Hand the pixels to the compositor via a host-managed shm
+            // buffer. acquire returns None when all buffers are busy
+            // (compositor hasn't released them) — drop this frame rather
+            // than block. This is the structural fix: a slow compositor
+            // causes dropped frames, never a deadlock.
+            self.present_shm(&readback_buf);
             heartbeat();
             self.log_text_stats();
         }
@@ -1178,6 +1232,7 @@ impl FluxPanel {
                             draw_ms = ms(draw_duration),
                             submit_ms = ms(submit_duration),
                             present_ms = ms(present_duration),
+                            readback_ms = ms(readback_duration),
                             glyph_count = stats_after.glyph_count,
                             glyph_cap = stats_after.glyph_cap,
                             glyph_hits_delta = stats_after
@@ -1337,21 +1392,22 @@ impl FluxPanel {
 
     /// Ensure the surface is big enough for `candidate_count` rows.
     ///
-    /// Two paths, per ADR-0013:
+    /// Two paths, per ADR-0013 (adapted to the offscreen + SHM render path):
     ///
-    /// - **With `wp_viewport` (preferred).** The swapchain buffer is
+    /// - **With `wp_viewport` (preferred).** The offscreen image is
     ///   quantised up to `SURFACE_WIDTH_QUANTUM` and grows only. A width
-    ///   change inside the current quantum reuses the existing swapchain
-    ///   — no `vkDeviceWaitIdle`, no WSI roundtrips — and the exact
-    ///   content rect is cropped via `wp_viewport.set_source` /
-    ///   `set_destination`. After a short warm-up the buffer reaches the
-    ///   widest candidate row and `flux_surface_resize` is never called
-    ///   again during steady-state paging.
+    ///   change inside the current quantum reuses the existing offscreen
+    ///   image — no `flux_surface_resize` — and the exact content rect is
+    ///   cropped via `wp_viewport.set_source` / `set_destination`. After a
+    ///   short warm-up the image reaches the widest candidate row and
+    ///   `flux_surface_resize` is never called again during steady-state
+    ///   paging.
     ///
-    /// - **Without `wp_viewport` (legacy).** The buffer must equal the
-    ///   content exactly (the buffer maps 1:1 to the surface), so any
-    ///   width change rebuilds the swapchain. This is the watchdog-killing
-    ///   path when candidate pages churn; viewporter is the fix.
+    /// - **Without `wp_viewport` (legacy).** The SHM buffer must equal the
+    ///   content exactly (the buffer maps 1:1 to the surface), so any width
+    ///   change reallocates the offscreen image. This is costlier than the
+    ///   viewport path but no longer watchdog-killing — there is no WSI
+    ///   swapchain to rebuild.
     pub fn ensure_candidate_size(&mut self, candidates: &[String]) {
         let timing_enabled = tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::INFO)
             || tracing::enabled!(target: PANEL_TIMING_TARGET, tracing::Level::TRACE);
@@ -1434,13 +1490,13 @@ impl FluxPanel {
                 }
             }
             // Always re-issue the crop so the compositor shows the exact
-            // content rect regardless of buffer size. Cheap: two protocol
-            // requests, applied at the next commit (i.e. the present in
-            // draw_candidates / draw_status_banner or the detach in hide).
+            // content rect regardless of buffer size. wp_viewport.set_source
+            // takes buffer (physical) coordinates; set_destination takes
+            // surface (logical) coordinates.
             if content_w_logical != self.content_w_logical
                 || content_h_logical != self.content_h_logical
             {
-                viewport.set_source(0.0, 0.0, content_w_logical as f64, content_h_logical as f64);
+                viewport.set_source(0.0, 0.0, phys_width as f64, phys_height as f64);
                 viewport.set_destination(content_w_logical, content_h_logical);
                 self.content_w_logical = content_w_logical;
                 self.content_h_logical = content_h_logical;
@@ -1457,7 +1513,67 @@ impl FluxPanel {
     /// Hide the panel by detaching the current Wayland buffer.
     pub fn hide(&mut self) {
         unsafe {
-            wl_surface_detach_and_commit(self._wl_surface);
+            wl_surface_detach_and_commit(self.wl_surface);
+        }
+    }
+
+    /// Attach the rendered pixels to the panel surface via a host-managed
+    /// shm buffer.
+    ///
+    /// Acquires a free buffer from the pool (dropping this frame if all are
+    /// busy — the compositor hasn't released them yet), copies the readback
+    /// into it, and issues `wl_surface.attach` + `damage` + `commit`. These
+    /// are plain Wayland requests that return instantly; the compositor
+    /// processes them asynchronously and sends `wl_buffer.release` when the
+    /// buffer is reusable. Unlike `vkQueuePresentKHR`, this can never block
+    /// the main thread.
+    fn present_shm(&mut self, pixels: &[u8]) {
+        let Some(pool) = self.shm_pool.as_mut() else {
+            return;
+        };
+        let Some(idx) = pool.acquire(self.width, self.height) else {
+            tracing::trace!(
+                target: "typio.panel.shm",
+                "shm buffer pool exhausted — dropping frame"
+            );
+            return;
+        };
+        let buf = pool.get(idx).expect("acquire returned a valid index");
+        let dst = buf.pixels();
+        let copy_len = pixels.len().min(buf.pixel_len());
+        // flux offscreen renders B8G8R8A8_UNORM, which matches Wayland
+        // ARGB8888 byte order (B,G,R,A on little-endian) directly — no
+        // channel swap needed. Plain memcpy.
+        unsafe {
+            ptr::copy_nonoverlapping(pixels.as_ptr(), dst, copy_len);
+        }
+        buf.mark_busy();
+        // When wp_viewport is active, force buffer_scale=1 so the viewport's
+        // set_source (physical buffer coords) + set_destination (logical
+        // surface coords) alone map the physical-pixel shm buffer to logical
+        // size. The compositor may have sent PreferredBufferScale earlier
+        // (handled in Dispatch<wl_surface>), which set buffer_scale=2; that
+        // makes the compositor see the buffer at buffer_size/scale, and the
+        // physical source rectangle then exceeds that shrunken area
+        // (protocol error 2). Reset to 1 every present to override it.
+        // On the legacy no-viewport path, set buffer_scale to self.scale so
+        // the exact-sized physical buffer is interpreted at the right logical
+        // size.
+        let desired_scale = if self.viewport.is_some() { 1 } else { self.scale as i32 };
+        unsafe {
+            wl_surface_set_buffer_scale(self.wl_surface, desired_scale);
+        }
+        // Attach + damage + commit via raw FFI (the wl_surface is a raw
+        // pointer from wayland-sys; we don't have a safe WlSurface handle
+        // here). These requests are queued and flushed by the event loop;
+        // none of them block.
+        unsafe {
+            wl_surface_attach_commit(
+                self.wl_surface,
+                buf.wl_buffer().id().as_ptr() as *mut c_void,
+                self.width,
+                self.height,
+            );
         }
     }
 
@@ -1556,7 +1672,27 @@ impl FluxPanel {
                 return;
             }
             before_present();
+            // Offscreen: present is a no-op; readback + shm attach is the
+            // real "present". Same non-blocking path as draw_candidates.
             flux_frame_present(frame);
+            heartbeat();
+
+            let pixel_bytes = (self.width as usize) * (self.height as usize) * 4;
+            let mut readback_buf: Vec<u8> = vec![0u8; pixel_bytes];
+            let r = flux_surface_read_pixels(
+                self.surface,
+                readback_buf.as_mut_ptr() as *mut c_void,
+                pixel_bytes,
+            );
+            heartbeat();
+            if !flux_result_is_ok(r) {
+                tracing::warn!(
+                    target: "typio.panel.shm",
+                    "banner read_pixels failed"
+                );
+                return;
+            }
+            self.present_shm(&readback_buf);
             heartbeat();
         }
     }
@@ -1667,57 +1803,61 @@ unsafe fn wl_surface_detach_and_commit(wl_surface: *mut c_void) {
     }
 }
 
-// ── Vulkan Wayland surface creation ───────────────────────────────────────
+/// Set the buffer scale on the surface (wl_surface.set_buffer_scale —
+/// opcode 8). Tells the compositor the attached buffer is `scale`× physical
+/// pixels per logical pixel.
+unsafe fn wl_surface_set_buffer_scale(wl_surface: *mut c_void, scale: i32) {
+    if wl_surface.is_null() {
+        return;
+    }
+    let surface = wl_surface as *mut wl_proxy;
+    let mut args = [wl_argument { i: scale }];
+    unsafe {
+        wl_proxy_marshal_array(surface, 8, args.as_mut_ptr());
+    }
+}
 
-unsafe fn create_wayland_vk_surface(
-    instance: *mut c_void,
-    wl_display: *mut c_void,
+/// Attach `buffer` (a raw `wl_buffer*` = `wl_proxy*`) to the surface, damage
+/// the full surface, and commit. These are queued Wayland requests — none of
+/// them block. `width`/`height` are the buffer size in physical pixels.
+unsafe fn wl_surface_attach_commit(
     wl_surface: *mut c_void,
-) -> Result<*mut c_void, String> {
-    #[repr(C)]
-    struct VkWaylandSurfaceCreateInfoKHR {
-        s_type: u32,
-        p_next: *mut c_void,
-        flags: u32,
-        display: *mut c_void,
-        surface: *mut c_void,
+    buffer: *mut c_void,
+    width: u32,
+    height: u32,
+) {
+    if wl_surface.is_null() {
+        return;
+    }
+    let surface = wl_surface as *mut wl_proxy;
+
+    // wl_surface.attach(new_buffer, x, y) — opcode 1
+    let mut attach_args = [
+        wl_argument { o: buffer },
+        wl_argument { i: 0 },
+        wl_argument { i: 0 },
+    ];
+    unsafe {
+        wl_proxy_marshal_array(surface, 1, attach_args.as_mut_ptr());
     }
 
-    let create_info = VkWaylandSurfaceCreateInfoKHR {
-        s_type: 1000006000,
-        p_next: ptr::null_mut(),
-        flags: 0,
-        display: wl_display,
-        surface: wl_surface,
-    };
-
-    let lib = unsafe { libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_NOW) };
-    if lib.is_null() {
-        return Err("cannot load libvulkan.so.1".into());
+    // wl_surface.damage_buffer(x, y, width, height) — opcode 9
+    // (buffer coordinates, not surface coordinates; correct with buffer_scale)
+    let mut damage_args = [
+        wl_argument { i: 0 },
+        wl_argument { i: 0 },
+        wl_argument { u: width },
+        wl_argument { u: height },
+    ];
+    unsafe {
+        wl_proxy_marshal_array(surface, 9, damage_args.as_mut_ptr());
     }
 
-    let func: unsafe extern "C" fn(
-        *mut c_void,
-        *const VkWaylandSurfaceCreateInfoKHR,
-        *const c_void,
-        *mut *mut c_void,
-    ) -> i32 = unsafe {
-        let sym = libc::dlsym(lib, c"vkCreateWaylandSurfaceKHR".as_ptr());
-        if sym.is_null() {
-            libc::dlclose(lib);
-            return Err("cannot find vkCreateWaylandSurfaceKHR".into());
-        }
-        std::mem::transmute(sym)
-    };
-
-    let mut vk_surface: *mut c_void = ptr::null_mut();
-    let result = func(instance, &create_info, ptr::null(), &mut vk_surface);
-    libc::dlclose(lib);
-
-    if result != 0 {
-        return Err(format!("vkCreateWaylandSurfaceKHR failed: {result}"));
+    // wl_surface.commit() — opcode 6
+    let mut commit_args: [wl_argument; 0] = [];
+    unsafe {
+        wl_proxy_marshal_array(surface, 6, commit_args.as_mut_ptr());
     }
-    Ok(vk_surface)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

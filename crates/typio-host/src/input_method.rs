@@ -35,7 +35,7 @@ use std::time::Instant;
 use wayland_backend::client::ReadEventsGuard;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::wl_compositor::WlCompositor;
-use wayland_client::protocol::{wl_callback, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_callback, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::focus_controller::InputFacts;
@@ -247,6 +247,14 @@ pub struct InputMethodState {
     /// rect (ADR-0013).
     #[allow(dead_code)]
     panel_viewport: Option<WpViewport>,
+    /// `wl_shm` global — the shared-memory buffer factory. Used by the
+    /// offscreen-render panel path to create host-managed `wl_buffer`s
+    /// (replaces the Vulkan WSI swapchain; see `panel_shm`).
+    shm: Option<wl_shm::WlShm>,
+    /// Shared registry mapping wl_buffer proxy pointers to their busy flags,
+    /// so the `Dispatch<wl_buffer>` release handler can clear them without
+    /// touching `wl_proxy` user-data (which wayland-client owns).
+    shm_release_registry: crate::panel_shm::ShmReleaseRegistry,
     /// Text input rectangle from the compositor (cursor position).
     pub text_input_rect: Option<(i32, i32, i32, i32)>,
     /// Engine composition projection (candidates, selection, commit).
@@ -425,6 +433,16 @@ impl InputMethodState {
     /// Current panel schedule state.
     pub fn panel_schedule_state(&self) -> PanelScheduleState {
         self.panel_schedule_state
+    }
+
+    /// The bound `wl_shm` global, if the compositor advertises it.
+    pub fn shm(&self) -> Option<&wl_shm::WlShm> {
+        self.shm.as_ref()
+    }
+
+    /// Shared release-event registry for the SHM buffer pool.
+    pub fn shm_release_registry(&self) -> &crate::panel_shm::ShmReleaseRegistry {
+        &self.shm_release_registry
     }
 
     /// Reset the positioned-popup anchor generation. Call on focus_in and
@@ -650,34 +668,34 @@ impl InputMethodFrontend {
     pub fn connect(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
         let mut frontend = Self::connect_internal(callback, true)?;
 
-        let display_ptr = frontend.raw_display_ptr();
         let surface_ptr = frontend.state.popup_surface_raw_ptr();
         let viewport = frontend.state.panel_viewport.clone();
-        // Allocate the initial swapchain at `PANEL_PREALLOC_WIDTH ×
-        // PANEL_PREALLOC_HEIGHT` (512×128). This covers the first
-        // automatic indicator banner at scales 1, 1.5, 2 and 3 without
-        // invoking `flux_surface_resize`, which blocks on
-        // `vkDeviceWaitIdle` + compositor swapchain release and trips
-        // the 3 s watchdog on a fresh daemon (the watchdog is armed
-        // before the first PanelUpdate but the resize runs inside that
-        // stage). See the audit table on `PANEL_PREALLOC_WIDTH` in
-        // panel.rs: at scale 3 the longest observed default label
-        // ("中 · Rime · 懿拼音") quantises to 448×128, fitting inside
-        // 512×128 with one width-quantum of headroom.
+        let shm = frontend.state.shm.clone();
+        let qh = frontend.queue.handle();
+        let registry = frontend.state.shm_release_registry().clone();
+        // Allocate the initial offscreen image at `PANEL_PREALLOC_WIDTH ×
+        // PANEL_PREALLOC_HEIGHT` (512×128). This covers the first automatic
+        // indicator banner at scales 1, 1.5, 2 and 3 without invoking
+        // `flux_surface_resize`. The offscreen path has no WSI roundtrips
+        // (no swapchain), so resize is just `vkDeviceWaitIdle` + image
+        // recreation — still best avoided on the very first frame while the
+        // watchdog is freshly armed. See the audit table on
+        // `PANEL_PREALLOC_WIDTH` in panel.rs: at scale 3 the longest
+        // observed default label ("中 · Rime · 懿拼音") quantises to
+        // 448×128, fitting inside 512×128 with one width-quantum of
+        // headroom.
         //
-        // Larger labels or scales ≥ 4 still fall through to the
-        // grow-only path in `FluxPanel::apply_grow_only_size`; that
-        // resize then happens during real user interaction, where the
-        // watchdog tolerance has been replaced by genuine cadence.
-        // The previous 256×128 pre-allocation only verified the
-        // height axis and tripped the watchdog at scale 2 on the
-        // width axis (banner needs 320 px quantised vs 256 px
-        // allocated).
+        // Larger labels or scales ≥ 4 still fall through to the grow-only
+        // path in `FluxPanel::apply_grow_only_size`; that resize then
+        // happens during real user interaction, where the watchdog
+        // tolerance has been replaced by genuine cadence.
         match unsafe {
             FluxPanel::new_from_surface(
-                display_ptr,
                 surface_ptr,
                 viewport,
+                shm,
+                qh,
+                registry,
                 crate::panel::PANEL_PREALLOC_WIDTH,
                 crate::panel::PANEL_PREALLOC_HEIGHT,
             )
@@ -737,6 +755,22 @@ impl InputMethodFrontend {
             ),
         }
 
+        // Bind wl_shm for the offscreen-render panel path. The pool creates
+        // ARGB8888 wl_buffers from anonymous shared memory; flux renders
+        // offscreen and the host attaches these buffers directly (no Vulkan
+        // WSI swapchain, no vkQueuePresentKHR).
+        let shm: Option<wl_shm::WlShm> = globals.bind(&qh, 1..=1, ()).ok();
+        match &shm {
+            Some(_) => tracing::info!(
+                target: "typio.wayland.shm",
+                "compositor advertises wl_shm (offscreen-render panel path active)"
+            ),
+            None => tracing::warn!(
+                target: "typio.wayland.shm",
+                "compositor lacks wl_shm — offscreen panel path unavailable, panel will not render"
+            ),
+        }
+
         // Create a wl_surface for the panel popup.
         let popup_surface_obj = compositor.create_surface(&qh, ());
 
@@ -779,6 +813,8 @@ impl InputMethodFrontend {
             popup_surface,
             viewporter,
             panel_viewport,
+            shm,
+            shm_release_registry: crate::panel_shm::new_release_registry(),
             text_input_rect: None,
             composition: CompositionState::default(),
             serial: 0,

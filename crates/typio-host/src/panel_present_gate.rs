@@ -8,14 +8,25 @@
 
 use std::time::{Duration, Instant};
 
-/// The longest a candidate update may wait for an outstanding frame callback
-/// before the host presents the latest coalesced state anyway.
+/// The longest a candidate update may wait for an outstanding
+/// `wl_surface.frame` callback before the host presents the latest coalesced
+/// state anyway.
 ///
-/// This stays below the old 200 ms recovery path and around a 50 Hz cadence.
-/// A healthy compositor normally wakes earlier through `wl_surface.frame`;
-/// a compositor that drops callbacks timer-paces at a conservative cadence
-/// instead of filling the swapchain and blocking in present.
-pub const PANEL_FRAME_CALLBACK_SOFT_LIMIT: Duration = Duration::from_millis(20);
+/// **Pacing hygiene for the offscreen + SHM present path.** The panel no
+/// longer uses a Vulkan WSI swapchain (the structural fix for the
+/// `vkQueuePresentKHR` deadlock), so this gate is no longer the primary
+/// defense against present blocking — there is no present call to block.
+/// It remains as pacing: a healthy compositor delivers the callback at
+/// refresh rate (~16 ms), well below this ceiling, so steady-state pacing is
+/// unchanged; a compositor that drops callbacks timer-paces at a conservative
+/// cadence instead of spamming `wl_surface.attach`/`commit` requests.
+///
+/// 100 ms comfortably exceeds any real compositor's buffer-release latency,
+/// and the host-managed SHM buffer pool drops frames when all buffers are
+/// busy regardless of this gate. The prior 20 ms value was too aggressive —
+/// combined with a long candidate draw it let `wl_surface.frame` requests
+/// pile up — so 100 ms gives the callback room to arrive.
+pub const PANEL_FRAME_CALLBACK_SOFT_LIMIT: Duration = Duration::from_millis(100);
 
 /// Diagnostic threshold for an uninterrupted period with no frame callback.
 ///
@@ -123,6 +134,37 @@ mod tests {
         let now = Instant::now();
         let pending = now - (PANEL_FRAME_CALLBACK_SOFT_LIMIT + Duration::from_millis(1));
         assert_eq!(decide(Some(pending), now), PresentDecision::Present);
+    }
+
+    #[test]
+    fn rapid_re_arm_never_allows_back_to_back_presents() {
+        // Regression guard for the rapid-paging freeze: while a callback is
+        // outstanding, a speculative present is only allowed once the
+        // soft-limit ceiling elapses, and re-arming after that present
+        // restarts the full wait. This enforces "at most one outstanding
+        // swapchain image", which is what keeps the synchronous
+        // `vkQueuePresentKHR` from blocking on image exhaustion. Whatever
+        // cadence the caller drives `decide()` at, two `Present` results can
+        // never land closer together than the soft limit.
+        let soft = PANEL_FRAME_CALLBACK_SOFT_LIMIT;
+        let base = Instant::now();
+
+        // Fresh callback armed at `base`: nothing may present before the ceiling.
+        assert!(matches!(decide(Some(base), base), PresentDecision::WaitUntil(_)));
+        assert!(matches!(
+            decide(Some(base), base + soft / 2),
+            PresentDecision::WaitUntil(_)
+        ));
+        assert_eq!(decide(Some(base), base + soft), PresentDecision::Present);
+
+        // That present re-arms a fresh callback; the next decide() must wait
+        // another full `soft`, not fire immediately.
+        let re_arm = base + soft;
+        assert!(matches!(
+            decide(Some(re_arm), re_arm + Duration::from_micros(1)),
+            PresentDecision::WaitUntil(_)
+        ));
+        assert_eq!(decide(Some(re_arm), re_arm + soft), PresentDecision::Present);
     }
 
     #[test]

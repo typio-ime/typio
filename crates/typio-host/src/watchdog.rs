@@ -20,16 +20,16 @@ const SAMPLE_MS: u64 = 2000;
 const SAMPLE_MS: u64 = 100;
 /// Default stuck threshold (ms). Mirrors `TYPIO_WL_WATCHDOG_STUCK_MS`.
 const STUCK_MS: u64 = 3000;
-/// Stuck threshold for `LoopStage::Present` (ms). `vkQueuePresentKHR` on
-/// Wayland can transiently block well past the default 3 s threshold when
-/// the compositor falls behind releasing swapchain images, even under
-/// MAILBOX. A single blocking FFI call cannot heartbeat, so the default
-/// threshold kills a recovering panel rather than a deadlocked one. The
-/// panel's soft present gate (see `panel_present_decision`) keeps the
-/// present rate near compositor refresh rate when callbacks are healthy
-/// and timer-paces updates when callbacks disappear; 15 s tolerates a
-/// residual transient stall while still catching a genuine present deadlock
-/// eventually.
+/// Stuck threshold for `LoopStage::Present` (ms). With the panel now
+/// rendering offscreen (no Vulkan WSI swapchain), `flux_frame_present` is a
+/// no-op for the panel surface — it does not call `vkQueuePresentKHR`, so
+/// the 16 s WSI deadlock that motivated the elevated threshold is
+/// structurally gone. The threshold is retained as a safety net: the only
+/// blocking FFI in the panel path is now `flux_surface_read_pixels`, which
+/// waits on a GPU fence with a bounded timeout; a hang here would indicate a
+/// driver/GPU deadlock, for which `SIGKILL` + daemon restart is the only
+/// recourse. The longer window tolerates a transient driver stall without a
+/// false kill.
 const PRESENT_STUCK_MS: u64 = 15_000;
 
 /// Loop stage identifiers. The discriminants mirror `TypioWlLoopStage` in

@@ -1,6 +1,6 @@
 # ADR-0010: Non-blocking present mode for the candidate popup
 
-- **Status**: Accepted — in force (lag-cause attribution corrected by [ADR-0013](0013-grow-only-popup-swapchain.md); the non-blocking present itself is retained)
+- **Status**: Superseded by [ADR-0040](0040-offscreen-render-shm-buffers.md) — WSI present removed from the panel entirely; MAILBOX mode no longer relevant
 - **Date**: 2026-05-29
 - **Deciders**: Project maintainers
 - **Amends**: [ADR-0006](0006-resilient-candidate-popup-present.md)

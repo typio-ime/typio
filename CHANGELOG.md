@@ -64,16 +64,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status now uses its own popup owner and auto-hide timer, so language-switch
   feedback and voice-state feedback do not clear each other or affect each
   other's recency gates.
-- **Candidate panel frame callbacks are now a soft present gate.** The panel
-  still uses `wl_surface.frame` callbacks to pace healthy compositors, but a
-  missing callback no longer blocks candidate updates until the old 200 ms
-  recovery path. After a 20 ms soft limit, the host presents the latest
-  coalesced candidate state and re-arms the callback; a 200 ms uninterrupted
-  missing-callback episode now logs one `frame-callback stall` warning with a
-  running `stall_count` instead of controlling user-visible recovery. Panel
-  state now also records which candidate snapshot was actually submitted, so
-  repeated dirty ticks do not repaint an already-current snapshot while
-  scale, hide, and status-overlay ownership changes still force a redraw.
+- **Candidate panel renders offscreen and presents via host-managed SHM
+  buffers, eliminating `vkQueuePresentKHR` from the panel path.** The panel
+  previously rendered to a Vulkan WSI swapchain and called
+  `vkQueuePresentKHR` synchronously on the main thread. Mesa's Wayland WSI
+  dispatches `wl_display` inside that call, waiting for the compositor to
+  recycle swapchain images; under rapid candidate paging (e.g. holding
+  page-down in a Rime engine, where each page is a fresh set of CJK glyphs)
+  the compositor could stop recycling the input-method popup's buffers and
+  the present call would block for 16 s, tripping the watchdog's `Present`
+  stage and `SIGKILL`ing the daemon. No host-side present-rate gating could
+  prevent this — the block lived inside a single driver call on the main
+  thread. The panel now creates a flux **offscreen** surface (`vk_surface_khr
+  = NULL`, no swapchain, no WSI extensions), renders the same GPU content
+  (liquid glass, gradients, flux text) to an RGBA8 image, reads it back via
+  `flux_surface_read_pixels` (bounded by a GPU fence timeout, never by the
+  compositor), and attaches it to the `wl_surface` through a host-owned
+  double-buffered `wl_shm` pool. `wl_buffer.release` is a normal event on
+  the host's own queue; when all buffers are busy the panel drops the frame
+  and retries with the latest coalesced state next tick — never blocking.
+  The frame-callback present gate (100 ms ceiling) is retained as pacing
+  hygiene; `vkQueuePresentKHR` is no longer invoked anywhere in the panel
+  path. Panel state also records which candidate snapshot was actually
+  submitted, so repeated dirty ticks do not repaint an already-current
+  snapshot while scale, hide, and status-overlay ownership changes still
+  force a redraw.
 
 ## [0.5.4] - 2026-06-25
 

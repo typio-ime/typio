@@ -34,10 +34,10 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0007](0007-dbus-adapter-over-status-service.md) | D-Bus adapter as a thin transport over `TypioStatusService` | Superseded by ADR-0008 |
 | [ADR-0008](0008-ipc-protocol-resource-namespaces-uds-only.md) | TIP v1 — IPC Protocol with resource namespaces, UDS-only, push events | Accepted (engine verbs amended by ADR-0026) |
 | [ADR-0009](0009-long-term-performance-optimizations.md) | Long-term performance optimizations — font cache purging, composition short-circuit, and snapshot fast-path | Accepted |
-| [ADR-0010](0010-non-blocking-candidate-popup-present.md) | Non-blocking present mode for the candidate popup | Accepted (lag-cause attribution corrected by ADR-0013) |
+| [ADR-0010](0010-non-blocking-candidate-popup-present.md) | Non-blocking present mode for the candidate popup | Superseded by ADR-0040 (WSI present removed) |
 | [ADR-0011](0011-colour-independent-coverage-glyphs.md) | Colour-independent coverage glyph textures (draw-time tint) | Accepted (texture model superseded by ADR-0012; lag-cause attribution corrected by ADR-0013) |
 | [ADR-0012](0012-glyph-atlas-shared-texture.md) | Shared glyph atlas (rasterise once, reference sub-rects) | Accepted (lag-cause attribution corrected by ADR-0013; reclamation reworked by ADR-0020) |
-| [ADR-0013](0013-grow-only-popup-swapchain.md) | Grow-only popup swapchain (stop rebuilding per candidate page) | Accepted |
+| [ADR-0013](0013-grow-only-popup-swapchain.md) | Grow-only popup swapchain (stop rebuilding per candidate page) | Superseded by ADR-0040 (WSI present removed; grow-only sizing retained for offscreen image) |
 | [ADR-0014](0014-canonical-panel-vocabulary.md) | Canonical panel vocabulary and module ontology | Accepted (refines ADR-0005) |
 | [ADR-0015](0015-candidate-popup-lag-final-fixes.md) | Candidate popup lag — final fixes (acquire timeout, retry deferral, persistent upload context) | Accepted |
 | [ADR-0016](0016-per-glyph-font-fallback.md) | Per-glyph font fallback with format-12 charmap selection | Accepted |
@@ -60,10 +60,11 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0033](0033-language-led-tray-surface.md) | Language-led tray surface (icon and menu) | Accepted (amends ADR-0031 menu structure and ADR-0032 icon chain) |
 | [ADR-0034](0034-dynamic-engine-capabilities.md) | Dynamic engine capabilities (runtime-mutable language declarations) | Accepted (amends ADR-0031 static-declaration assumption; revises ADR-0033 multi-language menu rule) |
 | [ADR-0035](0035-bilingual-migration-to-rust.md) | Bilingual migration of the host to Rust | Accepted |
-| [ADR-0036](0036-soft-present-gate-for-candidate-panel.md) | Soft Present Gate for the Candidate Panel | Accepted (amends ADR-0010/0023) |
+| [ADR-0036](0036-soft-present-gate-for-candidate-panel.md) | Soft Present Gate for the Candidate Panel | Superseded by ADR-0040 (present gate retained as pacing hygiene only) |
 | [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Accepted (amends ADR-0024) |
 | [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Accepted (supersedes ADR-0035 decision D1) |
 | [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038) |
+| [ADR-0040](0040-offscreen-render-shm-buffers.md) | Offscreen Render with Host-Managed SHM Buffers (Remove WSI Present from the Panel) | Accepted (supersedes ADR-0010/0013/0036) |
 
 ## Looking for something else?
 
