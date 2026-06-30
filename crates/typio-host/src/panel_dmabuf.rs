@@ -141,9 +141,12 @@ impl Drop for DmabufBuffer {
             reg.remove(&self.key);
         }
         // buffer drop sends wl_buffer.destroy; _fd closes the dmabuf fd.
-        // The compositor must have released it already (busy==false) for this
-        // to be safe during normal panel teardown; flux_surface_release does
-        // vkDeviceWaitIdle first.
+        // Safe here because this buffer only reaches `drop` once
+        // `busy == false` (the compositor has sent `wl_buffer.release`):
+        //   - resize/clear/ensure_slot park busy buffers in `pending_release`
+        //     and reap them only after release flips the flag, and
+        //   - teardown runs `flux_surface_release` → `vkDeviceWaitIdle` first,
+        //     which also drains the compositor's last frame.
     }
 }
 
@@ -158,6 +161,16 @@ impl Drop for DmabufBuffer {
 pub struct DmabufBufferPool {
     /// One buffer per frame slot, index-aligned with flux's image slots.
     buffers: Vec<Option<DmabufBuffer>>,
+    /// Buffers retired from `buffers` but still awaiting compositor `release`
+    /// before they may be destroyed. Populated by `clear()` (resize) and by
+    /// `ensure_slot` (slot recreated mid-flight) when the displaced buffer is
+    /// still busy; drained by the reap pass at the top of `ensure_slot` as
+    /// releases arrive.
+    ///
+    /// Destroying a `wl_buffer` the compositor has not released is a protocol
+    /// violation, and unlike teardown this path runs no `vkDeviceWaitIdle` —
+    /// so busy buffers are parked here rather than dropped in place.
+    pending_release: Vec<DmabufBuffer>,
     dmabuf: zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
     qh: QueueHandle<InputMethodState>,
     registry: ShmReleaseRegistry,
@@ -171,6 +184,7 @@ impl DmabufBufferPool {
     ) -> Self {
         Self {
             buffers: Vec::new(),
+            pending_release: Vec::new(),
             dmabuf,
             qh,
             registry,
@@ -189,16 +203,46 @@ impl DmabufBufferPool {
         stride: u32,
         modifier: u64,
     ) {
+        // Reap retired buffers whose compositor release has arrived since the
+        // last call. Each `wl_buffer.release` flips its `busy` flag, so a
+        // released entry is now safe to destroy. Reap happens here (a frame
+        // boundary) so we never tear down a wl_buffer mid-event-queue.
+        self.pending_release.retain(|b| {
+            if b.busy() {
+                true // still held — keep parking
+            } else {
+                tracing::trace!(
+                    target: "typio.panel.dmabuf",
+                    "reaped retired dmabuf buffer after compositor release"
+                );
+                false // drop in place — release already happened
+            }
+        });
+
         // Grow the vec to fit the slot index.
         if self.buffers.len() <= slot {
             self.buffers.resize_with(slot + 1, || None);
         }
-        let existing = self.buffers[slot].as_ref();
-        let needs_create = match existing {
+        let existing = self.buffers[slot].take();
+        let needs_create = match &existing {
             None => true,
             Some(b) => b.width() != width || b.height() != height,
         };
         if needs_create {
+            // The displaced buffer, if any, must not be destroyed while the
+            // compositor still holds it. Retire it to `pending_release` if it's
+            // busy; otherwise it's already free and can be dropped normally.
+            if let Some(b) = existing {
+                if b.busy() {
+                    tracing::trace!(
+                        target: "typio.panel.dmabuf",
+                        slot,
+                        "retiring busy dmabuf buffer to pending_release on re-create"
+                    );
+                    self.pending_release.push(b);
+                }
+                // A free or non-busy buffer simply falls out of scope here.
+            }
             self.buffers[slot] = Some(DmabufBuffer::new(
                 &self.dmabuf,
                 &self.qh,
@@ -209,9 +253,12 @@ impl DmabufBufferPool {
                 stride,
                 modifier,
             ));
+        } else {
+            // Matches current size — reuse the existing buffer. The fresh `fd`
+            // from this frame's export is surplus (the slot's permanent fd
+            // already lives inside the kept buffer); it drops here.
+            self.buffers[slot] = existing;
         }
-        // If the buffer already exists and matches, the fd is surplus — drop
-        // it (the slot's permanent fd lives inside the existing buffer).
     }
 
     /// Get the buffer for a slot, marking it busy for the compositor.
@@ -228,8 +275,27 @@ impl DmabufBufferPool {
             .unwrap_or(false)
     }
 
-    /// Drop all buffers (used on resize so they're recreated at the new size).
+    /// Retire all buffers on resize. Buffers the compositor has already
+    /// released are dropped immediately; any still busy (compositor may still
+    /// be compositing/scanout) are parked in `pending_release` and reaped by
+    /// `ensure_slot` once their `wl_buffer.release` arrives.
+    ///
+    /// This is the resize path — unlike teardown it runs no
+    /// `vkDeviceWaitIdle`, so we cannot tear down a buffer the compositor has
+    /// not released.
     pub fn clear(&mut self) {
+        for slot in self.buffers.iter_mut() {
+            if let Some(b) = slot.take() {
+                if b.busy() {
+                    tracing::trace!(
+                        target: "typio.panel.dmabuf",
+                        "retiring busy dmabuf buffer to pending_release on clear"
+                    );
+                    self.pending_release.push(b);
+                }
+                // Non-busy buffers fall out of scope here — already released.
+            }
+        }
         self.buffers.clear();
     }
 }
