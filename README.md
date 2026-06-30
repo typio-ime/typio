@@ -7,24 +7,24 @@ daemon and the `typioctl` command-line client.
 > Currently Wayland-only (`text-input-v2` / `input-method-v2`). X11 is not
 > supported and not planned — this host targets the modern Wayland desktop.
 
-It embeds the workspace `libtypio` crate and provides the platform adapter layer:
+It embeds the workspace `typio-core` crate and provides the platform adapter layer:
 the Wayland text-input/input-method v2 client, virtual-keyboard bridge,
 the candidate Panel (rendered with flux/Vulkan), the UDS control socket,
 the StatusNotifierItem tray, and PipeWire voice capture. It translates
-Wayland events into libtypio abstractions and drives libtypio's callbacks
+Wayland events into typio-core abstractions and drives typio-core's callbacks
 back onto the compositor. (The old D-Bus status interface was removed in
 ADR-0008; the tray speaks SNI over D-Bus via zbus when the `systray`
 Cargo feature is enabled.)
 
 Engine discovery is host-owned: at startup `typio` scans
 `<datadir>/typio/engines` for `typio-engine-*.toml` manifests and registers
-direct worker processes with libtypio. Core itself contains no engine search
+direct worker processes with typio-core. Core itself contains no engine search
 paths.
 
 ## Building
 
 Requires Wayland, xkbcommon, fontconfig/harfbuzz/freetype, PipeWire for voice
-capture, and flux for the candidate Panel. `libtypio`, `typio-abi`,
+capture, and flux for the candidate Panel. `typio-core`, `typio-abi`,
 `typio-vet`, and `typioctl` are workspace crates in this repository.
 
 The host build is Cargo. `flux` is still a native C library, so build the

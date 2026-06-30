@@ -9,7 +9,7 @@ the layers.
 
 ## The Workspace Layers
 
-| | `typio-host` | `libtypio` | `typio-abi` | `typio-vet` | `typioctl` |
+| | `typio-host` | `typio-core` | `typio-abi` | `typio-vet` | `typioctl` |
 |---|---|---|---|---|---|
 | **Role** | Linux/Wayland host daemon | Platform-neutral framework | Shared Rust ABI types | Engine contract checker | Command-line TIP client |
 | **Output** | `typio` binary | `libtypio.so` and `rlib` | `rlib` | `typio-vet` binary and test harness | `typioctl` binary |
@@ -20,25 +20,25 @@ the layers.
 The dependency direction is intentionally narrow:
 
 ```text
-typio-host ──▶ libtypio ──▶ typio-abi
+typio-host ──▶ typio-core ──▶ typio-abi
 typio-vet  ───────────────▶ typio-abi
 typioctl   ───────────────▶ TIP/UDS daemon protocol
 engines    ───────────────▶ typio-abi
 ```
 
-`libtypio` never reaches back into the host except through callbacks the host
+`typio-core` never reaches back into the host except through callbacks the host
 registers. Engines remain separate packages and communicate with the daemon as
 out-of-process workers.
 
 ## The Boundary
 
 The contract between host and framework is defined by three surfaces in
-libtypio's public headers:
+typio-core's public headers:
 
 ### Surface 1: Instance lifecycle (`typio/runtime/instance.h`)
 
 The host creates a `TypioInstance`, provides engine directories and an engine
-discovery callback, then drives init and shutdown. libtypio never scans engine
+discovery callback, then drives init and shutdown. typio-core never scans engine
 paths; it calls back into the host's `TypioPluginLoaderFunc` once per engine
 directory, and the host does manifest parsing, capability negotiation, and IPC
 registration.
@@ -47,19 +47,19 @@ registration.
 
 The host creates contexts, feeds `TypioKeyEvent` structs in, and registers
 callbacks for text output. When an engine produces text, it calls
-`typio_input_context_commit` or `typio_input_context_set_composition`; libtypio
+`typio_input_context_commit` or `typio_input_context_set_composition`; typio-core
 fires the host's callbacks synchronously on the same call stack; the host
 translates those into Wayland protocol calls (`commit_string`,
 `set_preedit_string`, etc.).
 
 This is the bidirectional boundary: keys flow **in** from the compositor through
-libtypio to the engine; text and compositions flow **out** from the engine
-through libtypio back to the compositor.
+typio-core to the engine; text and compositions flow **out** from the engine
+through typio-core back to the compositor.
 
 ### Surface 3: Observer callbacks (`typio/runtime/instance.h`)
 
 The host registers callbacks for engine activation, mode changes, and status
-icon updates. libtypio fires these when its internal state changes; the host
+icon updates. typio-core fires these when its internal state changes; the host
 updates the tray, panel, and IPC event subscribers.
 
 ```
@@ -71,7 +71,7 @@ updates the tray, panel, and IPC event subscribers.
 	               │ engine request       │ engine responses
                ▼                      │
 ┌──────────────────────────────────────┴────────────────────┐
-│  libtypio + typio-abi                                      │
+│  typio-core + typio-abi                                      │
 │  Instance, Registry, InputContext, ABI types                │
 │  Engine lifecycle, worker transport, key routing, config   │
 │  No display server, no GPU, no audio                       │
@@ -90,7 +90,7 @@ updates the tray, panel, and IPC event subscribers.
 ### OS capability abstraction
 
 `typio-host` adapts the Linux/Wayland desktop to the portable interfaces
-libtypio defines:
+typio-core defines:
 
 | OS capability | Host module | Abstracted as |
 |---|---|---|
@@ -109,7 +109,7 @@ libtypio defines:
 ### UX consistency
 
 Because `typio-host` sits between the operating system and the user, it bears
-a responsibility that neither layer above (compositor) nor below (libtypio)
+a responsibility that neither layer above (compositor) nor below (typio-core)
 can fulfill: **ensuring a consistent, responsive user experience across all
 the surfaces the user actually sees and touches.**
 
@@ -140,13 +140,13 @@ structural:
   prevent keys from leaking between engines or between the IME and the
   application.
 
-These are not features of libtypio; they are properties of how the host bridges
+These are not features of typio-core; they are properties of how the host bridges
 OS capabilities to the framework. A different host (macOS, Windows, Android)
 would face different OS surfaces but the same UX invariants.
 
-## What libtypio Owns
+## What typio-core Owns
 
-libtypio is the platform-neutral core. It provides:
+typio-core is the platform-neutral core. It provides:
 
 - `TypioInstance` — lifecycle, config, per-app identity
 - `TypioRegistry` — engine listing, activation, switching
@@ -154,7 +154,7 @@ libtypio is the platform-neutral core. It provides:
 - Engine protocol and host-facing C ABI glue
 - Config schema — shared key vocabulary for hosts, engines, and control panels
 
-libtypio does not contain engines, does not open shared libraries, does not
+typio-core does not contain engines, does not open shared libraries, does not
 talk to any display server, and does not render pixels. Any code that would
 only make sense on one operating system belongs in the host.
 
@@ -212,7 +212,7 @@ When deciding where a change belongs, apply these tests:
 | Does it affect how the tray icon or IPC surface reports state? | Yes |
 | Does it discover an engine manifest or register an engine executable? | Yes |
 
-| Question | If yes, it belongs in `libtypio` |
+| Question | If yes, it belongs in `typio-core` |
 |---|---|
 | Does it affect how keys are routed to engines? | Yes |
 | Does it affect the composition data model? | Yes |
@@ -223,7 +223,7 @@ When deciding where a change belongs, apply these tests:
 | Question | If yes, it belongs in `typio-abi` |
 |---|---|
 | Is it a Rust representation of an engine-facing C ABI type? | Yes |
-| Must Rust engines compile against it without linking libtypio? | Yes |
+| Must Rust engines compile against it without linking typio-core? | Yes |
 | Can it be represented without runtime behavior or IO? | Yes |
 
 | Question | If yes, it belongs in `typio-vet` |
@@ -247,7 +247,7 @@ When deciding where a change belongs, apply these tests:
 ## Common Confusion Points
 
 **"I want to add a new input method."** Write an engine plugin against
-`typio/abi/abi.h`. Neither `typio-host` nor libtypio needs to change.
+`typio/abi/abi.h`. Neither `typio-host` nor typio-core needs to change.
 
 **"I want the panel to show a new kind of content."** This is `typio-host`.
 The panel content model (`TypioPanelContent`) is GPU-free and testable, but
@@ -255,15 +255,15 @@ the surface, rendering, and positioning are Wayland-specific.
 
 **"I want to change how engines are switched (Ctrl+Shift, next/prev)."** The
 trigger mechanism (keyboard shortcut detection, modifier buffering) is in the
-host. The registry operation (`next_keyboard`) is in libtypio.
+host. The registry operation (`next_keyboard`) is in typio-core.
 
 **"I want to add a new config key."** If the key is consumed by engines, define
-it in libtypio's config schema. If the key controls a host behavior (panel
+it in typio-core's config schema. If the key controls a host behavior (panel
 font, tray visibility, GPU options), it belongs in `typio-host` runtime
 config.
 
-**"I want to port Typio to macOS."** Write a new host that links libtypio,
-feeds keys, handles text output, and renders a native panel. libtypio,
+**"I want to port Typio to macOS."** Write a new host that links typio-core,
+feeds keys, handles text output, and renders a native panel. typio-core,
 typio-abi, typio-vet, and engine plugins stay the same unless the shared
 contract itself needs to change.
 

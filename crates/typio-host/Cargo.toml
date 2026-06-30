@@ -17,7 +17,7 @@ wayland-client = { optional = true, version = "0.31" }
 wayland-scanner = { workspace = true, optional = true }
 wayland-backend = { workspace = true, optional = true }
 bitflags.workspace = true
-libtypio.workspace = true
+typio-core.workspace = true
 typio-abi = { workspace = true }
 toml = "0.8"
 serde.workspace = true

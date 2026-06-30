@@ -1,5 +1,5 @@
 [package]
-name = "libtypio"
+name = "typio-core"
 version = "0.6.0"
 edition = "2021"
 authors = ["Typio Contributors"]

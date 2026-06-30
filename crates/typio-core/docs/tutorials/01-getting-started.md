@@ -36,8 +36,8 @@ own prerequisites.
 
 ```bash
 cd /path/to/projects/typio
-cargo build --release -p libtypio
-cargo test -p libtypio                 # core tests
+cargo build --release -p typio-core
+cargo test -p typio-core                 # core tests
 ```
 
 > **libtypio tests are platform-free.** They do not need a Wayland session

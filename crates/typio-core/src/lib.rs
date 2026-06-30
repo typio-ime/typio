@@ -1,4 +1,4 @@
-//! libtypio — Rust implementation of the Typio input method framework library.
+//! typio-core — Rust implementation of the Typio input method framework library.
 //!
 //! This crate exports a C ABI compatible with `include/typio/*.h`.
 //! This is the primary implementation; there is no separate C runtime.

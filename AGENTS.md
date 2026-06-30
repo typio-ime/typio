@@ -136,7 +136,7 @@ export FLUX_BUILD_DIR="$PWD/../optics/build"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
 cargo build --release -p typioctl
-cargo test -p typio-host -p libtypio -p typio-abi -p typio-vet -p typioctl
+cargo test -p typio-host -p typio-core -p typio-abi -p typio-vet -p typioctl
 ```
 
 `optics` is a native C monorepo with a Meson build tree; `flux` is a

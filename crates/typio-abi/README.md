@@ -14,8 +14,8 @@ cross the C FFI boundary between the Typio host and engine plugins.
 |---|---|
 | **Rust engine plugins** (e.g. `typio-engine-basic`) | **Yes** — import types instead of replicating them by hand. |
 | **`typio-engine-test`** and other test/lint tools | **Yes** — mock harnesses need the same layouts. |
-| **Hosts embedding `libtypio`** | No — link `libtypio` directly; it already contains these types internally. |
-| **C/C++ engines** | No — include the C headers under `libtypio/include/typio/abi/` instead. |
+| **Hosts embedding `typio-core`** | No — link `libtypio` directly; it already contains these types internally. |
+| **C/C++ engines** | No — include the C headers under `typio-core/include/typio/abi/` instead. |
 
 ## What is included
 
@@ -31,7 +31,7 @@ cross the C FFI boundary between the Typio host and engine plugins.
 - `TypioAbiVersion` — each engine defines its own ABI version export; the
   host verifies it at load time.
 - Any `extern "C"` function declarations — those belong to the host
-  runtime (`libtypio`) or to per-project mock harnesses.
+  runtime (`typio-core`) or to per-project mock harnesses.
 
 ## Usage
 
@@ -51,15 +51,15 @@ use typio_abi::*;
 Then implement the vtables and export the required entry points exactly
 as you would when including the C headers.
 
-## Relationship to `libtypio`
+## Relationship to `typio-core`
 
-`libtypio` is the **host runtime** — it implements input contexts,
+`typio-core` is the **host runtime** — it implements input contexts,
 instance management, engine loading, and the full C ABI surface.
-`typio-abi` is a **subset** extracted from `libtypio` so that Rust
+`typio-abi` is a **subset** extracted from `typio-core` so that Rust
 engines do not need to link the entire host library just to agree on
 struct layouts.
 
-The C headers in `libtypio/include/typio/abi/` and the Rust types in this
+The C headers in `typio-core/include/typio/abi/` and the Rust types in this
 crate are maintained as a single logical definition. If one changes, the
 other must be updated to match.
 
@@ -70,9 +70,9 @@ cargo build
 ```
 
 There are no tests in this crate (it contains only type definitions).
-Downstream crates (`typio-engine-basic`, `typio-engine-test`, `libtypio`)
+Downstream crates (`typio-engine-basic`, `typio-engine-test`, `typio-core`)
 verify correctness through their own test suites.
 
 ## License
 
-MIT — same as `libtypio`.
+MIT — same as `typio-core`.

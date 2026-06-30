@@ -9,7 +9,7 @@ layout of the `libtypio` crate.
 
 | Component | Role | Output | Depends on |
 |---|---|---|---|
-| **`crates/libtypio`** | platform-neutral core library + C ABI | `libtypio.so`, headers | `typio-abi` |
+| **`crates/typio-core`** | platform-neutral core library + C ABI | `libtypio.so`, headers | `typio-abi` |
 | **`crates/typio-abi`** | Shared `#[repr(C)]` type definitions for Rust engines and test tools | `rlib` (Rust types only) | — |
 | **`crates/typio-host`** | Linux/Wayland host | `typio` binary | `libtypio`, `typio-abi`, flux |
 | **`crates/typio-vet`** | Engine conformance checker | `typio-vet` binary | `typio-abi` |

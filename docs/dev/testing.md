@@ -7,7 +7,7 @@ Typio test suite.
 
 The suite is the Cargo workspace suite. `crates/typio-host` covers the
 shipping Rust daemon, subsystem ports, TIP framing, UDS IPC, engine
-discovery, and headless daemon behavior. `crates/libtypio`,
+discovery, and headless daemon behavior. `crates/typio-core`,
 `crates/typio-abi`, and `crates/typio-vet` cover the framework, shared ABI,
 and engine conformance tooling. `crates/typioctl` covers the command-line
 TIP/UDS client.
@@ -25,7 +25,7 @@ Run the full Rust suite:
 
 ```bash
 cargo test -p typio-host
-cargo test -p libtypio
+cargo test -p typio-core
 cargo test -p typio-abi
 cargo test -p typio-vet
 cargo test -p typioctl

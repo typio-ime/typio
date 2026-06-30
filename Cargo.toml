@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/libtypio",
+    "crates/typio-core",
     "crates/typio-abi",
     "crates/typioctl",
     "crates/typio-host",
@@ -52,7 +52,7 @@ serde_json = "1"
 
 # The framework library and its ABI headers live in this workspace so host,
 # ABI, and vet changes can land atomically.
-libtypio = { path = "crates/libtypio" }
+typio-core = { path = "crates/typio-core" }
 typio-abi = { path = "crates/typio-abi" }
 clap = { version = "4", features = ["derive"] }
 

@@ -5,7 +5,7 @@ workspace. Once accepted, they are not edited; a new ADR supersedes an old one
 if a decision changes.
 
 Historical framework-core decisions (engine ABI, composition contract) now live
-under `crates/libtypio/docs/adr/`. New decisions that affect the combined
+under `crates/typio-core/docs/adr/`. New decisions that affect the combined
 workspace or host/framework integration live in this ADR set.
 
 > **Candidate-popup lag — reading guide for ADR-0006 / 0010–0013.** The popup's
@@ -67,6 +67,6 @@ workspace or host/framework integration live in this ADR set.
 
 ## Looking for something else?
 
-- Framework core ADRs: see `crates/libtypio/docs/adr/`
+- Framework core ADRs: see `crates/typio-core/docs/adr/`
 - Historical CLI ADRs: see `crates/typioctl/docs/adr/`
 - Settings-panel ADRs: see the `typio-settings` repository

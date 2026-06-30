@@ -128,7 +128,7 @@ Build the framework and ABI tooling explicitly when touching engine contracts:
 
 ```bash
 cargo check -p typio-abi
-cargo check -p libtypio
+cargo check -p typio-core
 cargo check -p typio-vet
 ```
 

@@ -1,4 +1,4 @@
-# libtypio
+# typio-core
 
 The core library of the Typio input method framework — platform-neutral
 business logic (config, input context, engine orchestration) implemented
@@ -8,7 +8,7 @@ This repository builds `libtypio.so` and `libtypio.a`, and installs the
 public C ABI headers under `include/typio/`. Hosts and engine plugins link
 against the library directly or include the headers.
 
-`libtypio` is a pure framework crate: no engines are built in. The
+`typio-core` is a pure framework crate: no engines are built in. The
 `typio-engine-basic` fallback lives in the separate `typio-engine-basic`
 repository (sibling to this one). All other engines, the platform host,
 the CLI, and the control panel are separate repositories that consume
@@ -26,7 +26,7 @@ stability promise — see [docs/dev/contract-layers.md](docs/dev/contract-layers
 Rust engine authors do not need the C headers. They depend on the
 **`typio-abi`** crate (a workspace member under `crates/typio-abi`)
 which exports the same `#[repr(C)]` types, constants, and key symbols
-used by the C headers.  This keeps Rust engines in sync with `libtypio`
+used by the C headers.  This keeps Rust engines in sync with `typio-core`
 without linking the full host library.
 
 ## Build

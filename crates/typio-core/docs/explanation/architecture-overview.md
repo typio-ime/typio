@@ -39,7 +39,7 @@ Protocol and the engine ABI are the cross-repo contracts.
 
 | Component | Role | Language |
 |---|---|---|
-| `crates/libtypio` | Platform-neutral core library and the public C ABI for hosts and engines | Rust → C ABI |
+| `crates/typio-core` | Platform-neutral core library and the public C ABI for hosts and engines | Rust → C ABI |
 | `crates/typio-host` | Linux host. Builds the `typio` binary. Owns the input-method protocol, keyboard grab, candidate UI, UDS control surface, tray, voice plumbing, and engine discovery | Rust |
 | `crates/typio-abi` | Shared C ABI type definitions for Rust engines and test tools. Zero-implementation workspace member; keeps Rust engines in sync without linking the full framework library | Rust (types only) |
 | `crates/typio-vet` | Engine conformance checker and mock host harness | Rust |
@@ -67,7 +67,7 @@ for the in-repo file map.
 
 ### `libtypio`
 
-Located at `crates/libtypio/` in the `typio` workspace.
+Located at `crates/typio-core/` in the `typio` workspace.
 
 The C ABI in `include/typio/*.h` is the sole officially supported public interface — Rust is an implementation detail, not a public API. See [ADR-0002](../adr/0002-c-abi-as-the-only-public-interface.md). **No platform dependencies**: `libtypio` knows nothing about Wayland, D-Bus, GTK, Vulkan, or the event loop.
 
