@@ -44,15 +44,15 @@ pub const PANEL_PREALLOC_HEIGHT: u32 = 128;
 
 const PANEL_PADDING: f32 = 8.0;
 const PANEL_ROW_HEIGHT: f32 = 24.0;
+/// Lower bound for the candidate-row height fold when no text is measured.
+/// Kept as the legacy default size; the actual draw size comes from the
+/// panel font config.
 const CANDIDATE_FONT_SIZE: f32 = 16.0;
 const CANDIDATE_ITEM_X_PADDING: f32 = 5.0;
 const CANDIDATE_ITEM_GAP: f32 = 8.0;
-const CANDIDATE_NUMBER_FONT_SIZE: f32 = 11.0;
 const CANDIDATE_NUMBER_GAP: f32 = 4.0;
 
 const BANNER_PADDING: f32 = 10.0;
-const BANNER_FONT_SIZE: f32 = 15.0;
-const BANNER_ROW_HEIGHT: f32 = BANNER_PADDING * 2.0 + BANNER_FONT_SIZE * 1.3;
 
 const TEXT_COLOR: [u8; 3] = [240, 240, 240];
 const NUMBER_COLOR: [u8; 3] = [145, 145, 152];
@@ -147,7 +147,7 @@ impl FluxPanel {
     /// family changes, the [`TextRaster`] flushes its per-codepoint and per-face
     /// caches; either way the layout cache is dropped so candidate/banner
     /// geometry is re-measured at the new size.
-    pub fn set_font_config(&mut self, cfg: PanelFontConfig) {
+    pub(crate) fn set_font_config(&mut self, cfg: PanelFontConfig) {
         if self.font == cfg {
             return;
         }
@@ -564,7 +564,8 @@ impl FluxPanel {
     pub fn ensure_banner_size(&mut self, label: &str) {
         let m = self.text.measure(label, self.font.banner_size_px());
         let desired_width = (BANNER_PADDING * 2.0 + m.width).max(10.0).ceil() as u32;
-        let desired_height = BANNER_ROW_HEIGHT.ceil() as u32;
+        let banner_row_height = BANNER_PADDING * 2.0 + self.font.banner_size_px() * 1.3;
+        let desired_height = banner_row_height.ceil() as u32;
         let phys_width = (desired_width as f32 * self.scale).ceil() as u32;
         let phys_height = (desired_height as f32 * self.scale).ceil() as u32;
         self.apply_grow_only_size(

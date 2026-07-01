@@ -20,7 +20,9 @@ candidate_layout = "horizontal"
 # Panel font size in points, range 6–72  (default: 11)
 font_size = 11
 
-# Font family for the Panel  (default: "Sans")
+# Primary font family for the Panel (default: empty ⇒ built-in fallback list).
+# When set, this family is the "first font" and wins for every codepoint it
+# covers; missing codepoints fall back to whatever system font covers them.
 # font_family = "Noto Sans CJK SC"
 
 # Show engine mode label (e.g. "中" / "A") in the Panel  (default: false)

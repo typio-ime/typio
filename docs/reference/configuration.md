@@ -226,8 +226,8 @@ model    = "sensevoice-small"   # directory name under ~/.local/share/typio/sher
 |-----|------|---------|-------------|
 | `panel_theme` | string | `"auto"` | `"auto"` (follow desktop), `"light"`, or `"dark"`. |
 | `candidate_layout` | string | `"horizontal"` | `"horizontal"` or `"vertical"`. |
-| `font_size` | int | `11` | Panel text size in points (6–72). |
-| `font_family` | string | `"Sans"` | Font family name.  Use a name known to Fontconfig. |
+| `font_size` | float | `11` | Panel text size in points (6–72). Candidate, index-number and banner sizes are derived from it. |
+| `font_family` | string | `""` | Primary font family for the Panel. When empty the built-in fallback list is used (Noto Sans / Noto Sans CJK SC / …). Otherwise the named family is the "first font": it wins for every codepoint it covers, and missing codepoints fall back to the system fonts that do cover them. Changes apply at the next config reload. |
 | `panel_mode_indicator` | bool | `false` | Show the engine mode label (e.g. "中" / "A") inside the Panel. |
 | `anchor_probe` | bool | `true` | Send one no-op input-method commit per activation when positioned status UI is waiting for a cursor anchor. |
 | `anchor_probe_timeout_ms` | int | `150` | Milliseconds to wait for anchor readiness before dropping pending positioned status UI (50–1000). |

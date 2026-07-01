@@ -427,6 +427,15 @@ impl App {
                 Ok(frontend) => {
                     tracing::info!(target: "typio.startup", "Wayland input-method frontend connected");
                     self.frontend = Some(frontend);
+                    // Apply the initial panel font config now that the panel
+                    // exists, so the first frame uses the user's font/size
+                    // instead of the rasteriser defaults.
+                    self.panel_font_config = self.load_display_font_config();
+                    if let Some(ref mut frontend) = self.frontend {
+                        if let Some(panel) = frontend.panel_mut() {
+                            panel.set_font_config(self.panel_font_config.clone());
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(target: "typio.startup", error = %e, "Wayland frontend not available");
@@ -650,13 +659,15 @@ impl App {
                 tracing::info!(target: "typio.lifecycle", "configuration reloaded");
                 self.indicator_config = self.load_indicator_config();
                 self.refresh_state_surfaces();
-                // A reload may change any panel-rendering input (and, once
-                // fonts/themes become config-driven, the candidate text
-                // geometry). Drop the panel's layout cache and force a
-                // repaint so nothing is served from stale measurements.
+                // A reload may change the panel font (display.font_family /
+                // display.font_size). Re-read and push it down so the
+                // candidate text geometry reflects the new font; this also
+                // flushes the TextRaster coverage/face caches when the family
+                // changed, then forces a repaint.
+                self.panel_font_config = self.load_display_font_config();
                 if let Some(ref mut frontend) = self.frontend {
                     if let Some(panel) = frontend.panel_mut() {
-                        panel.invalidate_layout_cache();
+                        panel.set_font_config(self.panel_font_config.clone());
                     }
                     let state = frontend.state_mut();
                     state.invalidate_panel_presentation();

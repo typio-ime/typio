@@ -8,7 +8,6 @@
 //! render hot path never touches FFI.
 
 use std::ffi::{c_char, CStr, CString};
-use std::ptr;
 
 use typio::TypioInstance;
 
@@ -31,7 +30,7 @@ const PT_TO_PX: f64 = 96.0 / 72.0;
 /// Snapshot of the panel font configuration (logical units; the HiDPI scale is
 /// applied at draw time).
 #[derive(Clone, Debug)]
-pub(crate) struct PanelFontConfig {
+pub struct PanelFontConfig {
     /// User-configured primary family, or empty for built-in fallback.
     pub family: String,
     /// Font size in points, clamped to 6–72.
@@ -128,8 +127,3 @@ fn get_string(cfg: *const typio::config::Config, key: &str, default: &str) -> St
         .to_string_lossy()
         .into_owned()
 }
-
-// Keep `ptr`/`c_char` in scope even if a future refactor drops a use.
-const _: fn() = || {
-    let _ = ptr::null::<c_char>();
-};
