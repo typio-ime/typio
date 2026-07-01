@@ -48,9 +48,8 @@ typio-vet: .../libtypio_engine_basic.so (name=basic, type=TypioEngineTypeKeyboar
   Resource
     icon_name ............... PASS
     icon_asset .............. PASS
-    svg_wellformed .......... PASS
 
-23 passed, 0 warnings, 0 failed
+22 passed, 0 warnings, 0 failed
 ```
 
 ### Options
@@ -141,8 +140,7 @@ plus its tests.
 | Check | Contract |
 |-------|----------|
 | `icon_name` | `TypioEngineInfo.icon` is a bare freedesktop icon *name*, not a path or filename |
-| `icon_asset` | a matching `<name>.svg` or `<name>-symbolic.svg` exists under `data/icons/hicolor/**/apps/` (or the bundled `icons/hicolor/**`) |
-| `svg_wellformed` | the SVG is valid UTF-8, has an `<svg>` root with `viewBox` or width/height, and balanced tags |
+| `icon_asset` | a matching `<name>.svg` or `<name>-symbolic.svg` exists and is readable under `data/icons/hicolor/**/apps/` (or the bundled `icons/hicolor/**`) |
 | `icon_placement` | a `-symbolic` asset lives under `symbolic/` or `scalable/` (WARN otherwise) |
 
 ## Scope

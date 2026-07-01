@@ -6,7 +6,7 @@
 
 mod cli;
 mod event_loop;
-mod font_config;
+pub(crate) mod font_config;
 mod indicator;
 mod signals;
 mod tray;
@@ -105,6 +105,11 @@ pub struct App {
     /// startup and on every config reload so the running loop never does
     /// FFI on the hot path.
     indicator_config: IndicatorConfig,
+    /// Cached panel font configuration snapshot (family + size). Re-read on
+    /// startup and reload, then applied to the candidate panel's
+    /// [`TextRaster`](crate::text_raster::TextRaster) so its primary-family
+    /// and per-size caches reflect the user's `display.font_*` settings.
+    panel_font_config: font_config::PanelFontConfig,
     /// Auto-hide timerfd for the indicator. Armed when the indicator
     /// actually becomes visible (coordinator accepted the show); disarmed
     /// on hide, focus-loss, or shutdown. Polled as part of the main poll
@@ -208,6 +213,7 @@ impl App {
             voice: None,
             indicator: None,
             indicator_config: IndicatorConfig::default(),
+            panel_font_config: font_config::PanelFontConfig::default(),
             #[cfg(feature = "wayland")]
             indicator_timer: None,
             #[cfg(feature = "wayland")]
@@ -884,6 +890,7 @@ mod tests {
             voice: None,
             indicator: None,
             indicator_config: IndicatorConfig::default(),
+            panel_font_config: font_config::PanelFontConfig::default(),
             #[cfg(feature = "wayland")]
             indicator_timer: None,
             #[cfg(feature = "wayland")]

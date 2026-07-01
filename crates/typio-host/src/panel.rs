@@ -31,6 +31,7 @@ use wayland_sys::{
 };
 
 use crate::protocols::viewporter::wp_viewport::WpViewport;
+use crate::app::font_config::PanelFontConfig;
 use crate::text_raster::{TextMetrics, TextRaster};
 
 /// Offscreen width quantum (grow-only; cropped to exact content via wp_viewport).
@@ -69,6 +70,9 @@ pub struct FluxPanel {
     width: u32,
     height: u32,
     scale: f32,
+    /// Panel font configuration (family + size). Drives the candidate /
+    /// number / banner sizes and the [`TextRaster`] primary family.
+    font: PanelFontConfig,
     viewport: Option<WpViewport>,
     viewport_source_w_physical: u32,
     viewport_source_h_physical: u32,
@@ -116,6 +120,7 @@ impl FluxPanel {
             width,
             height,
             scale: 1.0,
+            font: PanelFontConfig::default(),
             viewport,
             viewport_source_w_physical: 0,
             viewport_source_h_physical: 0,
@@ -135,6 +140,22 @@ impl FluxPanel {
             return;
         }
         self.scale = scale;
+        self.invalidate_layout_cache();
+    }
+
+    /// Apply the current panel font configuration (family + size). When the
+    /// family changes, the [`TextRaster`] flushes its per-codepoint and per-face
+    /// caches; either way the layout cache is dropped so candidate/banner
+    /// geometry is re-measured at the new size.
+    pub fn set_font_config(&mut self, cfg: PanelFontConfig) {
+        if self.font == cfg {
+            return;
+        }
+        let family_changed = self.font.family != cfg.family;
+        self.font = cfg;
+        if family_changed {
+            self.text.set_preferred_family(self.font.family_opt());
+        }
         self.invalidate_layout_cache();
     }
 
@@ -291,7 +312,7 @@ impl FluxPanel {
                 number_x * scale,
                 number_top * scale,
                 number_str,
-                CANDIDATE_NUMBER_FONT_SIZE * scale,
+                self.font.number_size_px() * scale,
                 NUMBER_COLOR,
             );
             self.text.draw(
@@ -301,7 +322,7 @@ impl FluxPanel {
                 main_x * scale,
                 text_top * scale,
                 candidate,
-                CANDIDATE_FONT_SIZE * scale,
+                self.font.candidate_size_px() * scale,
                 TEXT_COLOR,
             );
             cx += iw + CANDIDATE_ITEM_GAP;
@@ -344,8 +365,8 @@ impl FluxPanel {
         for (i, candidate) in candidates.iter().enumerate() {
             let label = candidate_number_label(i);
             let number_str = std::str::from_utf8(&label).unwrap_or("");
-            let num_m = self.text.measure(number_str, CANDIDATE_NUMBER_FONT_SIZE);
-            let m = self.text.measure(candidate, CANDIDATE_FONT_SIZE);
+            let num_m = self.text.measure(number_str, self.font.number_size_px());
+            let m = self.text.measure(candidate, self.font.candidate_size_px());
             out.push((num_m, m));
         }
         self.last_layout_key = Some((candidates.to_vec(), self.scale));
@@ -499,7 +520,7 @@ impl FluxPanel {
             return false;
         }
         heartbeat();
-        let m = self.text.measure(label, BANNER_FONT_SIZE);
+        let m = self.text.measure(label, self.font.banner_size_px());
         if !self.ensure_canvas() {
             return false;
         }
@@ -515,7 +536,7 @@ impl FluxPanel {
             return false;
         }
 
-        let text_y = BANNER_PADDING + (BANNER_FONT_SIZE * 1.3 - m.height).max(0.0) / 2.0;
+        let text_y = BANNER_PADDING + (self.font.banner_size_px() * 1.3 - m.height).max(0.0) / 2.0;
         let text_x = BANNER_PADDING;
         let scale = self.scale;
         let (bw, bh) = (self.width, self.height);
@@ -527,7 +548,7 @@ impl FluxPanel {
             text_x * scale,
             text_y * scale,
             label,
-            BANNER_FONT_SIZE * scale,
+            self.font.banner_size_px() * scale,
             TEXT_COLOR,
         );
         self.frame_buf = fb;
@@ -541,7 +562,7 @@ impl FluxPanel {
 
     /// Ensure the framebuffer fits a single-row banner of `label`.
     pub fn ensure_banner_size(&mut self, label: &str) {
-        let m = self.text.measure(label, BANNER_FONT_SIZE);
+        let m = self.text.measure(label, self.font.banner_size_px());
         let desired_width = (BANNER_PADDING * 2.0 + m.width).max(10.0).ceil() as u32;
         let desired_height = BANNER_ROW_HEIGHT.ceil() as u32;
         let phys_width = (desired_width as f32 * self.scale).ceil() as u32;
