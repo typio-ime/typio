@@ -92,6 +92,15 @@ fn main() {
         }
     }
 
+    // Same re-emit for flux-text-sys (links = "flux-text"): libflux_text.so
+    // lives in a sibling build subdir and otherwise resolves to a stale
+    // system install that lacks the host-coverage glyph path (ADR-0019).
+    if let Ok(rpaths) = env::var("DEP_FLUX_TEXT_RPATHS") {
+        for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
+        }
+    }
+
     // Emit env vars for option_env!() consumption at compile time.
     println!("cargo:rustc-env=TYPIO_VERSION={version}");
     println!("cargo:rustc-env=TYPIO_VERSION_MAJOR={major}");

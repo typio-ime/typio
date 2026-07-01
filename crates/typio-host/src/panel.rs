@@ -1,18 +1,17 @@
 //! Candidate panel — flux CPU (software) rendering + host-managed SHM buffer.
 //!
-//! flux's CPU canvas (`flux_canvas_create_cpu`) rasterises the panel background
-//! and selection highlight on the host — no Vulkan device, surface, swapchain
-//! or dma-buf. Text is shaped/rasterised by [`crate::text_raster`] (flux's CPU
-//! backend cannot draw glyphs) and composited into the RGBA8 framebuffer flux
-//! returns from `flux_canvas_cpu_pixels`. The result is byte-swapped into a
-//! host-owned `wl_shm` `wl_buffer` (RGBA→ARGB8888) and attached to the popup
-//! `wl_surface`.
+//! flux's CPU canvas (`flux_canvas_create_cpu`) rasterises the panel background,
+//! selection highlight and text on the host — no Vulkan device, surface,
+//! swapchain or dma-buf. Text is shaped by flux-text and drawn into the same
+//! canvas pass via the host-coverage glyph path (ADR-0019). The composited
+//! RGBA8 framebuffer flux returns from `flux_canvas_cpu_pixels` is byte-swapped
+//! into a host-owned `wl_shm` `wl_buffer` (RGBA→ARGB8888) and attached to the
+//! popup `wl_surface`.
 //!
 //! ```text
-//! flux CPU canvas (bg + highlight)  →  flux_canvas_cpu_pixels (RGBA8 premul)
-//!   → memcpy into frame_buf → text_raster composites glyphs
-//!     → present_shm: RGBA→ARGB8888 into a free ShmBuffer
-//!       → wl_surface.attach + damage + commit (raw FFI, returns instantly)
+//! flux CPU canvas (bg + highlight + text)  →  flux_canvas_cpu_pixels (RGBA8 premul)
+//!   → memcpy into frame_buf → present_shm: RGBA→ARGB8888 into a free ShmBuffer
+//!     → wl_surface.attach + damage + commit (raw FFI, returns instantly)
 //! ```
 
 use std::ffi::c_void;
@@ -252,7 +251,10 @@ impl FluxPanel {
             return false;
         }
 
-        // ── flux CPU pass: background + selection highlight (logical coords) ──
+        // ── flux CPU pass: background + highlight + text (logical coords) ──
+        // Text draws inside the pass via flux-text's host-coverage path
+        // (ADR-0019); the canvas content-scale transform maps logical quads
+        // onto physical pixels, so text uses logical coords like the fills.
         unsafe {
             if !flux_result_is_ok(flux_canvas_cpu_begin(self.canvas, ptr::null())) {
                 return false;
@@ -281,6 +283,40 @@ impl FluxPanel {
                 }
                 cx += iw + CANDIDATE_ITEM_GAP;
             }
+
+            // Text pass (logical coords).
+            let mut cx = PANEL_PADDING;
+            let y = PANEL_PADDING;
+            let row_height = candidate_row_height(&layout);
+            for (i, candidate) in candidates.iter().enumerate() {
+                let (num_m, m) = layout[i];
+                let iw =
+                    CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
+                let text_top = y + (row_height - m.height).max(0.0) / 2.0;
+                let number_top = text_top + m.baseline - num_m.baseline;
+                let number_x = cx + CANDIDATE_ITEM_X_PADDING;
+                let main_x = cx + CANDIDATE_ITEM_X_PADDING + num_m.width + CANDIDATE_NUMBER_GAP;
+
+                let label = candidate_number_label(i);
+                let number_str = std::str::from_utf8(&label).unwrap_or("");
+                self.text.draw(
+                    self.canvas,
+                    number_x,
+                    number_top,
+                    number_str,
+                    self.font.number_size_px(),
+                    NUMBER_COLOR,
+                );
+                self.text.draw(
+                    self.canvas,
+                    main_x,
+                    text_top,
+                    candidate,
+                    self.font.candidate_size_px(),
+                    TEXT_COLOR,
+                );
+                cx += iw + CANDIDATE_ITEM_GAP;
+            }
             flux_canvas_cpu_end(self.canvas);
         }
         heartbeat();
@@ -288,46 +324,8 @@ impl FluxPanel {
             return false;
         }
 
-        // ── CPU text composite pass (physical coords = logical * scale) ──
-        let mut fb = std::mem::take(&mut self.frame_buf);
-        let scale = self.scale;
-        let (bw, bh) = (self.width, self.height);
-        let mut cx = PANEL_PADDING;
-        let y = PANEL_PADDING;
-        let row_height = candidate_row_height(&layout);
-        for (i, candidate) in candidates.iter().enumerate() {
-            let (num_m, m) = layout[i];
-            let iw = CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
-            let text_top = y + (row_height - m.height).max(0.0) / 2.0;
-            let number_top = text_top + m.baseline - num_m.baseline;
-            let number_x = cx + CANDIDATE_ITEM_X_PADDING;
-            let main_x = cx + CANDIDATE_ITEM_X_PADDING + num_m.width + CANDIDATE_NUMBER_GAP;
-
-            let label = candidate_number_label(i);
-            let number_str = std::str::from_utf8(&label).unwrap_or("");
-            self.text.draw(
-                &mut fb,
-                bw,
-                bh,
-                number_x * scale,
-                number_top * scale,
-                number_str,
-                self.font.number_size_px() * scale,
-                NUMBER_COLOR,
-            );
-            self.text.draw(
-                &mut fb,
-                bw,
-                bh,
-                main_x * scale,
-                text_top * scale,
-                candidate,
-                self.font.candidate_size_px() * scale,
-                TEXT_COLOR,
-            );
-            cx += iw + CANDIDATE_ITEM_GAP;
-        }
-        self.frame_buf = fb;
+        // Background + text are both baked into the canvas framebuffer now;
+        // no separate CPU text-composite pass is needed.
         heartbeat();
 
         before_present();
@@ -529,6 +527,18 @@ impl FluxPanel {
                 return false;
             }
             self.draw_panel_background();
+
+            // Text draws inside the pass (host-coverage path, logical coords).
+            let text_y = BANNER_PADDING + (self.font.banner_size_px() * 1.3 - m.height).max(0.0) / 2.0;
+            self.text.draw(
+                self.canvas,
+                BANNER_PADDING,
+                text_y,
+                label,
+                self.font.banner_size_px(),
+                TEXT_COLOR,
+            );
+
             flux_canvas_cpu_end(self.canvas);
         }
         heartbeat();
@@ -536,22 +546,6 @@ impl FluxPanel {
             return false;
         }
 
-        let text_y = BANNER_PADDING + (self.font.banner_size_px() * 1.3 - m.height).max(0.0) / 2.0;
-        let text_x = BANNER_PADDING;
-        let scale = self.scale;
-        let (bw, bh) = (self.width, self.height);
-        let mut fb = std::mem::take(&mut self.frame_buf);
-        self.text.draw(
-            &mut fb,
-            bw,
-            bh,
-            text_x * scale,
-            text_y * scale,
-            label,
-            self.font.banner_size_px() * scale,
-            TEXT_COLOR,
-        );
-        self.frame_buf = fb;
         heartbeat();
 
         before_present();
