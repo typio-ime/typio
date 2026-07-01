@@ -100,6 +100,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot while scale, hide, and status-overlay ownership changes still
   force a redraw.
 
+### Removed
+
+- **Candidate panel no longer uses a Vulkan/dma-buf present path.** It renders
+  to flux's CPU canvas (`flux_canvas_cpu_*`) and attaches host-owned SHM
+  buffers; `panel_dmabuf.rs`, the `linux-dmabuf-unstable-v1` protocol XML, the
+  `flux-text-sys` dependency, and ADR-0040/0041 were deleted, and ADR-0040 was
+  rewritten as "CPU-canvas render + SHM buffers". Text shaping/rasterisation
+  moved to a host-owned `text_raster` (ab_glyph + fontconfig fallback).
+- **Watchdog `Present`-stage elevated threshold dropped.** `flux_surface_read_pixels`
+  is no longer in the panel path, so the 15 s `PRESENT_STUCK_MS` that guarded a
+  GPU-fence/readback stall is gone; every non-restful stage uses the single
+  `STUCK_MS` window. `LoopStage::Present` stays as a non-restful stage.
+- **Over-engineering cleanup in the panel subsystem.** Removed the orphan
+  `core/registry/policy.rs` (a 5-line dead placeholder with zero references),
+  and rewrote stale comments in `panel_present_gate` / `panel_shm` /
+  `input_method` / `watchdog` that still described the removed Vulkan swapchain
+  as the present path.
+- **`typio-vet` no longer ships a hand-rolled SVG validator.** The
+  `validate_svg` / `balanced_tags` mini-XML-parser (~110 LOC) was removed; SVG
+  well-formedness is the compositor renderer's job. Icon name, asset-presence,
+  and placement checks (which catch real packaging bugs) remain.
+
 ## [0.5.4] - 2026-06-25
 
 ### Fixed

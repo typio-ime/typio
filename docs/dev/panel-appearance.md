@@ -69,42 +69,54 @@ on-screen highlight is briefly behind.
 
 ---
 
-## Font loading and variable fonts
+## Font selection and sizing
 
-### Font description parsing
+The candidate panel renders text on the CPU via `TextRaster`
+(`crates/typio-host/src/text_raster.rs`): `rustybuzz` (shaping), `fontdb`
+(per-codepoint face discovery — `fontdb` reads the system `fonts.conf`, so the
+family list mirrors the desktop's Fontconfig configuration), and `ab_glyph`
+(outline rasterisation). The legacy FreeType/HarfBuzz/Fontconfig `text_shaper.c`
+path was retired by [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
-`parse_font_desc` in `text_shaper.c` understands descriptions such as:
+### Primary family + per-codepoint fallback
 
-```
-"Noto Sans SemiBold 16"
-```
+`TextRaster::face_score` assigns every covering face a sort key. The
+user-configured family (`display.font_family`) is the **highest-priority tier**
+(tier 0): it wins for every codepoint it covers. When it does not cover a
+codepoint (e.g. a Latin family meeting a CJK character), selection falls through
+to the built-in fallback lists (`CJK_SANS_FAMILIES`, `UI_SANS_FAMILIES`) and
+finally to any system face that covers the codepoint, with upright faces and
+weights near Regular preferred (CJK prefers ~Medium for visual balance at small
+sizes). This mirrors the fontconfig "first font then fallback" contract without
+a native `libfontconfig` dependency.
 
-It extracts:
-- family: `"Noto Sans"`
-- weight: `600` (SemiBold)
-- size: `16`
+Changing `display.font_family` (config reload) calls `set_preferred_family`,
+which flushes the per-codepoint coverage cache and all loaded faces so the new
+family is resolved from scratch.
 
-### Font file selection via FontConfig
+### Sizing
 
-`match_font_file` asks FontConfig for a file matching `(family, weight)`. For traditional static fonts this returns different files (`NotoSans-Regular.ttf`, `NotoSans-Bold.ttf`, etc.).
-
-### The variable-font trap
-
-Modern systems often ship **variable fonts** — a single `.ttf` file (e.g. `NotoSans-VariableFont_wdth,wght.ttf`) that contains every weight from 100 to 900. FontConfig returns this one file for *all* weights, but FreeType loads it as the **default instance** (usually Regular, `wght = 400`).
-
-If you do not set the variable axis, asking for SemiBold (600) or Bold (700) renders identically to Regular (400).
-
-**Fix:** after `FT_New_Face`, detect a variable font via `FT_Get_MM_Var`, find the `wght` axis, and set it with `FT_Set_Var_Design_Coordinates`.
-
-Call this **before** `FT_Set_Pixel_Sizes`.
+`display.font_size` (points, 6–72, default 11) drives the candidate, index-number
+and banner sizes via `PanelFontConfig` (`crates/typio-host/src/app/font_config.rs`),
+converted to logical pixels at 96/72 px/pt. The HiDPI scale is applied
+separately at draw time. `PanelFontConfig` is snapshotted at startup and on every
+config reload, then pushed onto the panel via `FluxPanel::set_font_config`.
 
 ---
 
-## Font object caching
+## Font and glyph caches
 
-`font_obj_cache` stores `(path, size, weight)` → `(FT_Face, hb_font_t)`. The cache key **must include weight** — variable fonts mutate the face's `wght` axis in place, so omitting weight would alias Medium and SemiBold to the same `FT_Face`.
+`TextRaster` keeps two caches, both flushed by `set_preferred_family`:
 
-`TypioTextShape` borrows the cached `FT_Face`. Glyphs are rasterised once via `FT_Load_Glyph` into the atlas on first sight; subsequent draws are atlas hits with no FreeType call. Shapes must not outlive their font cache entry — `panel_render_ctx_invalidate` frees all shapes before eviction (draining the retire ring behind a device fence first).
+- `by_face` / `entries`: loaded `(bytes, index, ab_glyph FontVec)` per font face.
+- `cover`: per-codepoint → covering face index (or `None`).
+
+Glyphs are rasterised on demand by `ab_glyph` directly into the panel's
+premultiplied-RGBA8 scratch framebuffer each frame — there is no shared GPU
+glyph atlas in the CPU-canvas path (contrast the retired
+[ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md) coverage-texture
+model, which belonged to the Vulkan renderer). Colour is a straight RGB
+parameter on `TextRaster::draw`.
 
 ---
 
