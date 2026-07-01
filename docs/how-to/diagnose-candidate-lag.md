@@ -170,8 +170,9 @@ RUST_LOG="typio.panel.timing=info,typio.panel.text=debug" \
 Watch `glyph_evictions_delta`, `atlas_clears_delta`, and `measure_ms` /
 `draw_ms` per frame. Background:
 [ADR-0019](../adr/0019-atlas-hash-compaction.md),
-[ADR-0020](../adr/0020-atlas-reclamation-and-glyph-layer-modularization.md),
-and [Vulkan/flux rendering](../explanation/vulkan-flux-rendering.md).
+[ADR-0020](../adr/0020-atlas-reclamation-and-glyph-layer-modularization.md).
+(Note: flux-text glyph-atlas tuning below applies to the historical GPU
+render path; the panel now rasterises text on the CPU via `text_raster`.)
 
 ### Dimension B — Present gate / compositor back-pressure
 
@@ -185,7 +186,7 @@ callback wakes the panel at compositor refresh so the host does not spam
 popup occluded, on an unfocused output, or a buggy frame scheduler — the
 panel waits only for the soft limit and then submits the latest coalesced
 candidate state anyway. See
-[ADR-0040](../adr/0040-offscreen-render-shm-buffers.md).
+[ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
 Current builds still report the condition: an uninterrupted
 missing-callback episode older than the diagnostic threshold logs one
@@ -263,5 +264,4 @@ atlas_clears rising?          → Dimension A (glyph atlas)   → ADR-0019/0020
 
 - [Candidate panel behavior](../explanation/candidate-panel-behavior.md)
 - [Performance strategy](../explanation/performance-strategy.md)
-- [Vulkan / flux rendering](../explanation/vulkan-flux-rendering.md)
 - [ADR-0015 — Candidate popup lag final fixes](../adr/0015-candidate-popup-lag-final-fixes.md)

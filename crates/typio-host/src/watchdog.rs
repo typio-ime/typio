@@ -19,18 +19,15 @@ const SAMPLE_MS: u64 = 2000;
 #[cfg(test)]
 const SAMPLE_MS: u64 = 100;
 /// Default stuck threshold (ms). Mirrors `TYPIO_WL_WATCHDOG_STUCK_MS`.
+///
+/// The panel present path renders to a CPU canvas (`flux_canvas_cpu_*`) and
+/// attaches host-owned SHM buffers via `wl_surface_attach_commit`, which is
+/// non-blocking. There is no GPU submit / readback / `vkQueuePresentKHR`
+/// boundary that could occupy the loop without a heartbeat, so every
+/// non-restful stage uses this single threshold. (The elevated
+/// `PRESENT_STUCK_MS` that previously covered a Vulkan WSI deadlock was
+/// removed when ADR-0040 replaced the GPU present path.)
 const STUCK_MS: u64 = 3000;
-/// Stuck threshold for `LoopStage::Present` (ms). With the panel now
-/// rendering offscreen (no Vulkan WSI swapchain), `flux_frame_present` is a
-/// no-op for the panel surface — it does not call `vkQueuePresentKHR`, so
-/// the 16 s WSI deadlock that motivated the elevated threshold is
-/// structurally gone. The threshold is retained as a safety net: the only
-/// blocking FFI in the panel path is now `flux_surface_read_pixels`, which
-/// waits on a GPU fence with a bounded timeout; a hang here would indicate a
-/// driver/GPU deadlock, for which `SIGKILL` + daemon restart is the only
-/// recourse. The longer window tolerates a transient driver stall without a
-/// false kill.
-const PRESENT_STUCK_MS: u64 = 15_000;
 
 /// Loop stage identifiers. The discriminants mirror `TypioWlLoopStage` in
 /// `src/wayland/internal.h` so trace output lines up with the C version.
@@ -52,11 +49,7 @@ pub enum LoopStage {
 }
 
 impl LoopStage {
-    /// Stages where blocking indefinitely is legitimate. `Present` marks the
-    /// panel's GPU submit/readback/SHM-attach boundary. The main loop cannot
-    /// heartbeat through a single blocking FFI call in that boundary, so
-    /// `Present` is not restful and is killed once the per-stage threshold
-    /// elapses.
+    /// Stages where blocking indefinitely is legitimate.
     fn is_restful(&self) -> bool {
         matches!(self, LoopStage::Poll | LoopStage::Idle)
     }
@@ -78,14 +71,11 @@ impl LoopStage {
         }
     }
 
-    /// Per-stage stuck threshold. `Present` gets a longer window because a
-    /// slow GPU fence/readback can occupy one FFI call without a heartbeat;
-    /// other non-restful stages use the default.
+    /// Per-stage stuck threshold. Every non-restful stage uses the single
+    /// `STUCK_MS` window; the panel present path is non-blocking so no stage
+    /// needs a longer tolerance.
     fn stuck_threshold_ms(&self) -> u64 {
-        match self {
-            LoopStage::Present => PRESENT_STUCK_MS,
-            _ => STUCK_MS,
-        }
+        STUCK_MS
     }
 }
 
@@ -327,10 +317,11 @@ mod tests {
 
     #[test]
     fn present_stage_is_not_restful() {
-        // Present covers the panel's GPU submit/readback/SHM-attach boundary.
-        // A stall here is a genuine main-loop hang, so it must stay
-        // non-restful.
+        // Present marks the SHM-attach boundary. It is non-blocking, so a
+        // stall here is still a genuine main-loop hang that must trip the
+        // watchdog — it is not restful, it just uses the default threshold.
         assert!(!LoopStage::Present.is_restful());
         assert!(LoopStage::Poll.is_restful());
+        assert_eq!(LoopStage::Present.stuck_threshold_ms(), STUCK_MS);
     }
 }

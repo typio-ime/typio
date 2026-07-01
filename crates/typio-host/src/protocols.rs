@@ -129,19 +129,3 @@ pub mod viewporter {
 
     wayland_scanner::generate_client_code!("../../protocols/viewporter.xml");
 }
-
-// ── linux-dmabuf-v1 (zero-copy panel present) ───────────────────────────
-// GPU offscreen render → dmabuf fd → zwp_linux_buffer_params_v1 → wl_buffer,
-// replacing the wl_shm GPU→CPU readback path. See ADR-0040 follow-on.
-pub mod linux_dmabuf_v1 {
-    use wayland_client;
-    use wayland_client::protocol::*;
-
-    pub mod __interfaces {
-        use wayland_client::protocol::__interfaces::*;
-        wayland_scanner::generate_interfaces!("../../protocols/linux-dmabuf-unstable-v1.xml");
-    }
-    use self::__interfaces::*;
-
-    wayland_scanner::generate_client_code!("../../protocols/linux-dmabuf-unstable-v1.xml");
-}

@@ -1,15 +1,13 @@
 //! Host-managed SHM buffer pool for the candidate panel.
 //!
-//! Replaces the Vulkan WSI swapchain present path. flux renders offscreen,
-//! `flux_surface_read_pixels` reads the frame back into CPU memory, and this
-//! module hands it to the compositor via a `wl_shm` `wl_buffer`. The host
-//! owns the buffer lifecycle: `wl_buffer.release` is a normal event on the
-//! host's own queue, so a compositor that stops recycling buffers can at
-//! worst cause dropped frames — never the 16 s `vkQueuePresentKHR` deadlock
-//! the WSI path suffered.
+//! flux renders to a CPU canvas (`flux_canvas_cpu_*`), and this module hands
+//! the frame to the compositor via a `wl_shm` `wl_buffer`. The host owns the
+//! buffer lifecycle: `wl_buffer.release` is a normal event on the host's own
+//! queue, so a compositor that stops recycling buffers can at worst cause
+//! dropped frames — there is no blocking present call to stall on.
 //!
 //! Design mirrors fcitx5's `Buffer` / `WaylandShmWindow` (double-buffered,
-//! non-blocking `acquire`, `release`-dranced reuse), translated to Rust +
+//! non-blocking `acquire`, `release`-driven reuse), translated to Rust +
 //! wayland-client 0.31.
 
 use std::collections::HashMap;

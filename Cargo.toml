@@ -43,7 +43,6 @@ zbus = { version = "5", default-features = true, features = ["blocking-api"] }
 xkbcommon = "0.9"
 ab_glyph = "0.2"
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -6,6 +6,7 @@
 
 mod cli;
 mod event_loop;
+mod font_config;
 mod indicator;
 mod signals;
 mod tray;

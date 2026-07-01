@@ -64,7 +64,7 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Accepted (amends ADR-0024) |
 | [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Accepted (supersedes ADR-0035 decision D1) |
 | [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038) |
-| [ADR-0040](0040-offscreen-render-shm-buffers.md) | Offscreen Render with Host-Managed SHM Buffers (Remove WSI Present from the Panel) | Accepted (supersedes ADR-0010/0013/0036) |
+| [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dmabuf/flux-text from the panel) |
 
 ## Looking for something else?
 

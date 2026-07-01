@@ -5,21 +5,22 @@ engine/mode indicators, and voice status share the same input-popup
 `wl_surface`; the active producer is selected by the Panel Coordinator before
 rendering starts.
 
-Rendering uses [flux](../../flux), a Vulkan canvas library, but the Panel does
-not present through Vulkan WSI. The current path is:
+Rendering uses [flux](../../flux)'s **software (CPU) canvas** plus a pure-Rust
+text rasteriser; there is no Vulkan device or WSI in the Panel path:
 
 ```text
 composition / indicator / voice state
   -> Panel Coordinator ownership and anchor policy
   -> FluxPanel sizing and layout
-  -> flux_canvas draw commands on an offscreen flux_surface
-  -> flux_surface_read_pixels
+  -> flux_canvas CPU draw commands (background + selection highlight)
+  -> text_raster composites glyphs into the RGBA8 framebuffer
   -> host-managed wl_shm buffer
   -> wl_surface.attach + damage_buffer + commit
 ```
 
-See [ADR-0040](../adr/0040-offscreen-render-shm-buffers.md) for the decision
-that removed the Vulkan WSI swapchain from the Panel path.
+See [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md) for the decision
+to render the Panel on the CPU (flux software canvas + a pure-Rust text
+rasteriser) and present over `wl_shm` only.
 
 ## Rendering Boundaries
 
@@ -93,9 +94,7 @@ snapshot.
 - [Panel Architecture](panel-architecture.md) — ownership and anchor policy.
 - [Candidate Panel Behavior](candidate-panel-behavior.md) — user-visible Panel
   lifecycle.
-- [Vulkan and Flux Rendering](vulkan-flux-rendering.md) — flux-specific
-  rendering details.
-- [ADR-0040](../adr/0040-offscreen-render-shm-buffers.md) — offscreen render
+- [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md) — CPU canvas render
   and host-managed SHM buffers.
 - [ADR-0014](../adr/0014-canonical-panel-vocabulary.md) — canonical Panel
   terminology.

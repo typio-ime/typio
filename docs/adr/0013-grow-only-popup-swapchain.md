@@ -1,6 +1,6 @@
 # ADR-0013: Grow-only popup swapchain (stop rebuilding per candidate page)
 
-- **Status**: Superseded by [ADR-0040](0040-offscreen-render-shm-buffers.md) — WSI swapchain removed; grow-only sizing retained for the offscreen image + `wp_viewport`
+- **Status**: Superseded by [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) — Vulkan surface removed; grow-only sizing retained for the CPU framebuffer + `wp_viewport`
 - **Date**: 2026-05-29
 - **Corrects the root-cause claim of**: [ADR-0012](0012-glyph-atlas-shared-texture.md)
 - **Relates to**: [ADR-0006](0006-resilient-candidate-popup-present.md), [ADR-0010](0010-non-blocking-candidate-popup-present.md)

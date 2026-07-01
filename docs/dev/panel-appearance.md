@@ -9,9 +9,9 @@ presentation, font loading, theme resolution, and cache invalidation.
 
 The Panel renders with flux (Vulkan) into an offscreen image and attaches the
 result to its `zwp_input_popup_surface_v2` `wl_surface` through host-managed
-`wl_shm` buffers. There is no Vulkan WSI swapchain and no
-`vkQueuePresentKHR` in the panel path; see
-[ADR-0040](../adr/0040-offscreen-render-shm-buffers.md).
+`wl_shm` buffers. There is no Vulkan device, surface, or dma-buf in the panel
+path; see
+[ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
 `FluxPanel` (`crates/typio-host/src/panel.rs`) drives the render pipeline:
 

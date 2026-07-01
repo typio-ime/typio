@@ -25,7 +25,6 @@ capture plumbing.
   - [Panel Architecture](explanation/panel-architecture.md)
   - [Candidate Panel Behavior](explanation/candidate-panel-behavior.md) — UI-level lifecycle: show/hide, anchor, retry, input → visible effect
   - [Frontend Graphics](explanation/frontend-graphics.md)
-  - [Vulkan and Flux Rendering](explanation/vulkan-flux-rendering.md)
   - [Input-Method Session](explanation/input-method-session.md) — three layers of session, build-up chain, and lifecycle rules
   - [Event Loop Scheduling](explanation/event-loop-scheduling.md) — GPU bounds, D-Bus dispatch, config reload, and poll deadlines
   - [Watchdog](explanation/watchdog.md) — loop-stall detection, restful-stage exemption, demand gating, and SIGKILL recovery

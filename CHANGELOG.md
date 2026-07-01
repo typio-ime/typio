@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Candidate panel CJK font fallback.** The CPU text renderer now prefers a
+  consistent sans CJK face for Han, kana, and Hangul candidates instead of
+  accepting the first system font that happens to cover each codepoint. The
+  candidate row also grows from measured glyph metrics, preventing oversized
+  fallback faces from appearing misaligned or clipped in the fixed-height row.
 - **Candidate panel viewport after moving between scaled outputs.** When a
   visible candidate panel moves from a 1× output to a 2× output with the same
   logical content size, the panel now re-sends the `wp_viewport` physical

@@ -205,7 +205,7 @@ font keys (`display.font.*`) affect appearance but not lifecycle; see
 - [Panel Appearance](../dev/panel-appearance.md) — fonts, theme, layout cache invalidation
 - [Wayland Input Method Protocol](wayland-input-method.md) — protocol-layer events and serial chokepoint
 - [Input-Method Session](input-method-session.md) — focus_in / focus_out / reactivate lifecycle
-- [ADR-0040](../adr/0040-offscreen-render-shm-buffers.md) — offscreen render and host-managed SHM buffers
+- [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md) — CPU canvas render and host-managed SHM buffers
 - [ADR-0014](../adr/0014-canonical-panel-vocabulary.md) — Panel / Zone / popup vocabulary
 - [ADR-0017](../adr/0017-positioned-ui-arbitration.md) — owner arbitration rules
 - [ADR-0023](../adr/0023-panel-scheduler-state-machine.md) — panel scheduler history

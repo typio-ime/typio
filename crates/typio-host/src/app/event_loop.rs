@@ -274,7 +274,10 @@ impl App {
             //     stalled episode; see `wayland_pending`.
             {
                 let frontend = self.frontend.as_mut().unwrap();
-                frontend.state_mut().wayland_pending.check_timeouts(Instant::now());
+                frontend
+                    .state_mut()
+                    .wayland_pending
+                    .check_timeouts(Instant::now());
             }
 
             // 5. Run the focus-controller pipeline.
@@ -545,8 +548,7 @@ impl App {
                     has_context,
                     has_session,
                 ) {
-                    frontend.state_mut().panel_schedule_state =
-                        panel_scheduler::complete();
+                    frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                     tracing::debug!(
                         target: "typio.panel.scheduler",
                         composition_seq,
@@ -559,7 +561,7 @@ impl App {
                 if should_flush {
                     // Now that we know we'll actually render, take the
                     // expensive snapshot — the candidate strings, needed
-                    // for measurement and `flux_text_draw`.
+                    // for measurement and text rasterisation.
                     let candidates = frontend.state().composition.candidates.clone();
                     let scale = frontend.state().buffer_scale;
                     let owner = frontend.state().panel_coord().visible_owner();
@@ -746,12 +748,10 @@ impl App {
                         FlushOutcome::Hidden => {
                             frontend.state_mut().clear_panel_frame_callback();
                             frontend.state_mut().invalidate_panel_presentation();
-                            frontend.state_mut().panel_schedule_state =
-                                panel_scheduler::complete();
+                            frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                         }
                         FlushOutcome::Presented => {
-                            frontend.state_mut().panel_schedule_state =
-                                panel_scheduler::complete();
+                            frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                             frontend.state_mut().mark_panel_presented(composition_seq);
                             frontend.arm_panel_frame_callback();
                         }
@@ -762,8 +762,7 @@ impl App {
                             // a no-op page flip (same candidates, same seq)
                             // left the schedule pinned Dirty and the
                             // already-presented skip path retried forever.
-                            frontend.state_mut().panel_schedule_state =
-                                panel_scheduler::complete();
+                            frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                         }
                     }
                 }

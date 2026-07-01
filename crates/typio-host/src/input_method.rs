@@ -253,11 +253,6 @@ pub struct InputMethodState {
     /// offscreen-render panel path to create host-managed `wl_buffer`s
     /// (replaces the Vulkan WSI swapchain; see `panel_shm`).
     shm: Option<wl_shm::WlShm>,
-    /// `zwp_linux_dmabuf_v1` global — the dma-buf buffer factory. Used by
-    /// the zero-copy panel present path (ADR-0040 follow-on): flux exports
-    /// the offscreen image as a dma-buf and the compositor composites it
-    /// directly, eliminating the GPU→CPU readback.
-    dmabuf: Option<crate::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
     /// Shared registry mapping wl_buffer proxy pointers to their busy flags,
     /// so the `Dispatch<wl_buffer>` release handler can clear them without
     /// touching `wl_proxy` user-data (which wayland-client owns).
@@ -546,9 +541,9 @@ impl InputMethodState {
             .modifiers(depressed, latched, locked, group);
     }
 
-    /// Raw pointer to the popup wl_surface. Use this to create a
-    /// FluxPanel on the SAME surface so Vulkan rendering and popup
-    /// positioning share one wl_surface.
+    /// Raw pointer to the popup wl_surface. Use this to create a FluxPanel on
+    /// the SAME surface so panel rendering and popup positioning share one
+    /// wl_surface.
     pub fn popup_surface_raw_ptr(&self) -> *mut std::ffi::c_void {
         self.popup_surface_obj.id().as_ptr() as *mut std::ffi::c_void
     }
@@ -688,18 +683,15 @@ impl InputMethodFrontend {
         let surface_ptr = frontend.state.popup_surface_raw_ptr();
         let viewport = frontend.state.panel_viewport.clone();
         let shm = frontend.state.shm.clone();
-        let dmabuf = frontend.state.dmabuf.clone();
         let qh = frontend.queue.handle();
         let registry = frontend.state.shm_release_registry().clone();
-        // Allocate the initial offscreen image at `PANEL_PREALLOC_WIDTH ×
+        // Allocate the initial CPU canvas at `PANEL_PREALLOC_WIDTH ×
         // PANEL_PREALLOC_HEIGHT` (512×128). This covers the first automatic
-        // indicator banner at scales 1, 1.5, 2 and 3 without invoking
-        // `flux_surface_resize`. The offscreen path has no WSI roundtrips
-        // (no swapchain), so resize is just `vkDeviceWaitIdle` + image
-        // recreation — still best avoided on the very first frame while the
-        // watchdog is freshly armed. See the audit table on
-        // `PANEL_PREALLOC_WIDTH` in panel.rs: at scale 3 the longest
-        // observed default label ("中 · Rime · 懿拼音") quantises to
+        // indicator banner at scales 1, 1.5, 2 and 3 without a resize. The
+        // canvas is reallocated on resize, which is still best avoided on
+        // the very first frame while the watchdog is freshly armed. See the
+        // audit table on `PANEL_PREALLOC_WIDTH` in panel.rs: at scale 3 the
+        // longest observed default label ("中 · Rime · 懿拼音") quantises to
         // 448×128, fitting inside 512×128 with one width-quantum of
         // headroom.
         //
@@ -712,7 +704,6 @@ impl InputMethodFrontend {
                 surface_ptr,
                 viewport,
                 shm,
-                dmabuf,
                 qh,
                 registry,
                 crate::panel::PANEL_PREALLOC_WIDTH,
@@ -752,7 +743,6 @@ impl InputMethodFrontend {
                 "zwp_text_input_v3",
                 "zwp_text_input_manager_v3",
                 "zwp_input_method_v1",
-                "zwp_linux_dmabuf_v1",
                 "wp_fractional_scale_manager_v1",
                 "wp_presentation",
                 "xdg_wm_base",
@@ -839,10 +829,9 @@ impl InputMethodFrontend {
             ),
         }
 
-        // Bind wl_shm for the offscreen-render panel path. The pool creates
-        // ARGB8888 wl_buffers from anonymous shared memory; flux renders
-        // offscreen and the host attaches these buffers directly (no Vulkan
-        // WSI swapchain, no vkQueuePresentKHR).
+        // Bind wl_shm for the CPU-rendered panel path. The pool creates
+        // ARGB8888 wl_buffers from anonymous shared memory; flux renders to a
+        // CPU canvas and the host attaches these buffers directly.
         let shm: Option<wl_shm::WlShm> = globals.bind(&qh, 1..=1, ()).ok();
         match &shm {
             Some(_) => tracing::info!(
@@ -852,44 +841,6 @@ impl InputMethodFrontend {
             None => tracing::warn!(
                 target: "typio.wayland.shm",
                 "compositor lacks wl_shm — offscreen panel path unavailable, panel will not render"
-            ),
-        }
-
-        // Bind zwp_linux_dmabuf_v1 for the optional zero-copy panel present
-        // path (ADR-0040 follow-on). When available *and* opted in, flux
-        // exports the offscreen image as a dma-buf and the compositor
-        // composites it directly — eliminating the GPU→CPU readback stall.
-        //
-        // Defaults to OFF: the SHM readback path (~0.75-1 ms/frame for a
-        // candidate row) is universally supported — no DRM-modifier
-        // negotiation, no compositor-specific dmabuf quirks — while several
-        // compositors (notably niri/Smithay) silently drop input-popup
-        // dmabuf buffers they advertise as supported, making the candidate
-        // panel disappear. The Wayland dmabuf protocol offers no failure
-        // feedback on the create_immed path, so the host cannot detect this
-        // and self-heal. Set TYPIO_PANEL_DMABUF=1 to opt back into
-        // zero-copy on compositors known to handle it correctly.
-        let dmabuf_enabled = std::env::var("TYPIO_PANEL_DMABUF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let dmabuf: Option<crate::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1> =
-            if dmabuf_enabled {
-                globals.bind(&qh, 3..=4, ()).ok()
-            } else {
-                None
-            };
-        match &dmabuf {
-            Some(_) => tracing::info!(
-                target: "typio.wayland.dmabuf",
-                "compositor advertises zwp_linux_dmabuf_v1 (zero-copy panel present active — TYPIO_PANEL_DMABUF=1)"
-            ),
-            None if dmabuf_enabled => tracing::warn!(
-                target: "typio.wayland.dmabuf",
-                "TYPIO_PANEL_DMABUF=1 but compositor lacks zwp_linux_dmabuf_v1 — falling back to wl_shm readback path"
-            ),
-            None => tracing::info!(
-                target: "typio.wayland.shm",
-                "panel present via wl_shm readback (set TYPIO_PANEL_DMABUF=1 to try zero-copy)"
             ),
         }
 
@@ -936,7 +887,6 @@ impl InputMethodFrontend {
             viewporter,
             panel_viewport,
             shm,
-            dmabuf,
             shm_release_registry: crate::panel_shm::new_release_registry(),
             text_input_rect: None,
             composition: CompositionState::default(),

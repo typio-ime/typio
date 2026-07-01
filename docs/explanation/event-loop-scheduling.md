@@ -190,7 +190,6 @@ deadline is the primary clue that the grab→keymap→vk chain did not close.
   implementation and event handlers
 - [Panel Architecture](panel-architecture.md) — Panel content, zones, and
   rendering
-- [Vulkan and Flux Rendering](vulkan-flux-rendering.md) — GPU backend details
 - [ADR-0004: Event Loop Scheduling and Watchdog](../adr/0004-event-loop-scheduling-and-watchdog.md)
 - [ADR-0024: Idle-Driven Event Loop and Demand-Gated Watchdog](../adr/0024-idle-driven-loop-and-demand-gated-watchdog.md)
 - [Watchdog](watchdog.md) · [Performance & Idle-Power Strategy](performance-strategy.md)

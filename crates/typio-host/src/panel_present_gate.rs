@@ -1,10 +1,11 @@
-//! Present pacing policy for the candidate panel.
+//! Present pacing for the candidate panel.
 //!
-//! `wl_surface.frame` callbacks are useful refresh hints, but input-method
-//! popup surfaces can stop receiving them when the compositor occludes,
-//! deprioritizes, or otherwise loses track of the popup. This module keeps the
-//! callback in the pacing loop without letting a missing callback freeze
-//! candidate updates.
+//! `wl_surface.frame` callbacks are refresh hints for the offscreen-CPU →
+//! SHM present path. An input-method popup can stop receiving them when the
+//! compositor occludes, deprioritizes, or loses track of the surface. This
+//! module keeps the callback in the pacing loop without letting a missing
+//! callback freeze candidate updates: if the callback doesn't arrive within
+//! a soft limit, the host submits the latest coalesced state on a timer.
 
 use std::time::{Duration, Instant};
 
@@ -12,25 +13,19 @@ use std::time::{Duration, Instant};
 /// `wl_surface.frame` callback before the host presents the latest coalesced
 /// state anyway.
 ///
-/// **Pacing hygiene for the offscreen + SHM present path.** The panel no
-/// longer uses a Vulkan WSI swapchain (the structural fix for the
-/// `vkQueuePresentKHR` deadlock), so this gate is no longer the primary
-/// defense against present blocking — there is no present call to block.
-/// It remains as pacing: a healthy compositor delivers the callback at
-/// refresh rate (~16 ms), well below this ceiling, so steady-state pacing is
-/// unchanged; a compositor that drops callbacks timer-paces at a conservative
-/// cadence instead of spamming `wl_surface.attach`/`commit` requests.
-///
-/// 100 ms comfortably exceeds any real compositor's buffer-release latency,
-/// and the host-managed SHM buffer pool drops frames when all buffers are
-/// busy regardless of this gate. The prior 20 ms value was too aggressive —
-/// combined with a long candidate draw it let `wl_surface.frame` requests
-/// pile up — so 100 ms gives the callback room to arrive.
+/// This is pacing, not a present-block guard: the panel renders to a CPU
+/// canvas (`flux_canvas_cpu_*`) and attaches host-owned SHM buffers via
+/// `wl_surface_attach_commit`, which is non-blocking. A healthy compositor
+/// delivers the callback at refresh rate (~16 ms), well below this ceiling;
+/// a compositor that drops callbacks timer-paces at a conservative cadence
+/// instead of spamming `attach`/`commit` requests. 100 ms comfortably
+/// exceeds any real compositor's buffer-release latency, and the SHM buffer
+/// pool drops frames when all buffers are busy regardless of this gate.
 pub const PANEL_FRAME_CALLBACK_SOFT_LIMIT: Duration = Duration::from_millis(100);
 
 /// Diagnostic threshold for an uninterrupted period with no frame callback.
 ///
-/// Crossing this threshold no longer gates rendering. It only produces a
+/// Crossing this threshold does not gate rendering. It only produces a
 /// warning so compositor callback stalls remain visible in logs.
 pub const PANEL_FRAME_CALLBACK_STALL_WARN: Duration = Duration::from_millis(200);
 

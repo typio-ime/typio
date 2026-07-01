@@ -122,7 +122,7 @@ structural:
   operation so a keypress never waits behind an offscreen-image resize, a
   glyph upload, or a compositor stall. See
   [Event Loop Scheduling](event-loop-scheduling.md) and
-  [Vulkan and Flux Rendering](vulkan-flux-rendering.md).
+  [Frontend Graphics](frontend-graphics.md).
 
 - **Visual consistency.** The candidate panel, preedit decoration, tray icon,
   and mode indicator must all reflect the same state at the same time. The
@@ -274,5 +274,5 @@ contract itself needs to change.
 - [Control Surfaces](control-surfaces.md) — tray, IPC bus, state controller.
 - [Event Loop Scheduling](event-loop-scheduling.md) — how the event loop preserves responsiveness.
 - [Input-Method Session](input-method-session.md) — session lifecycle and recovery paths.
-- [Vulkan and Flux Rendering](vulkan-flux-rendering.md) — GPU rendering and performance.
+- [Frontend Graphics](frontend-graphics.md) — CPU canvas render and SHM present.
 - [Wayland Input Method Protocol](wayland-input-method.md) — the protocol layer.

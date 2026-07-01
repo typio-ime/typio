@@ -1,6 +1,6 @@
 # ADR-0036: Soft Present Gate for the Candidate Panel
 
-- **Status**: Superseded by [ADR-0040](0040-offscreen-render-shm-buffers.md) — present gate retained as pacing hygiene only; `vkQueuePresentKHR` is no longer in the panel path
+- **Status**: Superseded by [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) — present gate retained as pacing hygiene only; there is no GPU present in the panel path
 - **Date**: 2026-06-30
 - **Deciders**: Typio maintainers
 - **Amends**: [ADR-0010](0010-non-blocking-candidate-popup-present.md), [ADR-0023](0023-panel-scheduler-state-machine.md)

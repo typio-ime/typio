@@ -1,6 +1,6 @@
 # ADR-0010: Non-blocking present mode for the candidate popup
 
-- **Status**: Superseded by [ADR-0040](0040-offscreen-render-shm-buffers.md) — WSI present removed from the panel entirely; MAILBOX mode no longer relevant
+- **Status**: Superseded by [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) — Vulkan/dmabuf removed from the panel entirely; MAILBOX mode no longer relevant
 - **Date**: 2026-05-29
 - **Deciders**: Project maintainers
 - **Amends**: [ADR-0006](0006-resilient-candidate-popup-present.md)
