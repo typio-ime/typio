@@ -22,6 +22,33 @@ framebuffer — no Vulkan device, surface, swapchain, or dma-buf. The CPU
 backend does **not** draw glyphs (they need GPU-resident textures), so text
 needs its own rasteriser regardless.
 
+## Rationale
+
+The choice of **CPU rendering + `wl_shm`** is a deliberate technology
+selection, not a fallback:
+
+- **`wl_shm` is the only universally-stable Wayland present path.** Every
+  compositor implements `wl_shm`; nothing in the panel path depends on a
+  driver, a Vulkan loader, a dma-buf allocator, or compositor-specific
+  dmabuf/implicit-sync support. Several compositors were observed to *silently
+  drop* input-popup dmabuf buffers with no protocol feedback — an unrecoverable
+  failure mode for a UI the user is actively typing through.
+- **`wl_shm` is inherently CPU-bound, so lean into it.** SHM attach copies host
+  memory to the compositor; there is no GPU image to produce in the first
+  place. Rendering on the CPU removes the GPU→CPU readback stall that the old
+  Vulkan offscreen path paid on every frame, and removes the Vulkan device /
+  swapchain lifecycle entirely. Accepting the CPU cost up front is cheaper than
+  paying for a GPU pipeline only to throw the result over the bus.
+- **GPU paths were tried and were unreliable.** The earlier Vulkan offscreen +
+  readback path, and the dma-buf zero-copy path, shipped and repeatedly broke
+  across compositors, drivers, and resume-from-suspend. For a resident input
+  method that must never wedge the typing path, that flakiness is unacceptable;
+  the CPU + SHM path has none of it.
+
+The cost accepted in return is single-threaded software rasterisation with no
+GPU parallelism — a cost `wl_shm` already implied, and well within frame budget
+for a single candidate row (see Consequences).
+
 ## Decision
 
 Render the panel entirely on the CPU and present over `wl_shm` only:
@@ -29,19 +56,20 @@ Render the panel entirely on the CPU and present over `wl_shm` only:
 1. **Background + selection highlight** — `flux_canvas_create_cpu` +
    `flux_canvas_cpu_begin/end` + `flux_canvas_fill_rrect`. The framebuffer is
    read back from `flux_canvas_cpu_pixels` (no bus, no fence).
-2. **Text** — a pure-Rust CPU rasteriser (`crates/typio-host/src/text_raster.rs`,
-   built on `rustybuzz` + `fontdb` + `ab_glyph`, the same stack already used by
-   `icon_badge`) composites glyphs directly into the RGBA8 framebuffer. The
-   `flux-text` glyph atlas / `flux-text-sys` dependency is removed from the
-   panel entirely.
+2. **Text** — flux-text's CPU shaping + rasterisation, accessed via
+   `flux-text-sys` (`crates/typio-host/src/text_raster.rs`). Text draws
+   directly into the RGBA8 canvas pass via the host-coverage glyph path
+   (ADR-0019) — no GPU image required. The panel shares flux-text's
+   FreeType/HarfBuzz/Fontconfig backend with the rest of the host.
 3. **Present** — the framebuffer is byte-swapped (RGBA8 → Wayland ARGB8888)
    into a host-managed `wl_shm` `wl_buffer` and attached to the popup
    `wl_surface` via raw `wl_surface.attach`/`damage_buffer`/`commit`.
 
 Removed: the Vulkan `flux_device`/`flux_surface` lifecycle, the GPU→CPU
-readback, `flux-text`/`flux-text-sys`, the "liquid glass" effect,
-`panel_dmabuf.rs`, the `zwp_linux_dmabuf_v1` protocol wiring, and the
-`TYPIO_PANEL_DMABUF` opt-in. `wl_shm` is now the only present path.
+readback, the "liquid glass" effect, `panel_dmabuf.rs`, the
+`zwp_linux_dmabuf_v1` protocol wiring, and the `TYPIO_PANEL_DMABUF` opt-in.
+`wl_shm` is now the only present path. (`flux-text`/`flux-text-sys` are
+**retained** for CPU text shaping/rasterisation — see Decision 2.)
 
 Grow-only framebuffer sizing with `wp_viewport` cropping (from ADR-0013) is
 retained.
@@ -60,11 +88,12 @@ retained.
 ## Consequences
 
 - Positive: no GPU dependency for panel rendering; no readback stall; one
-  universally-supported present path; simpler dependency graph (no
-  `flux-text-sys`, no dmabuf protocol).
-- Trade-off: panel text quality now depends on the pure-Rust shaper/rasteriser
-  rather than flux's FreeType/HarfBuzz GPU atlas; the `text_raster` stack was
-  already proven by the tray badge path and shares the same libraries.
+  universally-supported present path; no dmabuf protocol wiring.
+- Trade-off: panel text quality depends on flux-text's CPU rasteriser
+  (FreeType/HarfBuzz), which is shared with the rest of the host. The
+  `rustybuzz`/`fontdb`/`ab_glyph` stack is **not** in the panel path — it
+  backs only the tray badge (`icon_badge`, gated behind the `systray`
+  feature), so a non-systray build pulls in no pure-Rust shaping libs.
 - Negative (accepted): software rasterisation is single-threaded and does not
   benefit from GPU parallelism; for a single candidate row this is well within
   frame budget.

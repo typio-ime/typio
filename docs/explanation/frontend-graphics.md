@@ -38,27 +38,32 @@ This layer owns Wayland focus and input-method protocol facts. It does not draw.
 
 ### Render
 
-`crates/typio-host/src/panel.rs` owns the flux objects:
+`crates/typio-host/src/panel.rs` owns the flux CPU canvas and the text
+rasteriser:
 
-- `flux_device`;
-- offscreen `flux_surface`;
-- `flux_canvas`;
-- `flux_text`;
-- transient arena and layout cache;
-- optional `wp_viewport` crop state.
+- the flux **CPU canvas** (`flux_canvas_create_cpu` + `flux_canvas_cpu_begin`/
+  `end` + `flux_canvas_fill_rrect`) — fills the panel background and selection
+  highlight into a premultiplied RGBA8 framebuffer on the host;
+- **flux-text** CPU text shaping/rasterisation (`TextRaster`, see
+  [`text_raster.rs`](../../crates/typio-host/src/text_raster.rs), backed by
+  `flux-text-sys` — FreeType/HarfBuzz/Fontconfig) — shapes and rasterises
+  glyphs, compositing them directly into that same RGBA8 framebuffer;
+- a grow-only surface cropped to the exact content extent via
+  `wp_viewport` when available.
 
 `FluxPanel::draw_candidates()` and `FluxPanel::draw_status_banner()` record the
-actual canvas commands: transparent clear, rounded background, selection
-highlight, text labels, and status text. They render into an offscreen image,
-not directly into a Wayland surface.
+canvas commands and the text draws. There is **no Vulkan device, no
+offscreen `flux_surface`, no GPU→CPU readback, no glyph texture upload** in this
+path.
 
 ### Present
 
 `crates/typio-host/src/panel_shm.rs` owns the double-buffered SHM pool. The
-rendered pixels are copied into a free `wl_buffer` and attached to the popup
-surface. If the compositor has not released any buffer, the frame is dropped;
-the event loop remains free to process input and later render the newest
-coalesced state.
+filled framebuffer is byte-swapped (RGBA8 → Wayland ARGB8888) into a free
+`wl_buffer` and attached to the popup surface via raw `wl_surface.attach` /
+`damage_buffer` / `commit`. If the compositor has not released any buffer, the
+frame is dropped; the event loop remains free to process input and later render
+the newest coalesced state.
 
 `wl_surface.frame` callbacks are retained only as pacing hints. A missing
 callback no longer freezes rendering indefinitely; the soft gate wakes on a
@@ -66,20 +71,23 @@ deadline and allows a timer-paced submit.
 
 ## Flux Dependency Boundary
 
-The host does not call Vulkan directly. Its graphics dependency is the small
-flux surface/canvas/text API:
+The host's only graphics dependency is flux's **CPU canvas** — a software
+rasteriser. It does **not** depend on flux's Vulkan device, surface, swapchain,
+text, or readback APIs:
 
 | Concept | Current use |
 |---|---|
-| `flux_device` | Process-local GPU device for Panel rendering. |
-| `flux_surface` | Offscreen render target (`vk_surface_khr = NULL`). |
-| `flux_canvas` | Immediate-mode draw target for fills and rounded rectangles. |
-| `flux_text` | Text measurement and glyph drawing. |
-| `flux_surface_read_pixels` | GPU-to-CPU readback before SHM attach. |
+| `flux_canvas_create_cpu` / `flux_canvas_cpu_begin` / `end` | CPU canvas lifecycle — fills and rounded-rects into a host framebuffer. |
+| `flux_canvas_cpu_pixels` | Direct pointer into the RGBA8 framebuffer (no bus, no fence). |
+| `flux_canvas_fill_rrect` | Background and selection-highlight fills. |
+
+Text is drawn by **flux-text** (via `TextRaster`); glyphs composite into the
+flux framebuffer directly. (The `rustybuzz`/`fontdb`/`ab_glyph` stack backs
+only the tray badge `icon_badge`, behind the `systray` feature — not the panel.)
 
 Porting to another canvas backend would require replacing `FluxPanel`'s
-surface/canvas/text calls and the readback step. Ownership policy, anchor
-handling, key routing, and engine state do not depend on flux.
+canvas fill calls and the `TextRaster` compositing step. Ownership policy,
+anchor handling, key routing, and engine state do not depend on flux.
 
 ## Input Correctness
 

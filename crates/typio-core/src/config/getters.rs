@@ -1,11 +1,11 @@
 //! C FFI getter functions for configuration values
 
 use super::{Config, ConfigValue};
-use std::ffi::{c_char, c_double, c_int, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_double, c_int};
 use std::ptr;
 
 /// Get a string value from the config, falling back to `default_val`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_string(
     config: *const Config,
     key: *const c_char,
@@ -24,7 +24,7 @@ pub extern "C" fn typio_config_get_string(
 }
 
 /// Get an integer value from the config, falling back to `default_val`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_int(
     config: *const Config,
     key: *const c_char,
@@ -44,7 +44,7 @@ pub extern "C" fn typio_config_get_int(
 }
 
 /// Get a boolean value from the config, falling back to `default_val`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_bool(
     config: *const Config,
     key: *const c_char,
@@ -63,7 +63,7 @@ pub extern "C" fn typio_config_get_bool(
 }
 
 /// Get a floating-point value from the config, falling back to `default_val`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_float(
     config: *const Config,
     key: *const c_char,
@@ -83,7 +83,7 @@ pub extern "C" fn typio_config_get_float(
 }
 
 /// Extract a sub-config containing all keys that start with `section.`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_section(
     config: *const Config,
     section: *const c_char,
@@ -107,7 +107,7 @@ pub extern "C" fn typio_config_get_section(
 }
 
 /// Return the length of an array value, or 0 if missing or not an array.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_array_size(config: *const Config, key: *const c_char) -> usize {
     if config.is_null() || key.is_null() {
         return 0;
@@ -122,7 +122,7 @@ pub extern "C" fn typio_config_get_array_size(config: *const Config, key: *const
 }
 
 /// Get a string element from an array by index.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_array_string(
     config: *const Config,
     key: *const c_char,
@@ -144,7 +144,7 @@ pub extern "C" fn typio_config_get_array_string(
 }
 
 /// Get an integer element from an array by index.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_array_int(
     config: *const Config,
     key: *const c_char,
@@ -166,7 +166,7 @@ pub extern "C" fn typio_config_get_array_int(
 }
 
 /// Return the total number of keys in the config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_key_count(config: *const Config) -> usize {
     if config.is_null() {
         return 0;
@@ -176,7 +176,7 @@ pub extern "C" fn typio_config_key_count(config: *const Config) -> usize {
 }
 
 /// Return the key name at the given index (caller frees with `free()`).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_key_at(config: *const Config, index: usize) -> *mut c_char {
     if config.is_null() {
         return ptr::null_mut();
@@ -196,7 +196,7 @@ pub extern "C" fn typio_config_key_at(config: *const Config, index: usize) -> *m
 }
 
 /// Return true if the config contains the given key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_has_key(config: *const Config, key: *const c_char) -> bool {
     if config.is_null() || key.is_null() {
         return false;

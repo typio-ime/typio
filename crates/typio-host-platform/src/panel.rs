@@ -10,12 +10,15 @@
 //!
 //! ```text
 //! flux CPU canvas (bg + highlight + text)  →  flux_canvas_cpu_pixels (RGBA8 premul)
-//!   → memcpy into frame_buf → present_shm: RGBA→ARGB8888 into a free ShmBuffer
+//!   → present_shm: RGBA→ARGB8888 (byte-swap) straight into a free ShmBuffer
 //!     → wl_surface.attach + damage + commit (raw FFI, returns instantly)
 //! ```
 
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::c_void;
+use std::hash::{Hash, Hasher};
 use std::ptr;
+use std::time::Instant;
 
 use flux_sys::{
     flux_canvas, flux_canvas_cpu_begin, flux_canvas_cpu_end, flux_canvas_cpu_pixels,
@@ -29,8 +32,8 @@ use wayland_sys::{
     common::wl_argument,
 };
 
+use crate::PanelFontConfig;
 use crate::protocols::viewporter::wp_viewport::WpViewport;
-use crate::app::font_config::PanelFontConfig;
 use crate::text_raster::{TextMetrics, TextRaster};
 
 /// Offscreen width quantum (grow-only; cropped to exact content via wp_viewport).
@@ -57,6 +60,27 @@ const TEXT_COLOR: [u8; 3] = [240, 240, 240];
 const NUMBER_COLOR: [u8; 3] = [145, 145, 152];
 const CANDIDATE_ROW_EXTRA_LEADING: f32 = 4.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LayoutCacheKey {
+    scale_bits: u32,
+    candidate_count: usize,
+    content_hash: u64,
+}
+
+impl LayoutCacheKey {
+    fn new(candidates: &[String], scale: f32) -> Self {
+        let mut hasher = DefaultHasher::new();
+        for candidate in candidates {
+            candidate.hash(&mut hasher);
+        }
+        Self {
+            scale_bits: scale.to_bits(),
+            candidate_count: candidates.len(),
+            content_hash: hasher.finish(),
+        }
+    }
+}
+
 /// A candidate panel backed by flux software rendering and Wayland SHM.
 pub struct FluxPanel {
     canvas: *mut flux_canvas,
@@ -64,8 +88,6 @@ pub struct FluxPanel {
     canvas_h: u32,
     canvas_scale: f32,
     text: TextRaster,
-    /// Reused premultiplied-RGBA8 scratch framebuffer (flux bg + composited text).
-    frame_buf: Vec<u8>,
     width: u32,
     height: u32,
     scale: f32,
@@ -79,7 +101,7 @@ pub struct FluxPanel {
     content_h_logical: i32,
     wl_surface: *mut c_void,
     shm_pool: Option<crate::panel_shm::ShmBufferPool>,
-    last_layout_key: Option<(Vec<String>, f32)>,
+    last_layout_key: Option<LayoutCacheKey>,
     last_layout: Vec<(TextMetrics, TextMetrics)>,
 }
 
@@ -115,7 +137,6 @@ impl FluxPanel {
             canvas_h: height,
             canvas_scale: 1.0,
             text: TextRaster::default(),
-            frame_buf: Vec::new(),
             width,
             height,
             scale: 1.0,
@@ -146,7 +167,7 @@ impl FluxPanel {
     /// family changes, the [`TextRaster`] flushes its per-codepoint and per-face
     /// caches; either way the layout cache is dropped so candidate/banner
     /// geometry is re-measured at the new size.
-    pub(crate) fn set_font_config(&mut self, cfg: PanelFontConfig) {
+    pub fn set_font_config(&mut self, cfg: PanelFontConfig) {
         if self.font == cfg {
             return;
         }
@@ -218,38 +239,36 @@ impl FluxPanel {
         flux_canvas_fill_rrect(self.canvas, rect, 8.0, bg);
     }
 
-    /// Copy the flux CPU framebuffer (premultiplied RGBA8) into `frame_buf`.
-    fn snapshot_canvas(&mut self) -> bool {
-        unsafe {
-            let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
-            let px = flux_canvas_cpu_pixels(self.canvas, &mut w, &mut h, &mut stride);
-            if px.is_null() {
-                return false;
-            }
-            let len = (h as usize) * (stride as usize);
-            let src = std::slice::from_raw_parts(px, len);
-            self.frame_buf.clear();
-            self.frame_buf.reserve(len);
-            self.frame_buf.extend_from_slice(src);
-        }
-        true
-    }
-
     /// Draw candidate strings with the selected one highlighted. Returns `true`
     /// iff a frame was actually attached to the surface.
     pub fn draw_candidates(
         &mut self,
         candidates: &[String],
         selected: usize,
-        _composition_seq: u64,
-        heartbeat: &dyn Fn(),
-        before_present: &dyn Fn(),
+        composition_seq: u64,
     ) -> bool {
-        heartbeat();
-        let layout = self.layout_candidates(candidates);
+        let trace_perf = tracing::enabled!(target: "typio.panel.perf", tracing::Level::TRACE);
+        let frame_start = trace_perf.then(Instant::now);
+
+        let layout_start = trace_perf.then(Instant::now);
+        self.ensure_candidate_layout(candidates);
+        let layout_us = layout_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+
         if !self.ensure_canvas() {
+            if trace_perf {
+                tracing::trace!(
+                    target: "typio.panel.perf",
+                    composition_seq,
+                    candidate_count = candidates.len(),
+                    selected,
+                    reason = "ensure_canvas_failed",
+                    "candidate panel frame dropped before draw"
+                );
+            }
             return false;
         }
+
+        let draw_start = trace_perf.then(Instant::now);
 
         // ── flux CPU pass: background + highlight + text (logical coords) ──
         // Text draws inside the pass via flux-text's host-coverage path
@@ -262,9 +281,9 @@ impl FluxPanel {
             self.draw_panel_background();
             let mut cx = PANEL_PADDING;
             let y = PANEL_PADDING;
-            let row_height = candidate_row_height(&layout);
+            let row_height = candidate_row_height(&self.last_layout);
             for (i, _) in candidates.iter().enumerate() {
-                let (num_m, m) = layout[i];
+                let (num_m, m) = self.last_layout[i];
                 let iw =
                     CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
                 if i == selected {
@@ -287,9 +306,9 @@ impl FluxPanel {
             // Text pass (logical coords).
             let mut cx = PANEL_PADDING;
             let y = PANEL_PADDING;
-            let row_height = candidate_row_height(&layout);
+            let row_height = candidate_row_height(&self.last_layout);
             for (i, candidate) in candidates.iter().enumerate() {
-                let (num_m, m) = layout[i];
+                let (num_m, m) = self.last_layout[i];
                 let iw =
                     CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
                 let text_top = y + (row_height - m.height).max(0.0) / 2.0;
@@ -319,19 +338,33 @@ impl FluxPanel {
             }
             flux_canvas_cpu_end(self.canvas);
         }
-        heartbeat();
-        if !self.snapshot_canvas() {
-            return false;
-        }
+        let draw_us = draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
         // Background + text are both baked into the canvas framebuffer now;
-        // no separate CPU text-composite pass is needed.
-        heartbeat();
+        // present_shm reads it straight out and byte-swaps into the SHM buffer.
+        let present_start = trace_perf.then(Instant::now);
+        let attached = self.present_shm();
+        let present_us = present_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
-        before_present();
-        let presented = self.present_shm();
-        heartbeat();
-        presented
+        if trace_perf {
+            tracing::trace!(
+                target: "typio.panel.perf",
+                composition_seq,
+                candidate_count = candidates.len(),
+                selected,
+                width = self.width,
+                height = self.height,
+                scale = self.scale,
+                layout_us,
+                draw_us,
+                present_us,
+                total_us = frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0),
+                attached,
+                "candidate panel frame"
+            );
+        }
+
+        attached
     }
 
     /// Resize the framebuffer. The CPU canvas is recreated lazily on next draw.
@@ -345,36 +378,28 @@ impl FluxPanel {
 
     /// Cached `(number_metrics, text_metrics)` per candidate (logical px),
     /// re-measured only when the candidate strings or scale change.
-    fn layout_candidates(&mut self, candidates: &[String]) -> Vec<(TextMetrics, TextMetrics)> {
-        let cache_valid = self
-            .last_layout_key
-            .as_ref()
-            .map(|(cached, scale)| {
-                *scale == self.scale
-                    && cached.len() == candidates.len()
-                    && cached.iter().zip(candidates.iter()).all(|(a, b)| a == b)
-            })
-            .unwrap_or(false);
-        if cache_valid {
-            return self.last_layout.clone();
+    fn ensure_candidate_layout(&mut self, candidates: &[String]) {
+        let key = LayoutCacheKey::new(candidates, self.scale);
+        if self.last_layout_key == Some(key) {
+            return;
         }
 
-        let mut out = Vec::with_capacity(candidates.len());
+        self.last_layout.clear();
+        self.last_layout.reserve(candidates.len());
         for (i, candidate) in candidates.iter().enumerate() {
             let label = candidate_number_label(i);
             let number_str = std::str::from_utf8(&label).unwrap_or("");
             let num_m = self.text.measure(number_str, self.font.number_size_px());
             let m = self.text.measure(candidate, self.font.candidate_size_px());
-            out.push((num_m, m));
+            self.last_layout.push((num_m, m));
         }
-        self.last_layout_key = Some((candidates.to_vec(), self.scale));
-        self.last_layout = out.clone();
-        out
+        self.last_layout_key = Some(key);
     }
 
     /// Ensure the framebuffer is big enough for the candidate row.
     pub fn ensure_candidate_size(&mut self, candidates: &[String]) {
-        let layout = self.layout_candidates(candidates);
+        self.ensure_candidate_layout(candidates);
+        let layout = &self.last_layout;
         let mut total_width: f32 = PANEL_PADDING;
         for (num_m, m) in layout.iter() {
             let iw = CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
@@ -454,19 +479,22 @@ impl FluxPanel {
         }
     }
 
-    /// Present `frame_buf` (premultiplied RGBA8) via a host-managed SHM buffer,
-    /// byte-swapping RGBA→ARGB8888. Returns `true` iff a buffer was attached.
+    /// Present the flux CPU framebuffer (premultiplied RGBA8) via a host-managed
+    /// SHM buffer, byte-swapping RGBA→ARGB8888 directly into the SHM pixels.
+    /// Returns `true` iff a buffer was attached.
     fn present_shm(&mut self) -> bool {
+        let trace_perf = tracing::enabled!(target: "typio.panel.perf", tracing::Level::TRACE);
+        let present_start = trace_perf.then(Instant::now);
         let (width, height) = (self.width, self.height);
-        let src_ptr = self.frame_buf.as_ptr();
-        let src_len = self.frame_buf.len();
         let vp = self.viewport.is_some();
         let scale = self.scale;
         let ws = self.wl_surface;
+        let canvas = self.canvas;
 
         let Some(pool) = self.shm_pool.as_mut() else {
             return false;
         };
+        let acquire_start = trace_perf.then(Instant::now);
         let Some(idx) = pool.acquire(width, height) else {
             tracing::debug!(
                 target: "typio.panel.shm",
@@ -474,16 +502,27 @@ impl FluxPanel {
             );
             return false;
         };
+        let acquire_us = acquire_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
         let buf = pool.get(idx).expect("acquire returned a valid index");
         let dst = buf.pixels();
         let dst_len = buf.pixel_len();
+
+        let copy_start = trace_perf.then(Instant::now);
         unsafe {
-            let src = std::slice::from_raw_parts(src_ptr, src_len);
+            // Read the flux canvas framebuffer straight off the canvas and
+            // byte-swap premultiplied RGBA8 → Wayland ARGB8888 (LE B,G,R,A)
+            // in a single pass into the SHM backing store — no intermediate copy.
+            let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
+            let px = flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride);
+            if px.is_null() {
+                return false;
+            }
+            let src_len = (h as usize) * (stride as usize);
+            let src = std::slice::from_raw_parts(px, src_len);
             let dstm = std::slice::from_raw_parts_mut(dst, dst_len);
             let n = src_len.min(dst_len);
             let mut i = 0;
             while i + 4 <= n {
-                // flux premultiplied RGBA8 → Wayland ARGB8888 (LE bytes B,G,R,A).
                 dstm[i] = src[i + 2]; // B
                 dstm[i + 1] = src[i + 1]; // G
                 dstm[i + 2] = src[i]; // R
@@ -491,8 +530,10 @@ impl FluxPanel {
                 i += 4;
             }
         }
+        let copy_us = copy_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
         buf.mark_busy();
 
+        let attach_start = trace_perf.then(Instant::now);
         let desired_scale = if vp { 1 } else { scale as i32 };
         unsafe {
             wl_surface_set_buffer_scale(ws, desired_scale);
@@ -503,21 +544,32 @@ impl FluxPanel {
                 height,
             );
         }
+        let attach_us = attach_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+
+        if trace_perf {
+            tracing::trace!(
+                target: "typio.panel.perf",
+                width,
+                height,
+                scale,
+                buffer_index = idx,
+                acquire_us,
+                copy_us,
+                attach_us,
+                total_us = present_start.map(|t| t.elapsed().as_micros()).unwrap_or(0),
+                "candidate panel present_shm"
+            );
+        }
+
         true
     }
 
     /// Draw a single centred status banner (indicator / voice). Returns `true`
     /// iff a frame was attached. Empty labels are ignored (`false`).
-    pub fn draw_status_banner(
-        &mut self,
-        label: &str,
-        heartbeat: &dyn Fn(),
-        before_present: &dyn Fn(),
-    ) -> bool {
+    pub fn draw_status_banner(&mut self, label: &str) -> bool {
         if label.is_empty() {
             return false;
         }
-        heartbeat();
         let m = self.text.measure(label, self.font.banner_size_px());
         if !self.ensure_canvas() {
             return false;
@@ -529,7 +581,8 @@ impl FluxPanel {
             self.draw_panel_background();
 
             // Text draws inside the pass (host-coverage path, logical coords).
-            let text_y = BANNER_PADDING + (self.font.banner_size_px() * 1.3 - m.height).max(0.0) / 2.0;
+            let text_y =
+                BANNER_PADDING + (self.font.banner_size_px() * 1.3 - m.height).max(0.0) / 2.0;
             self.text.draw(
                 self.canvas,
                 BANNER_PADDING,
@@ -541,17 +594,8 @@ impl FluxPanel {
 
             flux_canvas_cpu_end(self.canvas);
         }
-        heartbeat();
-        if !self.snapshot_canvas() {
-            return false;
-        }
 
-        heartbeat();
-
-        before_present();
-        let presented = self.present_shm();
-        heartbeat();
-        presented
+        self.present_shm()
     }
 
     /// Ensure the framebuffer fits a single-row banner of `label`.
@@ -708,6 +752,17 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(labels, ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]);
         assert_eq!(String::from_utf8_lossy(&candidate_number_label(10)), "11");
+    }
+
+    #[test]
+    fn layout_cache_key_tracks_content_without_cloning_candidates() {
+        let a = vec!["候选".to_string(), "candidate".to_string()];
+        let b = vec!["候选".to_string(), "candidate".to_string()];
+        let c = vec!["候选".to_string(), "different".to_string()];
+
+        assert_eq!(LayoutCacheKey::new(&a, 1.0), LayoutCacheKey::new(&b, 1.0));
+        assert_ne!(LayoutCacheKey::new(&a, 1.0), LayoutCacheKey::new(&c, 1.0));
+        assert_ne!(LayoutCacheKey::new(&a, 1.0), LayoutCacheKey::new(&a, 2.0));
     }
 
     #[test]

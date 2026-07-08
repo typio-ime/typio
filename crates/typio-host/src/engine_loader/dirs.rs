@@ -101,10 +101,22 @@ mod tests {
         std::env::var(ENV_ENGINE_PATH).ok()
     }
 
+    fn set_engine_path(value: impl AsRef<std::ffi::OsStr>) {
+        // SAFETY: every test that mutates this process-global variable holds
+        // ENV_LOCK, so no other test in this module can observe a concurrent
+        // mutation from this helper.
+        unsafe { std::env::set_var(ENV_ENGINE_PATH, value) }
+    }
+
+    fn remove_engine_path() {
+        // SAFETY: guarded by ENV_LOCK; see set_engine_path.
+        unsafe { std::env::remove_var(ENV_ENGINE_PATH) }
+    }
+
     fn restore_env(prev: Option<String>) {
         match prev {
-            Some(v) => std::env::set_var(ENV_ENGINE_PATH, v),
-            None => std::env::remove_var(ENV_ENGINE_PATH),
+            Some(v) => set_engine_path(v),
+            None => remove_engine_path(),
         }
     }
 
@@ -112,7 +124,7 @@ mod tests {
     fn resolve_with_only_system_dir_by_default() {
         let _g = ENV_LOCK.lock().unwrap();
         let prev = capture_env();
-        std::env::remove_var(ENV_ENGINE_PATH);
+        remove_engine_path();
 
         let dirs = resolve_engine_dirs(Vec::<String>::new());
         assert_eq!(dirs, vec![PathBuf::from(SYSTEM_ENGINE_DIR)]);
@@ -124,7 +136,7 @@ mod tests {
     fn resolve_cli_dirs_come_first() {
         let _g = ENV_LOCK.lock().unwrap();
         let prev = capture_env();
-        std::env::remove_var(ENV_ENGINE_PATH);
+        remove_engine_path();
 
         let dirs = resolve_engine_dirs(["/cli/one", "/cli/two"]);
         assert_eq!(
@@ -143,7 +155,7 @@ mod tests {
     fn resolve_env_path_segments_between_cli_and_system() {
         let _g = ENV_LOCK.lock().unwrap();
         let prev = capture_env();
-        std::env::set_var(ENV_ENGINE_PATH, "/env/one:/env/two");
+        set_engine_path("/env/one:/env/two");
 
         let dirs = resolve_engine_dirs(["/cli"]);
         assert_eq!(
@@ -163,7 +175,7 @@ mod tests {
     fn resolve_empty_segments_are_skipped() {
         let _g = ENV_LOCK.lock().unwrap();
         let prev = capture_env();
-        std::env::set_var(ENV_ENGINE_PATH, ":/env/one::/env/two:");
+        set_engine_path(":/env/one::/env/two:");
 
         let dirs = resolve_engine_dirs(["", "/cli", ""]);
         assert_eq!(

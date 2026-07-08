@@ -6,7 +6,7 @@
 //! is merely *likely* (but not required) to do is reported as `Warn`, never
 //! `Fail`, so the gate stays free of false positives.
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 
 use typio_abi::*;
 

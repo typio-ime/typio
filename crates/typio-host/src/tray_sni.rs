@@ -25,40 +25,9 @@ use zbus::{
 
 use crate::icon_badge;
 use crate::tray_menu;
+pub use crate::tray_menu_ids::{MenuAction, decode_menu_click};
 
 pub use zbus;
-
-// ── Menu item ID scheme (must match tray_menu) ───────────────────────────
-
-pub const SECTION_MISC: i32 = 1000;
-pub const SECTION_LANG: i32 = 2000;
-pub const SECTION_ENGINE: i32 = 3000;
-pub const SECTION_ORPHAN: i32 = 4000;
-pub const SECTION_VOICE: i32 = 5000;
-pub const SECTION_PROP: i32 = 6000;
-pub const SECTION_CMD: i32 = 7000;
-
-pub const LANG_MAX: i32 = 16;
-pub const ENGINE_MAX: i32 = 16;
-pub const ENGINE_IN_LANG_MAX: i32 = LANG_MAX * ENGINE_MAX; // 256
-pub const ORPHAN_MAX: i32 = 16;
-pub const VOICE_MAX: i32 = 16;
-
-pub const ITEM_RESTART: i32 = SECTION_MISC + 1;
-pub const ITEM_QUIT: i32 = SECTION_MISC + 2;
-
-/// A decoded menu click — the pure slice of `handle_menu_event`. Indices are
-/// resolved to engine/language names by the controller (which has the registry).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuAction {
-    Restart,
-    Quit,
-    Language(i32),
-    EngineInLanguage { lang_idx: i32, engine_idx: i32 },
-    OrphanEngine(i32),
-    Voice(i32),
-    Unknown,
-}
 
 /// Actions that can originate from the tray surface (menu clicks or SNI
 /// activation gestures). The controller wires the callback.
@@ -73,33 +42,6 @@ pub enum TrayAction {
 }
 
 pub type ActionHandler = Box<dyn FnMut(TrayAction) + Send>;
-
-/// Decode a dbusmenu item ID into the action it represents. Pure; tested.
-pub fn decode_menu_click(id: i32) -> MenuAction {
-    if id == ITEM_RESTART {
-        return MenuAction::Restart;
-    }
-    if id == ITEM_QUIT {
-        return MenuAction::Quit;
-    }
-    if (SECTION_ENGINE..SECTION_ENGINE + ENGINE_IN_LANG_MAX).contains(&id) {
-        let offset = id - SECTION_ENGINE;
-        return MenuAction::EngineInLanguage {
-            lang_idx: offset / ENGINE_MAX,
-            engine_idx: offset % ENGINE_MAX,
-        };
-    }
-    if (SECTION_ORPHAN..SECTION_ORPHAN + ORPHAN_MAX).contains(&id) {
-        return MenuAction::OrphanEngine(id - SECTION_ORPHAN);
-    }
-    if (SECTION_LANG..SECTION_LANG + LANG_MAX).contains(&id) {
-        return MenuAction::Language(id - SECTION_LANG);
-    }
-    if (SECTION_VOICE..SECTION_VOICE + VOICE_MAX).contains(&id) {
-        return MenuAction::Voice(id - SECTION_VOICE);
-    }
-    MenuAction::Unknown
-}
 
 // ── Tray status ──────────────────────────────────────────────────────────
 
@@ -313,7 +255,7 @@ impl StatusNotifierItem {
 
     #[zbus(signal)]
     async fn new_overlay_icon(emitter: &zbus::object_server::SignalEmitter<'_>)
-        -> zbus::Result<()>;
+    -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn new_status(
@@ -767,64 +709,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_fixed_misc_actions() {
-        assert_eq!(decode_menu_click(ITEM_RESTART), MenuAction::Restart);
-        assert_eq!(decode_menu_click(ITEM_QUIT), MenuAction::Quit);
-    }
-
-    #[test]
-    fn decode_language_section() {
-        assert_eq!(decode_menu_click(SECTION_LANG), MenuAction::Language(0));
-        assert_eq!(decode_menu_click(SECTION_LANG + 3), MenuAction::Language(3));
-        assert_eq!(
-            decode_menu_click(SECTION_LANG + LANG_MAX - 1),
-            MenuAction::Language(LANG_MAX - 1)
-        );
-        // Just past the section boundary is unknown.
-        assert_eq!(
-            decode_menu_click(SECTION_LANG + LANG_MAX),
-            MenuAction::Unknown
-        );
-    }
-
-    #[test]
-    fn decode_engine_in_language_uses_composite_formula() {
-        // ADR-0034: id = SECTION_ENGINE + lang_idx * ENGINE_MAX + engine_idx.
-        let id = SECTION_ENGINE + 2 * ENGINE_MAX + 5;
-        assert_eq!(
-            decode_menu_click(id),
-            MenuAction::EngineInLanguage {
-                lang_idx: 2,
-                engine_idx: 5
-            }
-        );
-        let id = SECTION_ENGINE;
-        assert_eq!(
-            decode_menu_click(id),
-            MenuAction::EngineInLanguage {
-                lang_idx: 0,
-                engine_idx: 0
-            }
-        );
-    }
-
-    #[test]
-    fn decode_orphan_and_voice_sections() {
-        assert_eq!(
-            decode_menu_click(SECTION_ORPHAN + 1),
-            MenuAction::OrphanEngine(1)
-        );
-        assert_eq!(decode_menu_click(SECTION_VOICE + 4), MenuAction::Voice(4));
-    }
-
-    #[test]
-    fn decode_out_of_range_returns_unknown() {
-        assert_eq!(decode_menu_click(0), MenuAction::Unknown);
-        assert_eq!(decode_menu_click(99999), MenuAction::Unknown);
-        assert_eq!(decode_menu_click(SECTION_MISC + 50), MenuAction::Unknown);
-    }
-
-    #[test]
     fn status_string_matches_sni_spec() {
         assert_eq!(TrayStatus::Passive.as_str(), "Passive");
         assert_eq!(TrayStatus::Active.as_str(), "Active");
@@ -844,7 +728,7 @@ mod tests {
         s.badge_pixmaps.push((22, 22, vec![0u8; 22 * 22 * 4]));
         assert!(s.badge_active());
         assert_eq!(s.effective_icon_name(), ""); // suppressed
-                                                 // Overlay reads as empty while badge drives IconPixmap.
+        // Overlay reads as empty while badge drives IconPixmap.
         let _overlay = if !s.badge_active() {
             s.overlay_icon_name.clone().unwrap_or_default()
         } else {

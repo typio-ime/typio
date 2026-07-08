@@ -27,7 +27,6 @@ capture plumbing.
   - [Frontend Graphics](explanation/frontend-graphics.md)
   - [Input-Method Session](explanation/input-method-session.md) — three layers of session, build-up chain, and lifecycle rules
   - [Event Loop Scheduling](explanation/event-loop-scheduling.md) — GPU bounds, D-Bus dispatch, config reload, and poll deadlines
-  - [Watchdog](explanation/watchdog.md) — loop-stall detection, restful-stage exemption, demand gating, and SIGKILL recovery
   - [Performance & Idle-Power Strategy](explanation/performance-strategy.md) — event-driven idle, zero wakeups, deadline folding, and how to measure
   - [Control Surfaces](explanation/control-surfaces.md)
   - [Security Model](explanation/security-model.md) — trust boundaries, engine trust, and the sandboxing path

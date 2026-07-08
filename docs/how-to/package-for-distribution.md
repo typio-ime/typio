@@ -63,8 +63,9 @@ The daemon requires:
 - `wayland-client` and `xkbcommon`
 - D-Bus runtime support for StatusNotifierItem tray integration
 - `libpipewire-0.3` for voice capture when voice support is used
-- Vulkan loader, FreeType, HarfBuzz, and fontconfig for the candidate Panel
-- `libflux` from the packaged optics/flux build
+- FreeType, HarfBuzz, and fontconfig support libraries for candidate-panel
+  text shaping (consumed by `TextRaster` via `flux-text-sys`)
+- `libflux` from the packaged optics/flux build (CPU canvas only)
 
 ## Engine Packages
 

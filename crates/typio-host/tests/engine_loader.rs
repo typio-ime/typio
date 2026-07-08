@@ -118,11 +118,7 @@ fn duplicate_registration_of_same_engine_is_skipped_not_failed() {
         .iter()
         .find_map(|(dir, name)| {
             let p = engine_workspace_root().join(dir).join("build").join(name);
-            if p.exists() {
-                Some(p)
-            } else {
-                None
-            }
+            if p.exists() { Some(p) } else { None }
         })
         .expect("at least one engine build artifact must exist for this test");
 

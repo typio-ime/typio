@@ -452,67 +452,9 @@ typedef const struct TypioConfigField *(*TypioEngineConfigSchemaFunc)(size_t *ou
         return create_func(); \
     }
 
-/* -------------------------------------------------------------------------- */
-/* Lifecycle                                                                  */
-/* -------------------------------------------------------------------------- */
-
-TypioKeyboardEngine *typio_keyboard_engine_new(const TypioEngineInfo *info,
-                                                const TypioEngineBaseOps *base_ops,
-                                                const TypioKeyboardEngineOps *keyboard);
-TypioVoiceEngine *typio_voice_engine_new(const TypioEngineInfo *info,
-                                          const TypioEngineBaseOps *base_ops,
-                                          const TypioVoiceEngineOps *voice);
-void typio_engine_free(TypioEngine *engine);
-
-/* -------------------------------------------------------------------------- */
-/* Utilities (operate on the common TypioEngine base)                         */
-/* -------------------------------------------------------------------------- */
-
-const char *typio_engine_get_name(const TypioEngine *engine);
-TypioEngineType typio_engine_get_type(const TypioEngine *engine);
-
-/**
- * @brief Test whether an engine declared a given capability string.
- *
- * Searches both `required_capabilities` and `optional_capabilities` of the
- * engine's `TypioEngineInfo`. Returns false for NULL engine or unknown name.
- */
-bool typio_engine_has_capability(const TypioEngine *engine, const char *capability);
-bool typio_engine_is_active(const TypioEngine *engine);
-const char *typio_engine_get_config_path(const TypioEngine *engine);
-void typio_engine_set_config_path(TypioEngine *engine, const char *path);
-void typio_engine_set_user_data(TypioEngine *engine, void *data);
-void *typio_engine_get_user_data(const TypioEngine *engine);
-
-/**
- * @brief Attach the optional command surface vtable (ADR-0008).
- *
- * Engines that expose invokable commands call this from their create/init
- * path. Engines that expose only properties (or neither) leave the surface
- * unset; their property fields are declared via
- * `typio_config_schema_register_many` instead.
- */
-void typio_engine_set_surface_ops(TypioEngine *engine,
-                                  const TypioEngineSurfaceOps *ops);
-const TypioEngineSurfaceOps *typio_engine_get_surface_ops(const TypioEngine *engine);
-
-/**
- * @brief Surface ops: list commands exposed by the engine.
- *
- * Returns a transient array owned by the engine. The caller must not
- * free it; it remains valid until the next surface op call on the
- * same engine. Writes the array length to @p out_count.
- */
-const TypioEngineCommand *typio_engine_list_commands(TypioEngine *engine,
-                                                     size_t *out_count);
-/**
- * @brief Surface ops: invoke a command by id.
- *
- * @param id The command identifier (e.g. "deploy").
- * @return TYPIO_OK on success, TYPIO_ERROR_NOT_SUPPORTED if the engine
- *         has no surface ops or does not expose this command.
- */
-TypioResult typio_engine_invoke_command(TypioEngine *engine, const char *id);
+/* libtypio no longer provides in-process engine lifecycle/helper functions.
+ * Engine workers allocate their own TypioKeyboardEngine / TypioVoiceEngine
+ * values and communicate with the host through the process protocol. */
 
 #ifdef __cplusplus
 }

@@ -4,27 +4,32 @@
 //! context. Decides whether a key is consumed by the engine or forwarded
 //! to the focused application via the virtual keyboard.
 
-use std::ffi::{c_char, c_void, CStr};
-use std::sync::Mutex;
+use std::ffi::{CStr, c_char, c_void};
 
 use typio_abi::{TypioComposition, TypioEventType, TypioKeyEvent};
 
-use crate::candidate_guard::{classify_host_selection, HostSelectionAction, HostSelectionFlags};
+use crate::candidate_guard::{
+    HostSelectionAction, HostSelectionFlags, HostSelectionPageState, classify_host_selection,
+};
 use crate::input_method::{DecodedKeyEvent, InputMethodState};
 use crate::keyboard_policy::{
-    effective_modifiers, modifier_bit_for_keysym, tracking_mark_released_pending, tracking_reset,
-    tracking_reset_generations, KeyTrackState, KEY_CAPITAL_V, KEY_V, WL_KEYBOARD_KEY_STATE_PRESSED,
-    WL_KEYBOARD_KEY_STATE_RELEASED,
+    KEY_CAPITAL_V, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_V, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
+    WL_KEYBOARD_KEY_STATE_RELEASED, effective_modifiers, modifier_bit_for_keysym,
+    tracking_mark_released_pending, tracking_reset, tracking_reset_generations,
 };
 use crate::repeat_timer::Modifiers;
-use crate::text_ui_state::{text_ui_plan_update, PreeditTracking, TextUiPlan};
+use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
 
 /// Maximum number of keys tracked for symmetric press/release. Mirrors
 /// `TYPIO_WL_MAX_TRACKED_KEYS` in the C host.
 pub const MAX_TRACKED_KEYS: usize = 256;
 
-/// Pending text committed by the engine since the last key dispatch.
-static PENDING_COMMIT: Mutex<Option<String>> = Mutex::new(None);
+/// Engine output staged by libtypio callbacks during `process_key`.
+#[derive(Default)]
+struct PendingEngineOutput {
+    commit: Option<String>,
+    composition: Option<PendingComposition>,
+}
 
 /// Pending composition state since the last key dispatch. Staged by the
 /// engine's composition callback on the same thread that called
@@ -41,10 +46,10 @@ struct PendingComposition {
     cursor_pos: i32,
     candidates: Vec<String>,
     selected: usize,
+    has_prev: bool,
+    has_next: bool,
     host_managed_selection: HostSelectionFlags,
 }
-
-static PENDING_COMPOSITION: Mutex<Option<PendingComposition>> = Mutex::new(None);
 
 extern "C" fn on_commit_abi(
     ctx: *mut typio_abi::TypioInputContext,
@@ -57,16 +62,16 @@ extern "C" fn on_commit_abi(
 extern "C" fn on_commit(
     _ctx: *mut typio::TypioInputContext,
     text: *const c_char,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
-    if text.is_null() {
+    if text.is_null() || user_data.is_null() {
         return;
     }
     let s = unsafe { CStr::from_ptr(text) }
         .to_string_lossy()
         .into_owned();
-    if let Ok(mut slot) = PENDING_COMMIT.lock() {
-        *slot = Some(s);
+    unsafe {
+        (*(user_data as *mut PendingEngineOutput)).commit = Some(s);
     }
 }
 
@@ -81,9 +86,9 @@ extern "C" fn on_composition_abi(
 extern "C" fn on_composition(
     _ctx: *mut typio::TypioInputContext,
     comp: *const TypioComposition,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
-    if comp.is_null() {
+    if comp.is_null() || user_data.is_null() {
         return;
     }
     let comp = unsafe { &*comp };
@@ -116,12 +121,14 @@ extern "C" fn on_composition(
     let host_managed_selection =
         HostSelectionFlags::from_bits_truncate(comp.host_managed_selection);
 
-    if let Ok(mut slot) = PENDING_COMPOSITION.lock() {
-        *slot = Some(PendingComposition {
+    unsafe {
+        (*(user_data as *mut PendingEngineOutput)).composition = Some(PendingComposition {
             preedit_text: preedit,
             cursor_pos,
             candidates,
             selected,
+            has_prev: comp.has_prev,
+            has_next: comp.has_next,
             host_managed_selection,
         });
     }
@@ -159,6 +166,9 @@ pub enum RepeatOutcome {
 /// A keyboard router tied to a libtypio input context.
 pub struct KeyboardRouter {
     ctx: *mut typio::TypioInputContext,
+    /// Output staged by engine callbacks. Owned by this router and passed to
+    /// libtypio as callback user_data; no global lock or cross-context state.
+    pending_output: Box<PendingEngineOutput>,
     /// Key currently held down and subject to auto-repeat, if any.
     /// Set on the initial press (whether the key was consumed by the
     /// engine or forwarded to the application) and cleared on release.
@@ -240,6 +250,19 @@ fn is_voice_ptt_key(keysym: u32) -> bool {
     keysym == KEY_V || keysym == KEY_CAPITAL_V
 }
 
+fn page_boundary_selected_index(keysym: u32, candidate_count: usize) -> Option<usize> {
+    if candidate_count == 0 {
+        return None;
+    }
+    if keysym == KEY_PAGE_UP {
+        Some(candidate_count - 1)
+    } else if keysym == KEY_PAGE_DOWN {
+        Some(0)
+    } else {
+        None
+    }
+}
+
 impl KeyboardRouter {
     /// Create a new router for the given TypioInstance.
     ///
@@ -250,18 +273,21 @@ impl KeyboardRouter {
         if ctx.is_null() {
             return None;
         }
+        let mut pending_output = Box::<PendingEngineOutput>::default();
+        let pending_ptr = pending_output.as_mut() as *mut PendingEngineOutput as *mut c_void;
         typio::input_context::typio_input_context_set_commit_callback(
             ctx,
             Some(on_commit_abi),
-            std::ptr::null_mut(),
+            pending_ptr,
         );
         typio::input_context::typio_input_context_set_composition_callback(
             ctx,
             Some(on_composition_abi),
-            std::ptr::null_mut(),
+            pending_ptr,
         );
         Some(Self {
             ctx,
+            pending_output,
             repeat_key: None,
             repeat_mode: RepeatMode::Forward,
             physical_modifiers: Modifiers::NONE,
@@ -307,12 +333,8 @@ impl KeyboardRouter {
     /// Reset the engine's in-flight composition and candidate state.
     pub fn reset(&mut self) {
         typio::input_context::typio_input_context_reset(self.ctx);
-        if let Ok(mut slot) = PENDING_COMMIT.lock() {
-            slot.take();
-        }
-        if let Ok(mut slot) = PENDING_COMPOSITION.lock() {
-            slot.take();
-        }
+        self.pending_output.commit = None;
+        self.pending_output.composition = None;
         // Forget any preedit we claimed to have sent — the engine reset
         // may be followed by the compositor clearing the field on its
         // own, and the next composition must not be suppressed as a
@@ -322,80 +344,83 @@ impl KeyboardRouter {
 
     /// Drain any pending composition update and update preedit/candidates.
     pub fn drain_composition(&mut self, frontend: &mut InputMethodState) {
-        if let Ok(mut slot) = PENDING_COMPOSITION.lock() {
-            if let Some(pending) = slot.take() {
-                let PendingComposition {
-                    preedit_text: preedit,
-                    cursor_pos,
-                    candidates,
-                    selected,
-                    host_managed_selection,
-                } = pending;
-                let preedit_len = preedit.len();
-                let candidate_count = candidates.len();
-                // Mirror the engine's declared selection-intercept flags
-                // into the state so the next `dispatch_key` can apply
-                // candidate_guard without consulting the engine again.
-                frontend.composition.host_managed_selection = host_managed_selection;
-                // Preedit is the source of truth for what shows inline in
-                // the focused text field. Candidates drive the popup. Either
-                // can change independently of the other: an empty preedit
-                // with non-empty candidates means the engine is offering
-                // completions; a non-empty preedit with no candidates means
-                // the engine is mid-composition (e.g. pinyin after one
-                // keystroke) and will show candidates later.
-                if preedit.is_empty() && candidates.is_empty() {
-                    // Both cleared. Only re-clear if we actually had a
-                    // preedit outstanding; otherwise this would emit a
-                    // `set_preedit_string("") + commit` Wayland round-trip
-                    // on every composition tick where the engine reports
-                    // "nothing to show" (e.g. after every commit).
-                    if self.preedit_tracking.last_text.is_some()
-                        || self.preedit_tracking.last_cursor != -1
-                    {
-                        frontend.clear_preedit_and_flush();
-                        self.preedit_tracking.reset();
-                    }
-                } else {
-                    // Resolve the engine's cursor_pos (non-negative wins,
-                    // negative falls back to end) so left/right navigation
-                    // inside the preedit actually moves the visible caret
-                    // instead of always parking at the right edge.
-                    let cursor = crate::preedit::resolve_cursor(cursor_pos, &preedit) as u32;
-                    // Compare against what we last actually sent to the
-                    // compositor. Up/Down candidate navigation is the
-                    // canonical case where the engine emits a composition
-                    // with identical preedit text + cursor and a different
-                    // `selected` — re-sending the preedit there is pure
-                    // waste (a `set_preedit_string` + `commit` Wayland
-                    // round-trip per arrow press).
-                    let plan = text_ui_plan_update(
-                        self.preedit_tracking.last_text.as_deref(),
-                        self.preedit_tracking.last_cursor,
-                        Some(preedit.as_str()),
-                        cursor_pos,
-                    );
-                    if plan == TextUiPlan::SyncPreeditAndPanel {
-                        frontend.set_preedit_and_flush(&preedit, cursor);
-                        self.preedit_tracking.last_text = Some(preedit.clone());
-                        self.preedit_tracking.last_cursor = cursor_pos;
-                    }
-                    // SyncPanelOnly: skip the Wayland round-trip; the
-                    // candidate-panel repaint below is driven independently
-                    // by `mark_panel_dirty`.
+        if let Some(pending) = self.pending_output.composition.take() {
+            let PendingComposition {
+                preedit_text: preedit,
+                cursor_pos,
+                candidates,
+                selected,
+                has_prev,
+                has_next,
+                host_managed_selection,
+            } = pending;
+            let preedit_len = preedit.len();
+            let candidate_count = candidates.len();
+            // Mirror the engine's declared selection-intercept flags
+            // into the state so the next `dispatch_key` can apply
+            // candidate_guard without consulting the engine again.
+            frontend.composition.host_managed_selection = host_managed_selection;
+            // Preedit is the source of truth for what shows inline in
+            // the focused text field. Candidates drive the popup. Either
+            // can change independently of the other: an empty preedit
+            // with non-empty candidates means the engine is offering
+            // completions; a non-empty preedit with no candidates means
+            // the engine is mid-composition (e.g. pinyin after one
+            // keystroke) and will show candidates later.
+            if preedit.is_empty() && candidates.is_empty() {
+                // Both cleared. Only re-clear if we actually had a
+                // preedit outstanding; otherwise this would emit a
+                // `set_preedit_string("") + commit` Wayland round-trip
+                // on every composition tick where the engine reports
+                // "nothing to show" (e.g. after every commit).
+                if self.preedit_tracking.last_text.is_some()
+                    || self.preedit_tracking.last_cursor != -1
+                {
+                    frontend.clear_preedit_and_flush();
+                    self.preedit_tracking.reset();
                 }
-                let composition_seq = frontend.set_candidates(candidates, selected);
-                frontend.mark_panel_dirty();
-                tracing::debug!(
-                    target: "typio.engine.composition",
-                    composition_seq,
-                    preedit_len,
+            } else {
+                // Resolve the engine's cursor_pos (non-negative wins,
+                // negative falls back to end) so left/right navigation
+                // inside the preedit actually moves the visible caret
+                // instead of always parking at the right edge.
+                let cursor = crate::preedit::resolve_cursor(cursor_pos, &preedit) as u32;
+                // Compare against what we last actually sent to the
+                // compositor. Up/Down candidate navigation is the
+                // canonical case where the engine emits a composition
+                // with identical preedit text + cursor and a different
+                // `selected` — re-sending the preedit there is pure
+                // waste (a `set_preedit_string` + `commit` Wayland
+                // round-trip per arrow press).
+                let plan = text_ui_plan_update(
+                    self.preedit_tracking.last_text.as_deref(),
+                    self.preedit_tracking.last_cursor,
+                    Some(preedit.as_str()),
                     cursor_pos,
-                    candidate_count,
-                    selected,
-                    "composition update"
                 );
+                if plan == TextUiPlan::SyncPreeditAndPanel {
+                    frontend.set_preedit_and_flush(&preedit, cursor);
+                    self.preedit_tracking.last_text = Some(preedit.clone());
+                    self.preedit_tracking.last_cursor = cursor_pos;
+                }
+                // SyncPanelOnly: skip the Wayland round-trip; the
+                // candidate-panel repaint below is driven independently
+                // by `mark_panel_dirty`.
             }
+            let composition_seq = frontend.set_candidates(candidates, selected);
+            frontend
+                .composition
+                .set_candidate_page_state(has_prev, has_next);
+            frontend.mark_panel_dirty();
+            tracing::debug!(
+                target: "typio.engine.composition",
+                composition_seq,
+                preedit_len,
+                cursor_pos,
+                candidate_count,
+                selected,
+                "composition update"
+            );
         }
     }
 
@@ -512,20 +537,22 @@ impl KeyboardRouter {
             frontend.composition.candidates.len(),
             frontend.composition.selected_candidate,
             frontend.composition.host_managed_selection,
+            HostSelectionPageState {
+                has_prev: frontend.composition.has_prev_candidates,
+                has_next: frontend.composition.has_next_candidates,
+            },
         )?;
         match action {
             HostSelectionAction::Swallow => Some(true),
             HostSelectionAction::Navigate(new_idx) => {
                 if new_idx != frontend.composition.selected_candidate {
-                    frontend.composition.selected_candidate = new_idx;
-                    frontend.composition.composition_seq =
-                        frontend.composition.composition_seq.wrapping_add(1);
-                    frontend.mark_panel_dirty();
-                    tracing::trace!(
-                        target: "typio.engine.host_sel",
-                        selected = new_idx,
-                        "host-managed navigation"
-                    );
+                    if !self.sync_host_candidate_selection(
+                        frontend,
+                        new_idx,
+                        "host-managed navigation",
+                    ) {
+                        return None;
+                    }
                 }
                 Some(true)
             }
@@ -546,7 +573,88 @@ impl KeyboardRouter {
                 // process_key so the user's intent isn't lost.
                 None
             }
+            HostSelectionAction::PageUp => Some(self.dispatch_synthetic_page_key(
+                key,
+                KEY_PAGE_UP,
+                frontend,
+                "host-managed page up",
+            )),
+            HostSelectionAction::PageDown => Some(self.dispatch_synthetic_page_key(
+                key,
+                KEY_PAGE_DOWN,
+                frontend,
+                "host-managed page down",
+            )),
         }
+    }
+
+    fn sync_host_candidate_selection(
+        &self,
+        frontend: &mut InputMethodState,
+        selected: usize,
+        label: &'static str,
+    ) -> bool {
+        let r = typio::input_context::typio_input_context_set_candidate_selection(
+            self.ctx,
+            selected as i32,
+        );
+        if r != typio_abi::TypioResult::TypioOk {
+            tracing::debug!(
+                target: "typio.engine.host_sel",
+                selected,
+                result = ?r,
+                "failed to sync host-managed candidate selection"
+            );
+            return false;
+        }
+        frontend.composition.selected_candidate = selected;
+        frontend.composition.composition_seq = frontend.composition.composition_seq.wrapping_add(1);
+        frontend.mark_panel_dirty();
+        tracing::trace!(
+            target: "typio.engine.host_sel",
+            selected,
+            label
+        );
+        true
+    }
+
+    fn dispatch_synthetic_page_key(
+        &mut self,
+        source: &DecodedKeyEvent,
+        keysym: u32,
+        frontend: &mut InputMethodState,
+        label: &'static str,
+    ) -> bool {
+        let page_key = DecodedKeyEvent {
+            keycode: source.keycode,
+            xkb_keycode: source.xkb_keycode,
+            keysym,
+            unicode: String::new(),
+            state: WL_KEYBOARD_KEY_STATE_PRESSED,
+            time: source.time,
+        };
+        let consumed = self.process_key_engine(&page_key, 0, false);
+        self.drain_composition(frontend);
+        if consumed {
+            if let Some(selected) =
+                page_boundary_selected_index(keysym, frontend.composition.candidates.len())
+            {
+                if selected != frontend.composition.selected_candidate {
+                    let _ = self.sync_host_candidate_selection(
+                        frontend,
+                        selected,
+                        "host-managed page boundary selection",
+                    );
+                }
+            }
+        }
+        tracing::trace!(
+            target: "typio.engine.host_sel",
+            keysym,
+            consumed,
+            label
+        );
+        consumed
     }
 
     /// Dispatch one decoded key event to the engine.
@@ -838,11 +946,9 @@ impl KeyboardRouter {
     }
 
     /// Drain any pending commit text and forward it to the compositor.
-    pub fn drain_commit(&self, frontend: &mut InputMethodState) {
-        if let Ok(mut slot) = PENDING_COMMIT.lock() {
-            if let Some(text) = slot.take() {
-                frontend.commit_string_and_flush(&text);
-            }
+    pub fn drain_commit(&mut self, frontend: &mut InputMethodState) {
+        if let Some(text) = self.pending_output.commit.take() {
+            frontend.commit_string_and_flush(&text);
         }
     }
 
@@ -940,6 +1046,7 @@ mod tests {
         pub(crate) fn new_for_test(ctx: *mut typio::TypioInputContext) -> Self {
             Self {
                 ctx,
+                pending_output: Box::default(),
                 repeat_key: None,
                 repeat_mode: RepeatMode::Forward,
                 physical_modifiers: Modifiers::NONE,
@@ -958,6 +1065,39 @@ mod tests {
                 voice_ptt_released: false,
             }
         }
+    }
+
+    #[test]
+    fn page_boundary_selection_targets_page_edges() {
+        assert_eq!(page_boundary_selected_index(KEY_PAGE_UP, 5), Some(4));
+        assert_eq!(page_boundary_selected_index(KEY_PAGE_DOWN, 5), Some(0));
+        assert_eq!(page_boundary_selected_index(KEY_PAGE_UP, 0), None);
+        assert_eq!(page_boundary_selected_index(KEY_V, 5), None);
+    }
+
+    #[test]
+    fn commit_callback_stages_router_local_output() {
+        let text = std::ffi::CString::new("hello").unwrap();
+        let mut left = PendingEngineOutput::default();
+        let mut right = PendingEngineOutput::default();
+
+        on_commit(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            &mut left as *mut PendingEngineOutput as *mut c_void,
+        );
+
+        assert_eq!(left.commit.as_deref(), Some("hello"));
+        assert!(right.commit.is_none());
+
+        on_commit(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            &mut right as *mut PendingEngineOutput as *mut c_void,
+        );
+
+        assert_eq!(left.commit.as_deref(), Some("hello"));
+        assert_eq!(right.commit.as_deref(), Some("hello"));
     }
 
     #[test]
@@ -1202,9 +1342,11 @@ mod tests {
 
         // Press Super. xkb snapshot reports Super. Mask must include it.
         router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
-        assert!(router
-            .engine_modifier_mask(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0)
-            .intersects(Modifiers::SUPER));
+        assert!(
+            router
+                .engine_modifier_mask(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0)
+                .intersects(Modifiers::SUPER)
+        );
 
         // Press Shift while Super is held.
         router.dispatch_key(

@@ -14,18 +14,13 @@ pub enum PanelScheduleState {
     Dirty = 1,
 }
 
-/// `typio_wl_panel_scheduler_mark_dirty`.
-pub fn mark_dirty(_current: PanelScheduleState) -> PanelScheduleState {
+/// Mark the panel schedule as needing a redraw.
+pub fn mark_dirty() -> PanelScheduleState {
     PanelScheduleState::Dirty
 }
 
-/// `typio_wl_panel_scheduler_complete`.
+/// Mark the panel schedule as settled (no redraw pending).
 pub fn complete() -> PanelScheduleState {
-    PanelScheduleState::Idle
-}
-
-/// `typio_wl_panel_scheduler_cancel`.
-pub fn cancel() -> PanelScheduleState {
     PanelScheduleState::Idle
 }
 
@@ -62,8 +57,7 @@ pub fn should_settle(
     has_context: bool,
     has_session: bool,
 ) -> bool {
-    state == PanelScheduleState::Dirty
-        && (candidate_count == 0 || !has_context || !has_session)
+    state == PanelScheduleState::Dirty && (candidate_count == 0 || !has_context || !has_session)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -74,24 +68,12 @@ mod tests {
 
     #[test]
     fn mark_dirty_queues_redraw() {
-        assert_eq!(
-            mark_dirty(PanelScheduleState::Idle),
-            PanelScheduleState::Dirty
-        );
-        assert_eq!(
-            mark_dirty(PanelScheduleState::Dirty),
-            PanelScheduleState::Dirty
-        );
+        assert_eq!(mark_dirty(), PanelScheduleState::Dirty);
     }
 
     #[test]
     fn complete_returns_idle() {
         assert_eq!(complete(), PanelScheduleState::Idle);
-    }
-
-    #[test]
-    fn cancel_returns_idle() {
-        assert_eq!(cancel(), PanelScheduleState::Idle);
     }
 
     #[test]

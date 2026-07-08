@@ -47,21 +47,15 @@ The anchor-probe deadline previously relied on a 100 ms baseline tick to be
 re-evaluated; it is now folded in explicitly, so removing the tick does not
 strand a pending popup.
 
-## The watchdog does not cost idle power
+## Why blocking indefinitely at idle is safe
 
-A liveness watchdog ([Watchdog](watchdog.md)) would naively need a periodic
-tick — and an earlier design did, which is *why* the loop used to tick at
-100 ms. That coupling is broken two ways:
-
-1. The watchdog **exempts the restful `POLL`/`IDLE` stages**, so a loop blocked
-   indefinitely on `poll()` is never mistaken for a hang. No liveness tick is
-   needed during idle.
-2. The watchdog thread is **armed only while input is focused**. Disarmed, it
-   blocks on a condition variable (zero wakeups); armed, it samples at 0.5 Hz.
-
-Net result: at idle, both the loop and the watchdog reach ≈ 0 wakeups, while a
-real stall in a work stage is still caught and recovered (SIGKILL → systemd
-restart).
+A liveness watchdog would naively need a periodic tick to confirm the loop is
+alive — and an earlier design did exactly that, which is *why* the loop once
+ticked at 100 ms. That coupling no longer exists: the watchdog was removed
+([ADR-0041](../adr/0041-remove-watchdog.md)) after an audit showed every
+main-loop stage is non-blocking or bounded (engine IPC 100 ms, Wayland I/O
+non-blocking, config-read 2 s). The loop simply blocks on `poll()` until work
+arrives; nothing needs to confirm its liveness, because nothing can wedge it.
 
 ## Filesystem watching is push, not poll
 
@@ -101,6 +95,5 @@ or `/proc/<pid>/status` (`voluntary_ctxt_switches`) are coarser cross-checks.
 ## See Also
 
 - [ADR-0024: Idle-Driven Event Loop and Demand-Gated Watchdog](../adr/0024-idle-driven-loop-and-demand-gated-watchdog.md)
-- [Watchdog](watchdog.md)
 - [Event Loop Scheduling](event-loop-scheduling.md)
 - [Configuration Reference](../reference/configuration.md) — config-watch reload behaviour.

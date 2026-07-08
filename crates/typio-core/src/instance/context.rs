@@ -6,7 +6,7 @@ use crate::input_context;
 use std::ptr;
 
 /// Get the engine registry owned by this instance.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_registry(instance: *mut TypioInstance) -> *mut TypioRegistry {
     if instance.is_null() {
         return ptr::null_mut();
@@ -15,7 +15,7 @@ pub extern "C" fn typio_instance_get_registry(instance: *mut TypioInstance) -> *
 }
 
 /// Create a new input context attached to this instance.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_create_context(
     instance: *mut TypioInstance,
 ) -> *mut input_context::TypioInputContext {
@@ -32,7 +32,7 @@ pub extern "C" fn typio_instance_create_context(
 }
 
 /// Destroy an input context and remove it from the instance.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_destroy_context(
     instance: *mut TypioInstance,
     ctx: *mut input_context::TypioInputContext,
@@ -49,7 +49,7 @@ pub extern "C" fn typio_instance_destroy_context(
 }
 
 /// Get the currently focused input context, or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_focused_context(
     instance: *mut TypioInstance,
 ) -> *mut input_context::TypioInputContext {
@@ -60,7 +60,7 @@ pub extern "C" fn typio_instance_get_focused_context(
 }
 
 /// Set the focused input context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_focused_context(
     instance: *mut TypioInstance,
     ctx: *mut input_context::TypioInputContext,

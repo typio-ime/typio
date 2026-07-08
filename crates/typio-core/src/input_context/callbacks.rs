@@ -4,11 +4,11 @@ use super::{
     TypioCommitCallback, TypioCompositionCallback, TypioDeleteSurroundingCallback,
     TypioInputContext,
 };
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 
 /// Register the commit callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_commit_callback(
     ctx: *mut TypioInputContext,
     cb: Option<TypioCommitCallback>,
@@ -24,7 +24,7 @@ pub extern "C" fn typio_input_context_set_commit_callback(
 }
 
 /// Register the composition callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_composition_callback(
     ctx: *mut TypioInputContext,
     cb: Option<TypioCompositionCallback>,
@@ -40,7 +40,7 @@ pub extern "C" fn typio_input_context_set_composition_callback(
 }
 
 /// Register the delete-surrounding-text callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_delete_surrounding_callback(
     ctx: *mut TypioInputContext,
     cb: Option<TypioDeleteSurroundingCallback>,
@@ -56,7 +56,7 @@ pub extern "C" fn typio_input_context_set_delete_surrounding_callback(
 }
 
 /// Set the capability bitmask for this context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_capabilities(ctx: *mut TypioInputContext, caps: u32) {
     if ctx.is_null() {
         return;
@@ -65,7 +65,7 @@ pub extern "C" fn typio_input_context_set_capabilities(ctx: *mut TypioInputConte
 }
 
 /// Get the capability bitmask for this context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_get_capabilities(ctx: *mut TypioInputContext) -> u32 {
     if ctx.is_null() {
         return 0;
@@ -74,7 +74,7 @@ pub extern "C" fn typio_input_context_get_capabilities(ctx: *mut TypioInputConte
 }
 
 /// Set opaque user data for this context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_user_data(
     ctx: *mut TypioInputContext,
     data: *mut c_void,
@@ -86,7 +86,7 @@ pub extern "C" fn typio_input_context_set_user_data(
 }
 
 /// Get opaque user data for this context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_get_user_data(ctx: *mut TypioInputContext) -> *mut c_void {
     if ctx.is_null() {
         return ptr::null_mut();
@@ -95,7 +95,7 @@ pub extern "C" fn typio_input_context_get_user_data(ctx: *mut TypioInputContext)
 }
 
 /// Set a named property on this context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_property(
     ctx: *mut TypioInputContext,
     key: *const c_char,
@@ -128,7 +128,7 @@ pub extern "C" fn typio_input_context_set_property(
 }
 
 /// Get a named property from this context.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_get_property(
     ctx: *mut TypioInputContext,
     key: *const c_char,

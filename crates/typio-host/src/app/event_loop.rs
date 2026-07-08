@@ -2,8 +2,7 @@
 //!
 //! `App::run_with_wayland` is the main per-tick pipeline: flush,
 //! prepare-read, dispatch, poll, read, focus-controller, key drain,
-//! panel flush, repeat, config-reload. Each stage is annotated with
-//! `LoopStage` so the watchdog can attribute stalls.
+//! repeat, panel flush, config-reload.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -16,12 +15,10 @@ use typio::instance::TypioInstance;
 use crate::ipc_bus::IpcBus;
 use crate::keyboard::router::RepeatOutcome;
 use crate::panel_coordinator::UiOwner;
-use crate::panel_present_gate::PresentDecision;
 use crate::panel_scheduler;
 use crate::session_glue::FocusTransition;
-use crate::watchdog::LoopStage;
 
-use super::{arm_repeat, tray::cycle_active_language, App, DaemonEvent};
+use super::{App, DaemonEvent, arm_repeat, tray::cycle_active_language};
 
 /// What the candidate-panel flush path actually did this tick.
 ///
@@ -63,22 +60,10 @@ enum FlushOutcome {
 
 impl App {
     /// The Wayland main loop. Returns the daemon exit code.
-    ///
-    /// Stages per tick (annotated with `LoopStage` for the watchdog):
-    ///   Idle → AuxIo (focus controller) → Flush → PrepareRead →
-    ///   DispatchPending → Poll → ReadEvents → Repeat → PanelUpdate →
-    ///   ConfigReload.
     pub(super) fn run_with_wayland(&mut self, ipc_bus: &Rc<RefCell<IpcBus>>) -> i32 {
         let wl_fd = self.frontend.as_mut().unwrap().fd();
         let uds_fd = ipc_bus.borrow().epoll_fd();
         let repeat_fd = self.repeat_timer.as_mut().unwrap().fd();
-        // Re-borrow the watchdog field on every use so a long-lived immutable
-        // borrow does not block the mutable borrow needed by reload_config().
-        macro_rules! wd {
-            () => {
-                self.watchdog.as_ref().unwrap()
-            };
-        }
 
         let (inotify_fd, cfg_timer_fd) = self
             .config_watcher
@@ -148,9 +133,6 @@ impl App {
         ];
 
         while !self.drain_events() {
-            wd!().set_stage(LoopStage::Idle);
-            wd!().heartbeat();
-
             // 1. Start-of-tick fact bookkeeping.
             {
                 let frontend = self.frontend.as_mut().unwrap();
@@ -168,7 +150,6 @@ impl App {
 
             // 2. Flush outgoing Wayland requests, then prepare a read and
             //    dispatch any already-queued events before polling.
-            wd!().set_stage(LoopStage::Flush);
             {
                 let frontend = self.frontend.as_ref().unwrap();
                 if let Err(e) = frontend.flush() {
@@ -176,7 +157,6 @@ impl App {
                     return 1;
                 }
             }
-            wd!().set_stage(LoopStage::PrepareRead);
             let read_guard = {
                 let frontend = self.frontend.as_mut().unwrap();
                 match frontend.prepare_read_loop() {
@@ -187,7 +167,6 @@ impl App {
                     }
                 }
             };
-            wd!().set_stage(LoopStage::DispatchPending);
             ipc_bus.borrow_mut().dispatch();
 
             for slot in fds.iter_mut() {
@@ -195,18 +174,9 @@ impl App {
             }
 
             // 3. Poll. Let panel/anchor/status deadlines shorten the timeout.
-            wd!().set_stage(LoopStage::Poll);
-            wd!().heartbeat();
             let timeout_ms = {
                 let frontend = self.frontend.as_ref().unwrap();
                 let state = frontend.state();
-                let router = self.router.as_ref().unwrap();
-                let flushable = panel_scheduler::should_flush(
-                    state.panel_schedule_state,
-                    router.is_focused(),
-                    !router.ctx().is_null(),
-                    router.is_focused(),
-                );
                 let mut timeout_ms = -1;
                 let now = Instant::now();
                 let mut reduce_timeout = |remaining: i32| {
@@ -216,11 +186,6 @@ impl App {
                 };
                 if let Some(remaining) = state.panel_coord.anchor_deadline_remaining_ms(now) {
                     reduce_timeout(remaining as i32);
-                }
-                if flushable && !state.composition.candidates.is_empty() {
-                    if let Some(remaining) = state.panel_present_wait_remaining_ms(now) {
-                        reduce_timeout(remaining);
-                    }
                 }
                 if let Some(indicator_remaining) = self.indicator_hide_remaining_ms(now) {
                     reduce_timeout(indicator_remaining);
@@ -244,7 +209,6 @@ impl App {
             }
 
             // 4. Read and dispatch new Wayland events, or cancel the prepared read.
-            wd!().set_stage(LoopStage::ReadEvents);
             if fds[0].revents & libc::POLLIN != 0 {
                 let frontend = self.frontend.as_mut().unwrap();
                 if let Some(guard) = read_guard {
@@ -281,7 +245,6 @@ impl App {
             }
 
             // 5. Run the focus-controller pipeline.
-            wd!().set_stage(LoopStage::AuxIo);
             let focus_transition = {
                 let engine_present = self
                     .instance
@@ -306,21 +269,12 @@ impl App {
             if let Some(t) = focus_transition {
                 match t {
                     FocusTransition::FirstActivate => {
-                        if let Some(wd) = self.watchdog.as_ref() {
-                            wd.set_armed(true);
-                        }
                         self.trigger_indicator_focus();
                     }
                     FocusTransition::Reactivate => {
-                        if let Some(wd) = self.watchdog.as_ref() {
-                            wd.set_armed(true);
-                        }
                         self.trigger_indicator_reactivate();
                     }
                     FocusTransition::Deactivate => {
-                        if let Some(wd) = self.watchdog.as_ref() {
-                            wd.set_armed(false);
-                        }
                         self.hide_indicator();
                     }
                 }
@@ -350,6 +304,8 @@ impl App {
                         "drain pending keys"
                     );
                 }
+                let pending_key_count = pending_keys.len();
+                let mut host_nav_updates = 0usize;
                 for key in pending_keys {
                     // Snapshot the values we need before any mutable borrows
                     // below — both are cheap `Copy` reads.
@@ -361,8 +317,17 @@ impl App {
                         // keys handled locally without a synchronous FFI
                         // round-trip; engines that don't opt in see no
                         // behaviour change.
+                        let seq_before_host_selection = state.composition.composition_seq;
                         let consumed = match router.try_host_selection(&key, state) {
-                            Some(handled) => handled,
+                            Some(handled) => {
+                                if handled
+                                    && state.composition.composition_seq
+                                        != seq_before_host_selection
+                                {
+                                    host_nav_updates += 1;
+                                }
+                                handled
+                            }
                             None => router.dispatch_key(&key, mods),
                         };
                         // Any key that reached the engine (consumed or
@@ -458,6 +423,18 @@ impl App {
                         let _ = timer.stop();
                     }
                 }
+                if tracing::enabled!(target: "typio.input.perf", tracing::Level::TRACE)
+                    && (pending_key_count > 1 || host_nav_updates > 0)
+                {
+                    tracing::trace!(
+                        target: "typio.input.perf",
+                        pending_key_count,
+                        host_nav_updates,
+                        coalesced_host_nav_updates = host_nav_updates.saturating_sub(1),
+                        final_composition_seq = state.composition.composition_seq,
+                        "drained pending key batch"
+                    );
+                }
             }
             if let Some(label) = voice_status_to_show {
                 // Press/release only surface transient feedback here (errors,
@@ -466,30 +443,49 @@ impl App {
                 self.show_voice_transient(label, Instant::now());
             }
 
-            // 7. Flush the candidate panel if the scheduler says so.
-            wd!().set_stage(LoopStage::PanelUpdate);
-            {
-                // Pull the watchdog handle up-front, mirroring
-                // `render_indicator_banner`. The heartbeat closure
-                // captures only this reference (not all of `self`),
-                // which lets it coexist with the mutable `frontend`
-                // borrow used to obtain `panel` — a split-borrow
-                // requirement that the inline `wd!()` form would
-                // trip when nested inside a closure passed to
-                // `draw_candidates`.
-                let wd_ref = self.watchdog.as_ref();
-                let heartbeat = move || {
-                    if let Some(wd) = wd_ref {
-                        wd.heartbeat();
+            // 7. Repeat timer expiration.
+            //
+            // Handle repeats before candidate-panel flush so host-managed
+            // navigation produced by a repeat can repaint in this same tick.
+            // Previously repeats ran after panel flush, adding one full loop
+            // of latency to held Up/Down candidate movement.
+            if fds[2].revents & libc::POLLIN != 0 {
+                let mut buf = [0u8; 8];
+                unsafe {
+                    libc::read(repeat_fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+                }
+                let frontend = self.frontend.as_mut().unwrap();
+                let state = frontend.state_mut();
+                let router = self.router.as_mut().unwrap();
+                let timer = self.repeat_timer.as_mut().unwrap();
+                let mods = state.mods_depressed;
+                let seq_before_repeat = state.composition.composition_seq;
+                let outcome = router.dispatch_repeat(state, mods);
+                match outcome {
+                    RepeatOutcome::Forwarded => {}
+                    RepeatOutcome::Consumed => {
+                        router.drain_commit(state);
+                        router.drain_composition(state);
                     }
-                };
-                let enter_present = move || {
-                    if let Some(wd) = wd_ref {
-                        wd.set_stage(LoopStage::Present);
+                    RepeatOutcome::Stopped => {
+                        let _ = timer.stop();
                     }
-                };
-                heartbeat();
+                }
+                let seq_after_repeat = state.composition.composition_seq;
+                if tracing::enabled!(target: "typio.input.perf", tracing::Level::TRACE) {
+                    tracing::trace!(
+                        target: "typio.input.perf",
+                        ?outcome,
+                        seq_before_repeat,
+                        seq_after_repeat,
+                        changed_selection = seq_after_repeat != seq_before_repeat,
+                        "repeat tick dispatched before panel flush"
+                    );
+                }
+            }
 
+            // 8. Flush the candidate panel if the scheduler says so.
+            {
                 let frontend = self.frontend.as_mut().unwrap();
                 let router = self.router.as_mut().unwrap();
                 // Cheap scalars only — avoid cloning the candidates Vec on
@@ -559,10 +555,6 @@ impl App {
                     );
                 }
                 if should_flush {
-                    // Now that we know we'll actually render, take the
-                    // expensive snapshot — the candidate strings, needed
-                    // for measurement and text rasterisation.
-                    let candidates = frontend.state().composition.candidates.clone();
                     let scale = frontend.state().buffer_scale;
                     let owner = frontend.state().panel_coord().visible_owner();
 
@@ -578,7 +570,7 @@ impl App {
                         let owner_changed = {
                             let coord = state.panel_coord_mut();
                             let before = coord.visible_owner();
-                            if candidates.is_empty() {
+                            if candidate_count == 0 {
                                 if owner != UiOwner::Indicator && owner != UiOwner::Voice {
                                     coord.hide(UiOwner::Candidate);
                                 }
@@ -603,30 +595,15 @@ impl App {
                     // is a refresh hint, not a hard lock: if the compositor
                     // drops callbacks for an input popup, the soft gate wakes
                     // on a timer and submits the latest coalesced candidates
-                    // instead of freezing until a long watchdog timeout. Hides
-                    // are never throttled — they detach the buffer and cannot
-                    // block.
+                    // instead of freezing. Hides are never throttled — they
+                    // detach the buffer and cannot block.
                     //
                     // We still hold candidates if the anchor is not ready, to
                     // avoid committing a popup buffer before the compositor
                     // has sent a text_input_rectangle.
-                    let present_decision = if !candidates.is_empty() && anchor_ready {
-                        frontend.state_mut().panel_present_decision(Instant::now())
-                    } else {
-                        PresentDecision::Present
-                    };
-                    let frame_wait_ms = match present_decision {
-                        PresentDecision::Present => None,
-                        PresentDecision::WaitUntil(deadline) => {
-                            Some(crate::panel_present_gate::deadline_remaining_ms(
-                                deadline,
-                                Instant::now(),
-                            ))
-                        }
-                    };
-                    let throttled =
-                        !candidates.is_empty() && (!anchor_ready || frame_wait_ms.is_some());
-                    let already_presented = !candidates.is_empty()
+                    let has_candidates = candidate_count != 0;
+                    let throttled = has_candidates && !anchor_ready;
+                    let already_presented = has_candidates
                         && anchor_ready
                         && frontend.state().panel_coord().visible_owner() == UiOwner::Candidate
                         && frontend.state().panel_presentation_current(composition_seq);
@@ -639,82 +616,73 @@ impl App {
                         );
                         FlushOutcome::AlreadyPresented
                     } else if throttled {
-                        if let Some(wait_ms) = frame_wait_ms {
-                            tracing::trace!(
-                                target: "typio.panel.host",
-                                wait_ms,
-                                "panel: skip present reason=frame_soft_gate"
-                            );
-                        } else {
-                            tracing::trace!(
-                                target: "typio.panel.host",
-                                "panel: skip present reason=anchor_not_ready"
-                            );
-                        }
+                        tracing::trace!(
+                            target: "typio.panel.host",
+                            "panel: skip present reason=anchor_not_ready"
+                        );
                         FlushOutcome::Throttled
-                    } else if let Some(panel) = frontend.panel_mut() {
-                        panel.set_scale(scale);
-                        heartbeat();
-                        if candidates.is_empty() {
-                            if owner == UiOwner::Indicator || owner == UiOwner::Voice {
-                                // Surface is loaned to the indicator/voice
-                                // overlay; the candidate path does not own it
-                                // right now and must not hide it (would kill
-                                // the overlay mid-display).
-                                tracing::trace!(
-                                    target: "typio.panel.host",
-                                    owner = ?owner,
-                                    "panel: skip-hide reason=empty_on_loan"
-                                );
-                                // The surface is non-empty (an overlay owns
-                                // it) and the candidate list is empty, so
-                                // there is nothing for this path to present
-                                // or hide. Settle to Idle: a future candidate
-                                // update re-dirties if needed.
-                                FlushOutcome::AlreadyPresented
+                    } else {
+                        let candidates =
+                            has_candidates.then(|| frontend.state().composition.candidates.clone());
+                        if let Some(panel) = frontend.panel_mut() {
+                            panel.set_scale(scale);
+                            if !has_candidates {
+                                if owner == UiOwner::Indicator || owner == UiOwner::Voice {
+                                    // Surface is loaned to the indicator/voice
+                                    // overlay; the candidate path does not own it
+                                    // right now and must not hide it (would kill
+                                    // the overlay mid-display).
+                                    tracing::trace!(
+                                        target: "typio.panel.host",
+                                        owner = ?owner,
+                                        "panel: skip-hide reason=empty_on_loan"
+                                    );
+                                    // The surface is non-empty (an overlay owns
+                                    // it) and the candidate list is empty, so
+                                    // there is nothing for this path to present
+                                    // or hide. Settle to Idle: a future candidate
+                                    // update re-dirties if needed.
+                                    FlushOutcome::AlreadyPresented
+                                } else {
+                                    tracing::debug!(
+                                        target: "typio.panel.host",
+                                        owner = ?owner,
+                                        "panel: hide reason=candidates_empty"
+                                    );
+                                    panel.hide();
+                                    FlushOutcome::Hidden
+                                }
                             } else {
-                                tracing::debug!(
-                                    target: "typio.panel.host",
-                                    owner = ?owner,
-                                    "panel: hide reason=candidates_empty"
-                                );
-                                panel.hide();
-                                FlushOutcome::Hidden
+                                let candidates =
+                                    candidates.as_ref().expect("has_candidates snapshot");
+                                panel.ensure_candidate_size(candidates);
+                                // `draw_candidates` returns true only when a
+                                // buffer was actually attached to the surface.
+                                // A false return means the frame was dropped
+                                // before reaching the compositor (dma-buf slot
+                                // still held by the compositor, SHM pool
+                                // exhausted, or a flux frame begin/submit/export
+                                // failure). Treat that the same as throttled:
+                                // keep the schedule Dirty so the next tick
+                                // re-attempts with the latest coalesced
+                                // candidates, rather than marking this
+                                // composition_seq done and losing the frame.
+                                let attached =
+                                    panel.draw_candidates(candidates, selected, composition_seq);
+                                if attached {
+                                    FlushOutcome::Presented
+                                } else {
+                                    tracing::debug!(
+                                        target: "typio.panel.host",
+                                        composition_seq,
+                                        "panel: present dropped — will retry next tick"
+                                    );
+                                    FlushOutcome::Dropped
+                                }
                             }
                         } else {
-                            panel.ensure_candidate_size(&candidates);
-                            heartbeat();
-                            // `draw_candidates` returns true only when a
-                            // buffer was actually attached to the surface.
-                            // A false return means the frame was dropped
-                            // before reaching the compositor (dma-buf slot
-                            // still held by the compositor, SHM pool
-                            // exhausted, or a flux frame begin/submit/export
-                            // failure). Treat that the same as throttled:
-                            // keep the schedule Dirty so the next tick
-                            // re-attempts with the latest coalesced
-                            // candidates, rather than marking this
-                            // composition_seq done and losing the frame.
-                            let attached = panel.draw_candidates(
-                                &candidates,
-                                selected,
-                                composition_seq,
-                                &heartbeat,
-                                &enter_present,
-                            );
-                            if attached {
-                                FlushOutcome::Presented
-                            } else {
-                                tracing::debug!(
-                                    target: "typio.panel.host",
-                                    composition_seq,
-                                    "panel: present dropped — will retry next tick"
-                                );
-                                FlushOutcome::Dropped
-                            }
+                            FlushOutcome::NoPanel
                         }
-                    } else {
-                        FlushOutcome::NoPanel
                     };
                     match outcome {
                         FlushOutcome::Throttled => {
@@ -746,14 +714,12 @@ impl App {
                             // object is (re)created.
                         }
                         FlushOutcome::Hidden => {
-                            frontend.state_mut().clear_panel_frame_callback();
                             frontend.state_mut().invalidate_panel_presentation();
                             frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                         }
                         FlushOutcome::Presented => {
                             frontend.state_mut().panel_schedule_state = panel_scheduler::complete();
                             frontend.state_mut().mark_panel_presented(composition_seq);
-                            frontend.arm_panel_frame_callback();
                         }
                         FlushOutcome::AlreadyPresented => {
                             // Nothing to draw and nothing to retry: the latest
@@ -768,7 +734,7 @@ impl App {
                 }
             }
 
-            // 7b. Flush any pending positioned status UI (indicator / voice)
+            // 8b. Flush any pending positioned status UI (indicator / voice)
             //     when the anchor becomes ready or the caret fallback fires.
             //     Drives the deferred-show path: a `show_on_focus` or
             //     `show_for_state_change` call returned a label, the
@@ -807,31 +773,7 @@ impl App {
                 }
             }
 
-            // 8. Repeat timer expiration.
-            if fds[2].revents & libc::POLLIN != 0 {
-                wd!().set_stage(LoopStage::Repeat);
-                let mut buf = [0u8; 8];
-                unsafe {
-                    libc::read(repeat_fd, buf.as_mut_ptr() as *mut c_void, buf.len());
-                }
-                let frontend = self.frontend.as_mut().unwrap();
-                let state = frontend.state_mut();
-                let router = self.router.as_mut().unwrap();
-                let timer = self.repeat_timer.as_mut().unwrap();
-                let mods = state.mods_depressed;
-                match router.dispatch_repeat(state, mods) {
-                    RepeatOutcome::Forwarded => {}
-                    RepeatOutcome::Consumed => {
-                        router.drain_commit(state);
-                        router.drain_composition(state);
-                    }
-                    RepeatOutcome::Stopped => {
-                        let _ = timer.stop();
-                    }
-                }
-            }
-
-            // 8b. Indicator auto-hide timer expiration. The timerfd fires
+            // 9. Indicator auto-hide timer expiration. The timerfd fires
             //     once after `display.indicator_duration_ms`; we hide the
             //     popup and disarm. The indicator's recency tracking is
             //     left intact so a recent indicator still suppresses the
@@ -850,7 +792,7 @@ impl App {
                 self.hide_indicator();
             }
 
-            // 8c. Voice status auto-hide timer expiration.
+            // 10. Voice status auto-hide timer expiration.
             if fds[6].revents & libc::POLLIN != 0 {
                 let mut buf = [0u8; 8];
                 if let Some(tf) = self.voice_status_timer.as_ref() {
@@ -865,7 +807,7 @@ impl App {
                 self.hide_voice_status();
             }
 
-            // 8d. Voice session events. The session fd signals inference and
+            // 11. Voice session events. The session fd signals inference and
             //     async-load completion, so `dispatch` (which reads the fd and
             //     joins the inference thread) only runs when the fd is
             //     readable. But `start`/`stop` queue state transitions
@@ -886,12 +828,9 @@ impl App {
                 }
             }
 
-            // End-of-tick heartbeat.
-            wd!().stage_done();
-
             // 9. Config watcher events. These are handled after the main
             //    pipeline so a temporary field borrow can be used for the
-            //    config reload without colliding with the watchdog macro.
+            //    config reload.
             if fds[3].revents & libc::POLLIN != 0 {
                 if let Some(ref mut watcher) = self.config_watcher {
                     match watcher.drain_inotify() {
@@ -923,7 +862,6 @@ impl App {
                     false
                 };
                 if should_reload {
-                    wd!().set_stage(LoopStage::ConfigReload);
                     self.reload_config();
                 }
             }

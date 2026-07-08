@@ -1370,7 +1370,6 @@ dependencies = [
 name = "typio-core"
 version = "0.6.0"
 dependencies = [
- "lazy_static",
  "libc",
  "log",
  "nix",
@@ -1401,6 +1400,8 @@ dependencies = [
  "tracing-subscriber",
  "typio-abi",
  "typio-core",
+ "typio-host-platform",
+ "typio-host-types",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
@@ -1410,10 +1411,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "typio-host-platform"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "flux-sys",
+ "flux-text-sys",
+ "libc",
+ "nix",
+ "tracing",
+ "typio-core",
+ "typio-host-types",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-sys",
+ "xkbcommon",
+]
+
+[[package]]
+name = "typio-host-types"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "tracing",
+]
+
+[[package]]
 name = "typio-vet"
 version = "0.1.0"
 dependencies = [
- "lazy_static",
  "libc",
  "typio-abi",
 ]

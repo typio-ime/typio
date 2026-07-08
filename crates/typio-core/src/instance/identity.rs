@@ -5,7 +5,7 @@
 
 use super::TypioInstance;
 use crate::config;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 
 const TYPIO_IDENTITY_STATE_FILE: &str = "identity-engine-state.toml";
@@ -55,14 +55,14 @@ fn preferences_enabled(instance: *mut TypioInstance) -> bool {
 /* C ABI                                                                      */
 /* -------------------------------------------------------------------------- */
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_identity_preferences_enabled(
     instance: *mut TypioInstance,
 ) -> bool {
     preferences_enabled(instance)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_identity_load_engine(
     instance: *mut TypioInstance,
     provider_name: *const c_char,
@@ -109,7 +109,7 @@ pub extern "C" fn typio_instance_identity_load_engine(
     engine_name
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_identity_store_engine(
     instance: *mut TypioInstance,
     provider_name: *const c_char,
@@ -171,7 +171,7 @@ pub extern "C" fn typio_instance_identity_store_engine(
     config::typio_config_free(cfg);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_identity_load_mode(
     instance: *mut TypioInstance,
     provider_name: *const c_char,
@@ -246,7 +246,7 @@ pub extern "C" fn typio_instance_identity_load_mode(
     loaded
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_identity_store_mode(
     instance: *mut TypioInstance,
     provider_name: *const c_char,
@@ -297,7 +297,7 @@ pub extern "C" fn typio_instance_identity_store_mode(
     config::typio_config_free(cfg);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_identity_clear_mode(
     instance: *mut TypioInstance,
     provider_name: *const c_char,

@@ -13,8 +13,8 @@
 //! the canvas content-scale transform so glyphs rasterise crisply on HiDPI.
 
 use flux_text_sys::{
-    flux_text, flux_text_create, flux_text_destroy, flux_text_draw, flux_text_measure,
-    flux_text_desc, flux_text_family, flux_text_metrics, flux_text_style,
+    flux_text, flux_text_create, flux_text_desc, flux_text_destroy, flux_text_draw,
+    flux_text_family, flux_text_measure, flux_text_metrics, flux_text_style,
 };
 
 /// Shaped extent of a run in logical pixels.
@@ -97,7 +97,8 @@ impl TextRaster {
             family: flux_text_family::FLUX_TEXT_FAMILY_DEFAULT,
             italic: false,
         };
-        let m = unsafe { flux_text_measure(self.raw, text.as_ptr() as *const i8, text.len(), &style) };
+        let m =
+            unsafe { flux_text_measure(self.raw, text.as_ptr() as *const i8, text.len(), &style) };
         m.into()
     }
 

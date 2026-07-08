@@ -19,37 +19,7 @@
 //!
 //! See `docs/explanation/focus-controller.md` and ADR-0003.
 
-// ── Input facts ──────────────────────────────────────────────────────────
-
-/// Raw input facts recorded from Wayland events and environment detectors.
-/// Each fact has exactly one source. Facts are recorded, never interpreted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct InputFacts {
-    /// An activate event arrived in the current dispatch batch.
-    pub im_activate_seen: bool,
-    /// A deactivate event arrived in the current dispatch batch.
-    pub im_deactivate_seen: bool,
-    /// The current `done()` batch included an activate (distinguishes
-    /// reactivation from a plain text-state update).
-    pub im_done_had_activate: bool,
-    /// The current `done()` batch included a deactivate. Mirrors
-    /// `im_done_had_activate`: a deactivate is committed by the same `done()`
-    /// that clears the per-event `im_deactivate_seen`, so without this
-    /// batch-surviving flag a plain focus-out (click away to a non-editable)
-    /// is lost before `reduce` runs and the grab never soft-pauses.
-    pub im_done_had_deactivate: bool,
-    /// Serial from the most recent `done()` event.
-    pub im_done_serial: u32,
-    /// Wayland connection is alive (no POLLHUP observed).
-    pub connection_alive: bool,
-    /// The system-resume detector fired (logind PrepareForSleep or
-    /// boottime-gap heuristic).
-    pub suspend_gap_detected: bool,
-    /// A keyboard engine is registered and ready to process input. When
-    /// false, the controller still focuses the input context but skips the
-    /// keyboard grab (no consumer for the key stream).
-    pub engine_present: bool,
-}
+use typio_host_types::InputFacts;
 
 // ── Desired state ────────────────────────────────────────────────────────
 

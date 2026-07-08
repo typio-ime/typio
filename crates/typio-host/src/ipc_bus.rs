@@ -585,11 +585,7 @@ impl TypioRegistryView {
         let s = unsafe { CStr::from_ptr(value) }
             .to_string_lossy()
             .into_owned();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
+        if s.is_empty() { None } else { Some(s) }
     }
 }
 

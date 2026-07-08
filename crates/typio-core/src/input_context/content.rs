@@ -5,10 +5,11 @@
 //! `get_candidates` remain as read projections of the stored composition.
 
 use super::{
-    candidate_signature, TypioCandidate, TypioComposition, TypioInputContext, TypioPreedit,
-    TypioPreeditSegment,
+    TypioCandidate, TypioComposition, TypioInputContext, TypioPreedit, TypioPreeditSegment,
+    candidate_signature,
 };
-use std::ffi::{c_char, CStr, CString};
+use crate::types::TypioResult;
+use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 
 /// Compare two NUL-terminated C strings for equality, treating NULL as equal to NULL.
@@ -81,7 +82,7 @@ fn preedit_unchanged(ctx: &TypioInputContext, comp: &TypioComposition) -> bool {
 }
 
 /// Commit the given text and clear the composition.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_commit(ctx: *mut TypioInputContext, text: *const c_char) {
     if ctx.is_null() || text.is_null() {
         return;
@@ -103,7 +104,7 @@ pub extern "C" fn typio_input_context_commit(ctx: *mut TypioInputContext, text: 
 
 /// Set the entire in-flight composition (preedit + candidates) atomically and
 /// fire the composition callback once. An empty composition is the Idle state.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_composition(
     ctx: *mut TypioInputContext,
     comp: *const TypioComposition,
@@ -192,9 +193,32 @@ pub extern "C" fn typio_input_context_set_composition(
     ctx_ref.emit_composition(ctx);
 }
 
+/// Update only the stored candidate selection.
+///
+/// This is used by host-managed candidate navigation after the host moves the
+/// highlight locally. It keeps the libtypio context in sync so a later
+/// `commit_candidate` targets the same candidate the panel shows.
+#[unsafe(no_mangle)]
+pub extern "C" fn typio_input_context_set_candidate_selection(
+    ctx: *mut TypioInputContext,
+    selected: i32,
+) -> TypioResult {
+    if ctx.is_null() || selected < 0 {
+        return TypioResult::TypioErrorInvalidArgument;
+    }
+
+    let ctx_ref = unsafe { &mut *ctx };
+    if selected as usize >= ctx_ref.candidates.count {
+        return TypioResult::TypioErrorInvalidArgument;
+    }
+
+    ctx_ref.candidates.selected = selected;
+    TypioResult::TypioOk
+}
+
 /// Clear the composition to the Idle state (empty preedit + candidates) and
 /// fire the composition callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_clear(ctx: *mut TypioInputContext) {
     if ctx.is_null() {
         return;
@@ -206,7 +230,7 @@ pub extern "C" fn typio_input_context_clear(ctx: *mut TypioInputContext) {
 }
 
 /// Get the current preedit state.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_get_preedit(
     ctx: *mut TypioInputContext,
 ) -> *const TypioPreedit {
@@ -217,7 +241,7 @@ pub extern "C" fn typio_input_context_get_preedit(
 }
 
 /// Set the surrounding text and cursor positions.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_surrounding(
     ctx: *mut TypioInputContext,
     text: *const c_char,
@@ -239,7 +263,7 @@ pub extern "C" fn typio_input_context_set_surrounding(
 }
 
 /// Get the surrounding text and cursor positions.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_get_surrounding(
     ctx: *mut TypioInputContext,
     text: *mut *const c_char,
@@ -275,7 +299,7 @@ pub extern "C" fn typio_input_context_get_surrounding(
 /// Fires the registered delete-surrounding callback (the host forwards it to
 /// the focused client) and best-effort updates the cached surrounding text so
 /// subsequent in-flight reads stay consistent before the client echoes back.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_delete_surrounding(
     ctx: *mut TypioInputContext,
     before: u32,

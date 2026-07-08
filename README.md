@@ -9,7 +9,7 @@ daemon and the `typioctl` command-line client.
 
 It embeds the workspace `typio-core` crate and provides the platform adapter layer:
 the Wayland text-input/input-method v2 client, virtual-keyboard bridge,
-the candidate Panel (rendered with flux/Vulkan), the UDS control socket,
+the candidate Panel (CPU-rendered over `wl_shm`; see `docs/adr/0040-cpu-canvas-render-shm-buffers.md`), the UDS control socket,
 the StatusNotifierItem tray, and PipeWire voice capture. It translates
 Wayland events into typio-core abstractions and drives typio-core's callbacks
 back onto the compositor. (The old D-Bus status interface was removed in

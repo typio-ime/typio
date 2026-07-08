@@ -1,0 +1,24 @@
+[package]
+name = "typio-host-platform"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Wayland/Flux platform integration for typio-host"
+links = "typio_host_platform"
+
+[dependencies]
+typio-core.workspace = true
+typio-host-types = { workspace = true }
+wayland-client = { workspace = true }
+wayland-scanner = { workspace = true }
+wayland-backend = { workspace = true }
+wayland-sys = { workspace = true }
+flux-sys = { workspace = true }
+flux-text-sys = { workspace = true }
+xkbcommon = { workspace = true }
+nix.workspace = true
+libc.workspace = true
+tracing.workspace = true
+bitflags.workspace = true

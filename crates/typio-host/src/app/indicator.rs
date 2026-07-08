@@ -18,7 +18,6 @@ use typio_abi::TypioStatusSalience;
 
 use crate::indicator::{EngineModeSnapshot, IndicatorConfig, LabelSources, Salience};
 use crate::panel_coordinator::{FlushDecision, UiOwner};
-use crate::watchdog::LoopStage;
 
 use typio::TypioInstance;
 
@@ -383,27 +382,13 @@ impl App {
             .as_ref()
             .map(|f| f.state().buffer_scale)
             .unwrap_or(1.0);
-        let wd_ref = self.watchdog.as_ref();
-        let heartbeat = move || {
-            if let Some(wd) = wd_ref {
-                wd.heartbeat();
-            }
-        };
-        let enter_present = move || {
-            if let Some(wd) = wd_ref {
-                wd.set_stage(LoopStage::Present);
-            }
-        };
         if let Some(panel) = self.frontend.as_mut().and_then(|f| f.panel_mut()) {
             panel.set_scale(scale);
-            heartbeat();
             panel.ensure_banner_size(label);
-            heartbeat();
-            panel.draw_status_banner(label, &heartbeat, &enter_present);
+            panel.draw_status_banner(label);
         }
         if let Some(frontend) = self.frontend.as_mut() {
             frontend.state_mut().invalidate_panel_presentation();
-            frontend.arm_panel_frame_callback();
         }
     }
 
@@ -431,7 +416,6 @@ impl App {
             tracing::debug!(target: "typio.panel.host", "panel: hide reason=indicator_autohide");
             if let Some(frontend) = self.frontend.as_mut() {
                 let state = frontend.state_mut();
-                state.clear_panel_frame_callback();
                 state.invalidate_panel_presentation();
                 if !state.composition.candidates.is_empty() {
                     state.mark_panel_dirty();
@@ -461,7 +445,6 @@ impl App {
             tracing::debug!(target: "typio.panel.host", "panel: hide reason=voice_status_autohide");
             if let Some(frontend) = self.frontend.as_mut() {
                 let state = frontend.state_mut();
-                state.clear_panel_frame_callback();
                 state.invalidate_panel_presentation();
                 if !state.composition.candidates.is_empty() {
                     state.mark_panel_dirty();

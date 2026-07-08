@@ -18,13 +18,13 @@ use crate::config_schema;
 use crate::input_context;
 use crate::types::*;
 use std::collections::HashMap;
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_void};
 use std::ptr;
 
 const TYPIO_CONFIG_FILE_NAME: &str = "core.toml";
 
 #[allow(improper_ctypes)]
-extern "C" {
+unsafe extern "C" {
     pub(crate) fn typio_voice_session_free(session: *mut TypioVoiceSession);
 }
 
@@ -337,13 +337,13 @@ impl TypioInstance {
 /* -------------------------------------------------------------------------- */
 
 /// Create a new Typio instance with default directories.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_new() -> *mut TypioInstance {
     typio_instance_new_with_config(ptr::null())
 }
 
 /// Create a new Typio instance with the supplied configuration.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_new_with_config(
     config: *const TypioInstanceConfig,
 ) -> *mut TypioInstance {
@@ -449,7 +449,7 @@ pub extern "C" fn typio_instance_new_with_config(
 }
 
 /// Free a Typio instance and all associated resources.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_free(instance: *mut TypioInstance) {
     if instance.is_null() {
         return;
@@ -460,7 +460,7 @@ pub extern "C" fn typio_instance_free(instance: *mut TypioInstance) {
 }
 
 /// Initialize the instance (config, registry, engine activation).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResult {
     if instance.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -632,7 +632,7 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
 }
 
 /// Shut down the instance, saving state.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_shutdown(instance: *mut TypioInstance) {
     if instance.is_null() {
         return;
@@ -642,7 +642,7 @@ pub extern "C" fn typio_instance_shutdown(instance: *mut TypioInstance) {
 }
 
 /// Get the voice session associated with this instance.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_voice_session(
     instance: *mut TypioInstance,
 ) -> *mut TypioVoiceSession {
@@ -653,7 +653,7 @@ pub extern "C" fn typio_instance_get_voice_session(
 }
 
 /// Set the voice session associated with this instance.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_voice_session(
     instance: *mut TypioInstance,
     session: *mut TypioVoiceSession,

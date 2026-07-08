@@ -13,7 +13,7 @@ the layers.
 |---|---|---|---|---|---|
 | **Role** | Linux/Wayland host daemon | Platform-neutral framework | Shared Rust ABI types | Engine contract checker | Command-line TIP client |
 | **Output** | `typio` binary | `libtypio.so` and `rlib` | `rlib` | `typio-vet` binary and test harness | `typioctl` binary |
-| **Knows about** | Wayland, Vulkan/Flux, D-Bus, PipeWire, Linux filesystem | engines, input contexts, config schema, engine registry | `#[repr(C)]` engine structs and enums | engine lifecycle, ABI invariants, resource packaging | daemon TIP methods and CLI presentation |
+| **Knows about** | Wayland, flux CPU canvas, D-Bus, PipeWire, Linux filesystem | engines, input contexts, config schema, engine registry | `#[repr(C)]` engine structs and enums | engine lifecycle, ABI invariants, resource packaging | daemon TIP methods and CLI presentation |
 | **Does not know about** | how an engine processes a key; what Rime schema is active | compositor behavior, GPU resources, audio hardware | runtime state or host behavior | compositor, panel rendering, daemon event loop | Wayland, rendering, engine internals |
 | **Contains engines** | No; discovers manifests and registers engine argv | No; owns engine routing, contracts, and worker transport | No | No; loads engines only for tests | No |
 
@@ -80,7 +80,7 @@ updates the tray, panel, and IPC event subscribers.
                ▼
 ┌────────────────────────────────────────────────────────────┐
 │  typio-host                                                │
-│  Wayland input-method, Vulkan panel, event loop            │
+│  Wayland input-method, CPU-rendered panel, event loop      │
 │  Manifest discovery, tray, IPC, voice capture, config watch│
 └────────────────────────────────────────────────────────────┘
 ```
@@ -97,7 +97,7 @@ typio-core defines:
 | Keyboard input | Wayland keyboard grab → `TypioKeyEvent` | Input context key feed |
 | Text output | Engine callbacks → `zwp_input_method_v2` commit/preedit | Compositor protocol |
 | Popup positioning | `zwp_input_popup_surface_v2` | Panel surface |
-| GPU rendering | Vulkan via flux canvas library | Candidate panel |
+| Panel rendering | flux CPU canvas + `wl_shm` (ADR-0040) | Candidate panel |
 | Audio capture | PipeWire → `TypioVoiceSession.feed_audio` | Voice input |
 | System tray | D-Bus StatusNotifierItem | Engine status indicator |
 | Desktop notifications | D-Bus `org.freedesktop.Notifications` | Health alerts |
@@ -116,11 +116,11 @@ the surfaces the user actually sees and touches.**
 This is not cosmetic polish tacked on at the end. The UX responsibility is
 structural:
 
-- **Input responsiveness.** The event loop is single-threaded. Every GPU
-  frame, D-Bus dispatch, config reload, and voice audio buffer competes with
+- **Input responsiveness.** The event loop is single-threaded. Every panel
+  render, D-Bus dispatch, config reload, and voice audio buffer competes with
   key processing for the same loop tick. The host must bound every non-input
-  operation so a keypress never waits behind an offscreen-image resize, a
-  glyph upload, or a compositor stall. See
+  operation so a keypress never waits behind a framebuffer fill, a glyph
+  raster, or a compositor stall. See
   [Event Loop Scheduling](event-loop-scheduling.md) and
   [Frontend Graphics](frontend-graphics.md).
 
@@ -206,7 +206,7 @@ When deciding where a change belongs, apply these tests:
 | Question | If yes, it belongs in `typio-host` |
 |---|---|
 | Does it require a Wayland protocol object? | Yes |
-| Does it require GPU rendering or a GPU resource? | Yes |
+| Does it require Panel rendering or a compositor resource? | Yes |
 | Does it require D-Bus, PipeWire, inotify, or epoll? | Yes |
 | Does it affect the panel layout, theme, or visual appearance? | Yes |
 | Does it affect how fast a keypress becomes a visible result? | Yes |

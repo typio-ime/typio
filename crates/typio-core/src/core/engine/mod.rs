@@ -1,7 +1,8 @@
-//! Pure-Rust engine trait hierarchy (ADR-0005).
+//! Process-engine client trait hierarchy (ADR-0005).
 //!
-//! This is the sole internal interface for all engines. No C vtables,
-//! no raw pointers, no `unsafe` required to implement an engine.
+//! These traits are the registry-facing client interface implemented by the
+//! out-of-process backend. Engine implementations live in worker processes and
+//! speak the Typio Engine Protocol.
 
 use std::fmt;
 
@@ -56,19 +57,6 @@ pub enum EngineType {
     Voice,
 }
 
-/// Guidance for the host when choosing a backend for an engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BackendPreference {
-    /// Prefer in-process FFI. Default for keyboard engines.
-    FfiPreferred,
-    /// Prefer an out-of-process engine. Default for voice / AI engines.
-    ProcessPreferred,
-    /// Must be in-process (e.g. requires direct GPU memory access).
-    FfiOnly,
-    /// Must be out-of-process (e.g. untrusted third-party code).
-    ProcessOnly,
-}
-
 /// Engine availability lifecycle axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EngineAvailability {
@@ -105,8 +93,6 @@ pub struct EngineInfo {
     pub engine_type: EngineType,
     /// Capabilities bitmask.
     pub capabilities: EngineCapabilities,
-    /// Host backend preference hint.
-    pub backend_preference: BackendPreference,
 }
 
 impl EngineInfo {
@@ -122,10 +108,6 @@ impl EngineInfo {
             languages: Vec::new(),
             engine_type,
             capabilities: EngineCapabilities::empty(),
-            backend_preference: match engine_type {
-                EngineType::Keyboard => BackendPreference::FfiPreferred,
-                EngineType::Voice => BackendPreference::ProcessPreferred,
-            },
             name,
         }
     }
@@ -176,10 +158,7 @@ pub struct Command {
     pub label: String,
 }
 
-/// Base trait implemented by every engine.
-///
-/// All methods operate on safe Rust types. Implementors are ordinary Rust
-/// structs; there is no `extern "C"` boilerplate.
+/// Registry-facing client for a running engine worker.
 pub trait Engine: Send {
     /// Return static engine metadata.
     fn info(&self) -> &EngineInfo;

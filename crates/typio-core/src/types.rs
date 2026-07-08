@@ -1,8 +1,8 @@
 //! C-compatible type definitions matching `include/typio/*.h`
 //!
-//! Shared ABI types are re-exported from `typio_abi`.  Types that are
-//! libtypio-specific (host-only configuration helpers, property surface,
-//! instance config) are defined here.
+//! Shared ABI types are re-exported from `typio_abi`. Types that are
+//! libtypio-specific (host-only configuration helpers and instance config) are
+//! defined here.
 
 use std::ffi::{c_char, c_void};
 use std::os::raw::c_int;
@@ -15,6 +15,8 @@ is re-exported. */
 pub use typio_abi::{
     TYPIO_KEY_Alt_L, TYPIO_KEY_Alt_R, TYPIO_KEY_BackSpace, TYPIO_KEY_Control_L,
     TYPIO_KEY_Control_R, TYPIO_KEY_Delete, TYPIO_KEY_Down, TYPIO_KEY_End, TYPIO_KEY_Escape,
+    TYPIO_KEY_F1, TYPIO_KEY_F2, TYPIO_KEY_F3, TYPIO_KEY_F4, TYPIO_KEY_F5, TYPIO_KEY_F6,
+    TYPIO_KEY_F7, TYPIO_KEY_F8, TYPIO_KEY_F9, TYPIO_KEY_F10, TYPIO_KEY_F11, TYPIO_KEY_F12,
     TYPIO_KEY_Home, TYPIO_KEY_KP_Enter, TYPIO_KEY_Left, TYPIO_KEY_Page_Down, TYPIO_KEY_Page_Up,
     TYPIO_KEY_Return, TYPIO_KEY_Right, TYPIO_KEY_Shift_L, TYPIO_KEY_Shift_R, TYPIO_KEY_Super_L,
     TYPIO_KEY_Super_R, TYPIO_KEY_Tab, TYPIO_KEY_Up, TYPIO_KEY_space, TypioAbiVersion,
@@ -29,9 +31,7 @@ pub use typio_abi::{
     TypioLogCallback, TypioLogEvent, TypioLogLevel, TypioModifier, TypioPreedit,
     TypioPreeditFormat, TypioPreeditSegment, TypioResult, TypioStatusIconChangedCallback,
     TypioStatusSalience, TypioVoiceEngine, TypioVoiceEngineChangedCallback,
-    TypioVoiceEngineFactory, TypioVoiceEngineOps, TypioVoiceEvent, TypioVoiceSession, TYPIO_KEY_F1,
-    TYPIO_KEY_F10, TYPIO_KEY_F11, TYPIO_KEY_F12, TYPIO_KEY_F2, TYPIO_KEY_F3, TYPIO_KEY_F4,
-    TYPIO_KEY_F5, TYPIO_KEY_F6, TYPIO_KEY_F7, TYPIO_KEY_F8, TYPIO_KEY_F9,
+    TypioVoiceEngineFactory, TypioVoiceEngineOps, TypioVoiceEvent, TypioVoiceSession,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -41,36 +41,6 @@ pub use typio_abi::{
 // TypioInputContext  → defined in src/input_context.rs
 // TypioInstance      → defined in src/instance.rs
 // TypioRegistry      → defined in src/c_api/registry.rs
-
-/* -------------------------------------------------------------------------- */
-/* Host-only extensions (not part of the engine-facing ABI)                   */
-/* -------------------------------------------------------------------------- */
-
-/// Type of an engine property exposed to the host UI.
-#[repr(C)]
-pub enum TypioEnginePropertyType {
-    /// Free-form string value.
-    String = 0,
-    /// One of a fixed set of choices.
-    Enum,
-    /// Boolean toggle.
-    Bool,
-}
-
-/// A single engine property for host introspection (ADR-0008).
-#[repr(C)]
-pub struct TypioEngineProperty {
-    /// Property key (e.g. "schema").
-    pub key: *const c_char,
-    /// Human-readable label.
-    pub label: *const c_char,
-    /// Value type.
-    pub type_: TypioEnginePropertyType,
-    /// Current value as a C string.
-    pub value: *const c_char,
-    /// NULL-terminated array of choice strings (for Enum), or NULL.
-    pub choices: *const *const c_char,
-}
 
 /* -------------------------------------------------------------------------- */
 /* Instance config                                                            */

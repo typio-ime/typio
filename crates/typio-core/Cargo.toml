@@ -1,7 +1,7 @@
 [package]
 name = "typio-core"
 version = "0.6.0"
-edition = "2021"
+edition.workspace = true
 authors = ["Typio Contributors"]
 license = "MIT"
 
@@ -14,6 +14,5 @@ typio-abi = { workspace = true }
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 libc = "0.2"
-lazy_static = "1.5"
 log = "0.4"
 nix = { version = "0.31", features = ["event", "time"] }

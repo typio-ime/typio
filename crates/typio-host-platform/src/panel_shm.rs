@@ -6,7 +6,7 @@
 //! queue, so a compositor that stops recycling buffers can at worst cause
 //! dropped frames — there is no blocking present call to stall on.
 //!
-//! Design mirrors fcitx5's `Buffer` / `WaylandShmWindow` (double-buffered,
+//! Design mirrors fcitx5's `Buffer` / `WaylandShmWindow` (small fixed pool,
 //! non-blocking `acquire`, `release`-driven reuse), translated to Rust +
 //! wayland-client 0.31.
 
@@ -121,7 +121,13 @@ unsafe impl Sync for ShmMapping {}
 fn open_shm_fd(len: usize) -> Result<OwnedFd, ShmError> {
     // 1. memfd_create with the sealable flag (best on modern Linux).
     let name = c"typio-panel-shm";
-    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_memfd_create,
+            name.as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
     if fd >= 0 {
         let owned = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
         // Best-effort seal against shrink; not fatal if it fails (some
@@ -271,10 +277,10 @@ impl Drop for ShmBuffer {
     }
 }
 
-/// A fixed-capacity double-buffered pool of `ShmBuffer`s for the panel.
+/// A fixed-capacity pool of `ShmBuffer`s for the panel.
 ///
 /// `acquire()` returns a free buffer (one whose `busy` flag is false, and
-/// whose size matches the current surface). If both are busy or the wrong
+/// whose size matches the current surface). If all are busy or the wrong
 /// size, it returns `None` — the caller drops the frame and tries again next
 /// tick. This is the non-blocking heart of the design: the panel can never
 /// be held hostage by a compositor that doesn't recycle buffers.
@@ -287,7 +293,11 @@ pub struct ShmBufferPool {
 }
 
 impl ShmBufferPool {
-    pub const DEFAULT_CAP: usize = 2;
+    // Triple buffering absorbs one compositor-release delay during rapid
+    // candidate-highlight repeats without blocking the input path. The pool is
+    // still tiny and non-blocking: if the compositor falls further behind,
+    // frames are dropped and the latest dirty state is retried next tick.
+    pub const DEFAULT_CAP: usize = 3;
 
     pub fn new(
         shm: wl_shm::WlShm,

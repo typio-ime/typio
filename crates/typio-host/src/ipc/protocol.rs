@@ -124,6 +124,24 @@ mod tests {
     /// Env-var mutations are process-global — serialise the affected tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn set_env(key: &str, value: &str) {
+        // SAFETY: all tests that mutate HOME/XDG_RUNTIME_DIR hold ENV_LOCK, so
+        // these process-global environment mutations are serialized.
+        unsafe { env::set_var(key, value) }
+    }
+
+    fn remove_env(key: &str) {
+        // SAFETY: guarded by ENV_LOCK; see set_env.
+        unsafe { env::remove_var(key) }
+    }
+
+    fn restore_env(key: &str, prev: Option<String>) {
+        match prev {
+            Some(v) => set_env(key, &v),
+            None => remove_env(key),
+        }
+    }
+
     #[test]
     fn protocol_version_matches_c_tip_v3() {
         // ADR-0031 bumped TIP to v3 (language.* surface). The handshake
@@ -162,20 +180,14 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let prev_rt = env::var("XDG_RUNTIME_DIR").ok();
         let prev_home = env::var("HOME").ok();
-        env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
-        env::set_var("HOME", "/home/user");
+        set_env("XDG_RUNTIME_DIR", "/run/user/1000");
+        set_env("HOME", "/home/user");
 
         let path = socket_path();
         assert_eq!(path, PathBuf::from("/run/user/1000/typio/daemon.sock"));
 
-        match prev_rt {
-            Some(v) => env::set_var("XDG_RUNTIME_DIR", v),
-            None => env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        match prev_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
+        restore_env("XDG_RUNTIME_DIR", prev_rt);
+        restore_env("HOME", prev_home);
     }
 
     #[test]
@@ -183,8 +195,8 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let prev_rt = env::var("XDG_RUNTIME_DIR").ok();
         let prev_home = env::var("HOME").ok();
-        env::remove_var("XDG_RUNTIME_DIR");
-        env::set_var("HOME", "/home/user");
+        remove_env("XDG_RUNTIME_DIR");
+        set_env("HOME", "/home/user");
 
         let path = socket_path();
         assert_eq!(
@@ -192,14 +204,8 @@ mod tests {
             PathBuf::from("/home/user/.local/share/typio/daemon.sock")
         );
 
-        match prev_rt {
-            Some(v) => env::set_var("XDG_RUNTIME_DIR", v),
-            None => env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        match prev_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
+        restore_env("XDG_RUNTIME_DIR", prev_rt);
+        restore_env("HOME", prev_home);
     }
 
     #[test]
@@ -207,20 +213,14 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let prev_rt = env::var("XDG_RUNTIME_DIR").ok();
         let prev_home = env::var("HOME").ok();
-        env::remove_var("XDG_RUNTIME_DIR");
-        env::remove_var("HOME");
+        remove_env("XDG_RUNTIME_DIR");
+        remove_env("HOME");
 
         let path = socket_path();
         assert_eq!(path, PathBuf::from("/tmp/typio-daemon.sock"));
 
-        match prev_rt {
-            Some(v) => env::set_var("XDG_RUNTIME_DIR", v),
-            None => env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        match prev_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
+        restore_env("XDG_RUNTIME_DIR", prev_rt);
+        restore_env("HOME", prev_home);
     }
 
     #[test]
@@ -228,8 +228,8 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let prev_rt = env::var("XDG_RUNTIME_DIR").ok();
         let prev_home = env::var("HOME").ok();
-        env::set_var("XDG_RUNTIME_DIR", "");
-        env::set_var("HOME", "/home/user");
+        set_env("XDG_RUNTIME_DIR", "");
+        set_env("HOME", "/home/user");
 
         let path = socket_path();
         assert_eq!(
@@ -237,13 +237,7 @@ mod tests {
             PathBuf::from("/home/user/.local/share/typio/daemon.sock")
         );
 
-        match prev_rt {
-            Some(v) => env::set_var("XDG_RUNTIME_DIR", v),
-            None => env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        match prev_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
+        restore_env("XDG_RUNTIME_DIR", prev_rt);
+        restore_env("HOME", prev_home);
     }
 }

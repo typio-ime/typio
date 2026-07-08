@@ -4,13 +4,13 @@
 //! only the backend inference calls cross the FFI boundary.
 
 use crate::instance::TypioInstance;
-use crate::types::{TypioEngine, TypioVoiceSession};
-use crate::voice::audio::{prepare_audio, INITIAL_BUFFER_SAMPLES};
+use crate::types::TypioVoiceSession;
+use crate::voice::audio::{INITIAL_BUFFER_SAMPLES, prepare_audio};
 use crate::voice::types::{
     TypioVoiceSessionEvent, TypioVoiceSessionEventCallback, TypioVoiceSessionEventType, VoiceState,
 };
 use nix::sys::eventfd::{EfdFlags, EventFd};
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,6 @@ use std::thread;
 /// Shared voice session state. Thread-safe via interior mutability.
 pub struct VoiceSession {
     pub(crate) _instance: AtomicPtr<TypioInstance>,
-    pub(crate) _voice_engine: AtomicPtr<TypioEngine>,
     pub(crate) audio_source: AtomicPtr<TypioAudioSource>,
     pub(crate) state: Mutex<VoiceState>,
     pub(crate) reload_pending: AtomicBool,
@@ -64,7 +63,7 @@ pub struct TypioAudioSourceOps {
 /// Create a new voice session associated with the given instance.
 ///
 /// Returns a pointer that must be freed with `typio_voice_session_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_new(instance: *mut TypioInstance) -> *mut TypioVoiceSession {
     if instance.is_null() {
         return std::ptr::null_mut();
@@ -80,7 +79,6 @@ pub extern "C" fn typio_voice_session_new(instance: *mut TypioInstance) -> *mut 
 
     let session = Arc::new(VoiceSession {
         _instance: AtomicPtr::new(instance),
-        _voice_engine: AtomicPtr::new(std::ptr::null_mut()),
         audio_source: AtomicPtr::new(std::ptr::null_mut()),
         state: Mutex::new(VoiceState::Idle),
         reload_pending: AtomicBool::new(false),
@@ -97,7 +95,7 @@ pub extern "C" fn typio_voice_session_new(instance: *mut TypioInstance) -> *mut 
 }
 
 /// Free a voice session and all associated resources.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_free(session: *mut TypioVoiceSession) {
     if session.is_null() {
         return;
@@ -125,7 +123,7 @@ pub extern "C" fn typio_voice_session_free(session: *mut TypioVoiceSession) {
 }
 
 /// Attach an audio source to the voice session.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_set_audio_source(
     session: *mut TypioVoiceSession,
     source: *mut TypioAudioSource,
@@ -138,7 +136,7 @@ pub extern "C" fn typio_voice_session_set_audio_source(
 }
 
 /// Set the event callback and user data for voice session notifications.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_set_callback(
     session: *mut TypioVoiceSession,
     callback: TypioVoiceSessionEventCallback,
@@ -157,7 +155,7 @@ pub extern "C" fn typio_voice_session_set_callback(
 /// Start voice recording.
 ///
 /// Returns true if recording began successfully.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_start(session: *mut TypioVoiceSession) -> bool {
     if session.is_null() {
         return false;
@@ -200,7 +198,7 @@ pub extern "C" fn typio_voice_session_start(session: *mut TypioVoiceSession) -> 
 }
 
 /// Stop voice recording and launch inference.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_stop(session: *mut TypioVoiceSession) {
     if session.is_null() {
         return;
@@ -300,7 +298,7 @@ fn run_voice_inference(instance: *mut TypioInstance, audio: Vec<f32>) -> Option<
 }
 
 /// Return the eventfd for polling, or -1 if unavailable.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_get_fd(session: *mut TypioVoiceSession) -> i32 {
     if session.is_null() {
         return -1;
@@ -318,7 +316,7 @@ pub extern "C" fn typio_voice_session_get_fd(session: *mut TypioVoiceSession) ->
 /// Dispatch pending voice session events (inference completion, async load).
 ///
 /// Must be called from the event loop when the session fd becomes readable.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_dispatch(session: *mut TypioVoiceSession) {
     if session.is_null() {
         return;
@@ -402,7 +400,7 @@ pub extern "C" fn typio_voice_session_dispatch(session: *mut TypioVoiceSession) 
 }
 
 /// Return true if a voice engine is active, ready, and an audio source is attached.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_is_available(session: *const TypioVoiceSession) -> bool {
     if session.is_null() {
         return false;
@@ -424,7 +422,7 @@ pub extern "C" fn typio_voice_session_is_available(session: *const TypioVoiceSes
 ///
 /// Returns an empty string if voice is available. Caller must NOT free the
 /// returned pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_get_unavail_reason(
     session: *const TypioVoiceSession,
 ) -> *const c_char {
@@ -469,7 +467,7 @@ fn do_reload_engine(session: &VoiceSession) {
 /// Request a reload of the active voice engine config.
 ///
 /// If the session is busy, the reload is deferred until idle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_reload_engine(session: *mut TypioVoiceSession) {
     if session.is_null() {
         return;
@@ -487,7 +485,7 @@ pub extern "C" fn typio_voice_session_reload_engine(session: *mut TypioVoiceSess
 }
 
 /// Feed audio samples into the session buffer while recording.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_session_feed_audio(
     session: *mut TypioVoiceSession,
     samples: *const f32,
@@ -510,7 +508,7 @@ pub extern "C" fn typio_voice_session_feed_audio(
 }
 
 /// Remove bracketed tags (e.g. `[tag]`) from text in place.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_filter_tags_inplace(text: *mut c_char) {
     if text.is_null() {
         return;

@@ -1,6 +1,6 @@
 # ADR-0037: Demand-Armed Watchdog Cadence
 
-- **Status**: Accepted
+- **Status**: Superseded (watchdog removed by ADR-0041)
 - **Date**: 2026-06-30
 - **Deciders**: Typio maintainers
 - **Amends**: [ADR-0024](0024-idle-driven-loop-and-demand-gated-watchdog.md)
@@ -25,8 +25,11 @@ Start the watchdog disarmed.
 
 The event loop arms the watchdog on `FirstActivate` and `Reactivate` focus
 transitions, and disarms it on `Deactivate`. While armed, the production sample
-interval is 2 s. The stuck threshold remains 3 s for ordinary work stages and
-15 s for `Present`.
+interval is 2 s. The stuck threshold is 3 s for every non-restful stage;
+previously `Present` tolerated an elevated 15 s (`PRESENT_STUCK_MS`) to absorb a
+GPU-fence/readback stall, but ADR-0040 replaced the Vulkan present path with a
+non-blocking CPU canvas + SHM attach, removing that stall risk and collapsing
+all work stages onto the single 3 s `STUCK_MS`.
 
 This keeps idle cost at zero wakeups, lowers active focused sampling overhead,
 and preserves recovery for genuine grab-holding stalls.

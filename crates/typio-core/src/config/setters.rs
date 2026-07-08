@@ -2,10 +2,10 @@
 
 use super::{Config, ConfigValue};
 use crate::types::*;
-use std::ffi::{c_char, c_double, c_int, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_double, c_int};
 
 /// Set a string value for a key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_set_string(
     config: *mut Config,
     key: *const c_char,
@@ -26,7 +26,7 @@ pub extern "C" fn typio_config_set_string(
 }
 
 /// Set an integer value for a key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_set_int(
     config: *mut Config,
     key: *const c_char,
@@ -42,7 +42,7 @@ pub extern "C" fn typio_config_set_int(
 }
 
 /// Set a boolean value for a key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_set_bool(
     config: *mut Config,
     key: *const c_char,
@@ -58,7 +58,7 @@ pub extern "C" fn typio_config_set_bool(
 }
 
 /// Set a floating-point value for a key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_set_float(
     config: *mut Config,
     key: *const c_char,
@@ -74,7 +74,7 @@ pub extern "C" fn typio_config_set_float(
 }
 
 /// Set an array of strings for a key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_set_string_array(
     config: *mut Config,
     key: *const c_char,
@@ -103,7 +103,7 @@ pub extern "C" fn typio_config_set_string_array(
 }
 
 /// Merge all entries from `sub_config` under `section.` prefix.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_set_section(
     config: *mut Config,
     section: *const c_char,
@@ -125,7 +125,7 @@ pub extern "C" fn typio_config_set_section(
 }
 
 /// Remove a key from the config.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_remove(config: *mut Config, key: *const c_char) -> TypioResult {
     if config.is_null() || key.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -140,7 +140,7 @@ pub extern "C" fn typio_config_remove(config: *mut Config, key: *const c_char) -
 }
 
 /// Copy all entries from `src` into `dest`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_merge(dest: *mut Config, src: *const Config) -> TypioResult {
     if dest.is_null() || src.is_null() {
         return TypioResult::TypioErrorInvalidArgument;

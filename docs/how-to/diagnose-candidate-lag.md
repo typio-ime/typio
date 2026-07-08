@@ -17,17 +17,17 @@ tell them apart instead of guessing.
 key → engine (libtypio/Rime) → CompositionState.candidates
     → panel_scheduler (should_flush?) → present gate (frame callback + timer)
     → FluxPanel::draw_candidates
-        → layout_candidates  (flux_text_measure, cached)
-        → flux_text_draw     → glyph cache → atlas (FreeType raster)
-        → offscreen flux image → readback → wl_shm buffer → Wayland compositor
+        → layout (TextRaster measure, cached)
+        → flux_canvas_fill_rrect (bg + highlight) + TextRaster glyph composite
+        → RGBA8 framebuffer → wl_shm buffer → Wayland compositor
 ```
 
 Each stage has a distinct failure mode and a distinct probe:
 
 | Stage | Failure mode | Grows over time? | Probe |
 |------|---------------|------------------|-------|
-| Glyph atlas | Atlas saturates → re-raster every frame | Yes (CJK working set) | `typio.panel.probe=debug` `atlas_clears` |
-| Present gate | `wl_surface.frame` `done` never arrives → timer-paced fallback | Yes (after focus/occlusion) | `typio.panel.host` stall warning |
+| Text raster | Working set grows → more glyphs re-raster per frame | Yes (CJK working set) | `typio.panel.probe=debug` `atlas_clears` |
+| Present gate | SHM buffer pool exhausted → frames dropped until compositor releases | Yes (after focus/occlusion) | `typio.panel.shm` exhausted log |
 | Viewport fallback | No `wp_viewporter` → exact-size offscreen resize per page | Constant, not growing | startup `typio.wayland.viewporter` warning |
 | Engine | Rime userdb / state grows | Yes | watchdog stage attribution |
 
@@ -36,10 +36,11 @@ Each stage has a distinct failure mode and a distinct probe:
 Two of the classic causes are already fixed in current source, so the
 *first* thing to rule out is that you are running a stale binary:
 
-- The **glyph-atlas thrash** (O(N) re-rasterise of every cached glyph on
-  every atlas exhaustion) was replaced by an O(1) atlas clear — see
-  `optics/libs/flux/text/src/atlas.c` and
-  [ADR-0020](../adr/0020-atlas-reclamation-and-glyph-layer-modularization.md).
+- A historical **glyph-atlas thrash** in the old GPU render path (O(N)
+  re-rasterise of every cached glyph on every atlas exhaustion) was fixed by
+  an O(1) atlas clear before that path was retired altogether by
+  [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md). It cannot recur in
+  the CPU-canvas panel path, which has no shared GPU glyph atlas.
 - A **file-descriptor leak** on keymap events that silently dropped panel
   frames once the fd table filled — see the
   [troubleshooting note](troubleshooting.md#candidate-navigation-becomes-sluggish-after-extended-runtime).
@@ -82,7 +83,7 @@ RUST_LOG=typio.panel.probe=debug ./target/release/typio \
   --engine-dir ../typio-engines/typio-engine-sherpa/build \
   2>&1 \
   | tee typio-panel-full.log \
-  | grep --line-buffered -E 'typio.panel.probe|frame-callback stall|wp_viewporter' \
+  | grep --line-buffered -E 'typio.panel.probe|shm buffer pool exhausted|wp_viewporter' \
   > typio-panel.log
 ```
 
@@ -137,25 +138,23 @@ Read three numbers across successive windows:
 - **`glyph_evictions_delta` consistently `> 0`** → the glyph cache is over
   its working set; every evicted glyph re-rasterises via FreeType on its
   next appearance. Tolerable in bursts, suspicious when sustained.
-- **`present_max_ms` climbing** → the cost is in GPU submit/readback or the
-  SHM attach path (Dimension B), not glyphs.
+- **`present_max_ms` climbing** → the cost is in the SHM attach path or
+  compositor back-pressure (Dimension B), not glyphs.
 
 If all three stay flat while the lag is real, the cost is upstream of the
 panel — suspect the engine (Dimension C).
 
 ## Step 2 — Match the signal to a dimension
 
-### Dimension A — Glyph atlas / GPU text cache
+### Dimension A — Text rasterisation working set
 
 **Signature:** `atlas_clears` rising; `total_max_ms` spikes coincide with
 the clears.
 
 **Why it happens:** a long CJK session touches thousands of distinct Han
-glyphs. The atlas is 4096×4096 and the glyph hash table holds ~8192 live
-entries (`optics/libs/flux/text/src/text_internal.h`). When the working
-set exceeds what fits, the atlas clears and the next frames re-rasterise
-every visible glyph. The current O(1) clear keeps a single clear cheap;
-*sustained* clears mean the working set genuinely exceeds capacity.
+glyphs. `TextRaster` rasterises each distinct (face, glyph, size) once per
+frame into the scratch framebuffer; when the visible working set is large,
+re-raster cost shows up in `total_max_ms`.
 
 **Deeper trace** (per-frame stage timing + glyph deltas). Once the probe
 has pointed you here, get the per-frame breakdown without restarting the
@@ -174,38 +173,26 @@ Watch `glyph_evictions_delta`, `atlas_clears_delta`, and `measure_ms` /
 (Note: flux-text glyph-atlas tuning below applies to the historical GPU
 render path; the panel now rasterises text on the CPU via `text_raster`.)
 
-### Dimension B — Present gate / compositor back-pressure
+### Dimension B — Compositor back-pressure
 
 **Signature:** `present_max_ms` climbing while `atlas_clears`/`evict` stay
 flat; or the panel visibly freezes and then catches up in a burst.
 
-**Why it happens:** after each SHM attach the daemon arms a
-`wl_surface.frame` callback and uses it as a soft present gate. A healthy
-callback wakes the panel at compositor refresh so the host does not spam
-`wl_surface.attach`/`commit`. If the compositor stops delivering `done` —
-popup occluded, on an unfocused output, or a buggy frame scheduler — the
-panel waits only for the soft limit and then submits the latest coalesced
-candidate state anyway. See
+**Why it happens:** the panel presents via non-blocking `wl_surface_attach_commit`
+with host-owned SHM buffers. The `ShmBufferPool` drops a frame when all buffers
+are busy (compositor hasn't released them yet), which is the sole back-pressure
+mechanism — no `wl_surface.frame` callback pacing is used, so candidate updates
+are never artificially delayed. If the compositor is slow to release buffers,
+the pool exhausts and frames are dropped until a release arrives. See
 [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
-Current builds still report the condition: an uninterrupted
-missing-callback episode older than the diagnostic threshold logs one
-warning. Grep for it:
+Grep for dropped frames:
 
 ```bash
-journalctl --user -u typio --since -1h | rg "frame-callback stall"
+journalctl --user -u typio --since -1h | rg "shm buffer pool exhausted"
 ```
 
-```text
-panel: frame-callback stall — using timer-paced presents (compositor did not
-  deliver wl_surface.frame done) stalled_ms=214.7 soft_limit_ms=20 \
-  warn_after_ms=200 stall_count=37
-```
-
-A rising `stall_count` confirms the compositor is dropping frame
-callbacks for the popup. The daemon recovers by timer-pacing candidates,
-but a high count still points at the compositor's frame scheduling (file
-upstream with the compositor name/version).
+A high count points at the compositor's buffer-release scheduling.
 
 ### Dimension B' — Missing `wp_viewporter`
 
@@ -232,20 +219,19 @@ attributes stalls to a key-dispatch stage rather than `Present`.
 
 Candidate paging round-trips through the engine. If Rime's user
 dictionary or per-session state grows, selection/paging slows
-independent of rendering. Confirm by watching which `LoopStage` the
-watchdog reports during the lag (see
-[Event Loop Scheduling](../explanation/event-loop-scheduling.md) and
-[Watchdog](../explanation/watchdog.md)). A stall in the key-dispatch /
-FFI path, not `Present`, points at the engine. Try
-`typio rime deploy` and, as a test, a fresh Rime user directory.
+independent of rendering. Confirm by watching the last `tracing` target
+during the lag — the `typio.engine.key` target logs slow `process_key`
+calls over 5 ms, while `typio.wayland.io` / `typio.panel.*` cover the
+present path (see [Event Loop Scheduling](../explanation/event-loop-scheduling.md)).
+A stall in the key-dispatch / FFI path, not `Present`, points at the
+engine. Try `typio rime deploy` and, as a test, a fresh Rime user directory.
 
 ## Step 3 — Decision tree
 
 ```text
 atlas_clears rising?          → Dimension A (glyph atlas)   → ADR-0019/0020
-  else stall warning present? → Dimension B (frame callback) → compositor frame sched
   else "lacks wp_viewporter"? → Dimension B'                → switch compositor
-  else present_max_ms rising? → Dimension B (GPU/readback/SHM path)
+  else present_max_ms rising? → Dimension B (SHM back-pressure)
   else (all flat, lag real)   → Dimension C (engine)        → watchdog stage attribution
 ```
 
@@ -254,7 +240,7 @@ atlas_clears rising?          → Dimension A (glyph atlas)   → ADR-0019/0020
 - `typio --version` and confirmation you rebuilt against local optics
 - A `typio.panel.probe=debug` log window spanning the lag (several
   `panel probe window` lines so the trend is visible)
-- Any `frame-callback stall` lines and the final `stall_count`
+- Any `shm buffer pool exhausted` lines if present
 - `wayland-info | grep -i viewport` output
 - Compositor name and version
 - For Dimension C: a `RuntimeState` snapshot taken during the lag (see

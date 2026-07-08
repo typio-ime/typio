@@ -1,49 +1,40 @@
 //! Wayland input-method frontend — the daemon's entry point to the
 //! compositor's keyboard event stream.
 //!
-//! Phase 8 port of the connection lifecycle parts of
-//! `src/wayland/input_method.c` + `src/wayland/frontend.c` +
-//! `src/wayland/frontend_bind.c`. What this module covers:
+//! [`InputMethodState`] binds the globals the daemon needs (`wl_seat`,
+//! `zwp_input_method_manager_v2`, `zwp_virtual_keyboard_manager_v1`,
+//! `wl_shm`, `wp_viewporter`) and implements `Dispatch` for every protocol
+//! object it binds. It owns:
 //!
-//! - Connect to the Wayland display via `wayland-client`.
-//! - Bind the three globals the daemon needs: `wl_seat`,
-//!   `zwp_input_method_manager_v2`, `zwp_virtual_keyboard_manager_v1`.
-//! - Create a `zwp_input_method_v2` object via the manager and wire up
-//!   event handlers for its 7 events (activate, deactivate,
-//!   surrounding_text, text_change_cause, content_type, done,
-//!   unavailable).
-//! - Drive a blocking event loop that surfaces lifecycle transitions
-//!   and increments the protocol serial on each `done`.
+//! - the input-method lifecycle proxy + serial-commit tracking;
+//! - the keyboard grab + virtual keyboard bridge;
+//! - xkbcommon state for resolving keymap/keysym;
+//! - the candidate-popup `wl_surface`, its `wl_shm` release registry, and
+//!   panel runtime state (composition projection, render schedule,
+//!   presentation de-duplication, popup ownership/anchor arbitration via
+//!   [`PanelCoordinator`]).
 //!
-//! ## What is NOT ported
+//! This module is the Wayland protocol surface only. Post-dispatch routing
+//! (focus controller, engine session, candidate panel) lives in the app
+//! layer and drives this state through its `pub` accessors.
 //!
-//! Everything that happens *after* event receipt — the C version's 31
-//! handler functions route events into `focus_facts` (for the focus
-//! controller), `session->pending` (for engine state), the candidate
-//! panel, the virtual keyboard bridge, and libtypio's input context.
-//! Those subsystems are not yet ported, so this frontend logs events
-//! instead of routing them.
-//!
-//! The serial-commit protocol is handled correctly (serial increments
-//! on every `done`, a commit before the first `done` is silently
-//! dropped) — matching the C version's `typio_wl_commit` chokepoint.
+//! The serial-commit protocol increments the serial on every `done`; a
+//! commit before the first `done` is silently dropped.
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::time::Instant;
 
 use wayland_backend::client::ReadEventsGuard;
-use wayland_client::globals::{registry_queue_init, Global, GlobalListContents};
+use wayland_client::globals::{Global, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_compositor::WlCompositor;
-use wayland_client::protocol::{
-    wl_callback, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_surface,
-};
+use wayland_client::protocol::{wl_keyboard, wl_registry, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
-use crate::focus_controller::InputFacts;
+use crate::InputFacts;
 use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
-use crate::panel_present_gate::{self, PresentDecision, PresentationRecord};
+use crate::panel_present_gate::PresentationRecord;
 use crate::panel_scheduler::{self, PanelScheduleState};
 use crate::protocols::input_method_v2::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
@@ -134,11 +125,15 @@ pub struct CompositionState {
     pub candidates: Vec<String>,
     /// Index of the highlighted candidate.
     pub selected_candidate: usize,
+    /// Whether the engine reports a previous candidate page.
+    pub has_prev_candidates: bool,
+    /// Whether the engine reports a next candidate page.
+    pub has_next_candidates: bool,
     /// Engine-declared host-managed-selection flags (ADR-0012). When
     /// non-empty, the host intercepts the corresponding
     /// navigation/selection keys via [`crate::candidate_guard`] instead
     /// of forwarding them to `process_key`. Empty (opt-out) by default.
-    pub host_managed_selection: crate::candidate_guard::HostSelectionFlags,
+    pub host_managed_selection: crate::HostSelectionFlags,
     /// Monotonic sequence bumped on every composition change — including
     /// host-local highlight moves — so observers can dedupe.
     pub composition_seq: u64,
@@ -161,11 +156,20 @@ impl CompositionState {
         self.composition_seq
     }
 
+    /// Update candidate-page availability metadata used by host-managed
+    /// boundary navigation.
+    pub fn set_candidate_page_state(&mut self, has_prev: bool, has_next: bool) {
+        self.has_prev_candidates = has_prev;
+        self.has_next_candidates = has_next;
+    }
+
     /// Reset all composition state (focus lost / composition discarded).
     pub fn clear(&mut self) {
         self.candidates.clear();
         self.selected_candidate = 0;
-        self.host_managed_selection = crate::candidate_guard::HostSelectionFlags::empty();
+        self.has_prev_candidates = false;
+        self.has_next_candidates = false;
+        self.host_managed_selection = crate::HostSelectionFlags::empty();
         self.pending_commit = None;
         // Note: composition_seq is monotonic across resets so observers
         // don't see a seq regression; do not bump or zero it here.
@@ -200,41 +204,11 @@ pub struct InputMethodState {
     compositor: WlCompositor,
     /// The wl_surface backing the candidate panel popup.
     popup_surface_obj: wl_surface::WlSurface,
-    /// `wl_callback` armed via `wl_surface.frame` after each present.
-    /// The compositor fires it once it has consumed the presented
-    /// buffer. Held alive until the `done` event clears the pending
-    /// state below.
-    panel_frame_callback: Option<wl_callback::WlCallback>,
-    /// True while the most recently armed `wl_surface.frame` callback is
-    /// outstanding. This is a soft pacing hint, not a hard present lock:
-    /// candidate updates wait briefly for `done`, then present the latest
-    /// coalesced state anyway so dropped callbacks cannot freeze the panel.
-    /// See [`Self::panel_present_decision`].
-    pub panel_frame_pending: bool,
-    /// When the outstanding `wl_surface.frame` callback was armed.
-    ///
-    /// The soft gate uses this timestamp to cap callback coalescing at one
-    /// low-refresh frame. `None` when no callback is outstanding.
-    panel_frame_pending_since: Option<Instant>,
-    /// Start of the current uninterrupted period with no frame callback.
-    /// Unlike `panel_frame_pending_since`, this is not reset when the host
-    /// replaces a stale callback after the soft limit. It is reset only when
-    /// the compositor eventually sends `done` or the popup is hidden.
-    panel_frame_missing_since: Option<Instant>,
-    /// Whether the current missing-callback episode already produced its
-    /// diagnostic warning.
-    panel_frame_stall_reported: bool,
-    /// Count of missing-callback episodes that crossed the diagnostic
-    /// threshold. Surfaced so recurring compositor frame-callback stalls are
-    /// visible in production logs.
-    pub panel_frame_stall_count: u64,
     /// Last candidate composition snapshot successfully submitted to Flux.
     ///
-    /// The scheduler may be marked dirty repeatedly while the soft frame gate
-    /// is waiting. This record lets the render path consume only the newest
-    /// composition and skip duplicate presents after unrelated wakeups, while
-    /// still allowing scale/ownership/hide changes to invalidate the cached
-    /// submission.
+    /// Lets the render path consume only the newest composition and skip
+    /// duplicate presents after unrelated wakeups, while still allowing
+    /// scale/ownership/hide changes to invalidate the cached submission.
     panel_presentation: PresentationRecord,
     /// The input-method popup surface (positioning protocol).
     #[allow(dead_code)]
@@ -359,7 +333,7 @@ impl InputMethodState {
 
     /// Mark the candidate panel dirty so the event loop flushes it.
     pub fn mark_panel_dirty(&mut self) {
-        self.panel_schedule_state = panel_scheduler::mark_dirty(self.panel_schedule_state);
+        self.panel_schedule_state = panel_scheduler::mark_dirty();
     }
 
     /// Whether `composition_seq` is already visible for the current panel
@@ -377,63 +351,6 @@ impl InputMethodState {
     /// that still requires repainting the current candidates.
     pub fn invalidate_panel_presentation(&mut self) {
         self.panel_presentation.invalidate();
-    }
-
-    /// Whether the panel may present now or should wait briefly.
-    ///
-    /// `wl_surface.frame` still paces healthy compositors, but it is no
-    /// longer a hard lock. If the callback is missing past the soft limit,
-    /// the next flush presents the latest coalesced candidate state anyway
-    /// and re-arms a fresh callback. An uninterrupted missing-callback
-    /// episode older than the diagnostic threshold logs once and increments
-    /// `panel_frame_stall_count`.
-    pub fn panel_present_decision(&mut self, now: Instant) -> PresentDecision {
-        let decision = panel_present_gate::decide(self.panel_frame_pending_since, now);
-        if decision == PresentDecision::Present
-            && !self.panel_frame_stall_reported
-            && panel_present_gate::callback_stall_should_warn(self.panel_frame_missing_since, now)
-        {
-            let elapsed = self
-                .panel_frame_missing_since
-                .map(|t| now.saturating_duration_since(t))
-                .unwrap_or_default();
-            self.panel_frame_stall_count += 1;
-            self.panel_frame_stall_reported = true;
-            tracing::warn!(
-                target: "typio.panel.host",
-                stalled_ms = elapsed.as_secs_f64() * 1000.0,
-                soft_limit_ms = panel_present_gate::PANEL_FRAME_CALLBACK_SOFT_LIMIT
-                    .as_secs_f64()
-                    * 1000.0,
-                warn_after_ms = panel_present_gate::PANEL_FRAME_CALLBACK_STALL_WARN
-                    .as_secs_f64()
-                    * 1000.0,
-                stall_count = self.panel_frame_stall_count,
-                "panel: frame-callback stall — using timer-paced presents \
-                 (compositor did not deliver wl_surface.frame done)"
-            );
-        }
-        decision
-    }
-
-    /// Poll timeout that wakes the loop when the soft present gate expires.
-    pub fn panel_present_wait_remaining_ms(&self, now: Instant) -> Option<i32> {
-        match panel_present_gate::decide(self.panel_frame_pending_since, now) {
-            PresentDecision::Present => Some(0),
-            PresentDecision::WaitUntil(deadline) => {
-                Some(panel_present_gate::deadline_remaining_ms(deadline, now))
-            }
-        }
-    }
-
-    pub fn clear_panel_frame_callback(&mut self) {
-        self.panel_frame_pending = false;
-        self.panel_frame_pending_since = None;
-        self.panel_frame_missing_since = None;
-        self.panel_frame_stall_reported = false;
-        // `wl_callback` has no destroy request; dropping the proxy is
-        // correct disposal (the server frees it after `done`).
-        self.panel_frame_callback = None;
     }
 
     /// Current panel schedule state.
@@ -489,9 +406,8 @@ impl InputMethodState {
 
     pub fn clear_panel_state(&mut self) {
         self.composition.clear();
-        self.panel_schedule_state = panel_scheduler::cancel();
+        self.panel_schedule_state = panel_scheduler::complete();
         self.invalidate_panel_presentation();
-        self.clear_panel_frame_callback();
     }
 
     /// Whether a keyboard grab object currently exists.
@@ -689,16 +605,14 @@ impl InputMethodFrontend {
         // PANEL_PREALLOC_HEIGHT` (512×128). This covers the first automatic
         // indicator banner at scales 1, 1.5, 2 and 3 without a resize. The
         // canvas is reallocated on resize, which is still best avoided on
-        // the very first frame while the watchdog is freshly armed. See the
-        // audit table on `PANEL_PREALLOC_WIDTH` in panel.rs: at scale 3 the
-        // longest observed default label ("中 · Rime · 懿拼音") quantises to
-        // 448×128, fitting inside 512×128 with one width-quantum of
-        // headroom.
+        // the very first frame. See the audit table on `PANEL_PREALLOC_WIDTH`
+        // in panel.rs: at scale 3 the longest observed default label
+        // ("中 · Rime · 懿拼音") quantises to 448×128, fitting inside 512×128
+        // with one width-quantum of headroom.
         //
         // Larger labels or scales ≥ 4 still fall through to the grow-only
         // path in `FluxPanel::apply_grow_only_size`; that resize then
-        // happens during real user interaction, where the watchdog
-        // tolerance has been replaced by genuine cadence.
+        // happens during real user interaction.
         match unsafe {
             FluxPanel::new_from_surface(
                 surface_ptr,
@@ -876,12 +790,6 @@ impl InputMethodFrontend {
             virtual_keyboard,
             compositor,
             popup_surface_obj,
-            panel_frame_callback: None,
-            panel_frame_pending: false,
-            panel_frame_pending_since: None,
-            panel_frame_missing_since: None,
-            panel_frame_stall_reported: false,
-            panel_frame_stall_count: 0,
             panel_presentation: PresentationRecord::default(),
             popup_surface,
             viewporter,
@@ -992,37 +900,6 @@ impl InputMethodFrontend {
         self.conn
             .flush()
             .map_err(|e| io::Error::other(format!("flush: {e}")))
-    }
-
-    /// Arm a `wl_surface.frame` callback on the popup surface after a
-    /// successful present. The panel flush path consults
-    /// [`InputMethodState::panel_present_decision`] before the next
-    /// present. A healthy callback paces presents at compositor refresh;
-    /// a missing callback only delays candidates until the soft gate
-    /// expires. Idempotent: re-arming replaces any prior outstanding
-    /// callback.
-    pub fn arm_panel_frame_callback(&mut self) {
-        let qh = self.queue.handle();
-        let cb = self.state.popup_surface_obj.frame(&qh, ());
-        // A `wl_surface.frame` request only takes effect on the *next*
-        // `wl_surface.commit` (Wayland spec). The SHM attach path already
-        // committed the buffer for this frame, so the request just queued
-        // would otherwise sit uncommitted until the next present. Issue a
-        // bare commit (no new buffer) so a healthy compositor can send `done`
-        // at the next refresh instead of waiting for the soft-gate fallback.
-        self.state.popup_surface_obj.commit();
-        // The soft gate may re-arm while a callback is outstanding. Keeping
-        // `panel_frame_missing_since` across that replacement preserves a
-        // single diagnostic episode until the compositor eventually sends a
-        // callback or the popup is hidden.
-        let now = Instant::now();
-        if !self.state.panel_frame_pending {
-            self.state.panel_frame_missing_since = Some(now);
-            self.state.panel_frame_stall_reported = false;
-        }
-        self.state.panel_frame_callback = Some(cb);
-        self.state.panel_frame_pending = true;
-        self.state.panel_frame_pending_since = Some(now);
     }
 
     /// Prepare a read from the Wayland socket, dispatching any already-queued
@@ -1358,23 +1235,6 @@ impl Dispatch<wl_surface::WlSurface, ()> for InputMethodState {
             }
             proxy.set_buffer_scale(factor);
         }
-    }
-}
-
-impl Dispatch<wl_callback::WlCallback, ()> for InputMethodState {
-    fn event(
-        state: &mut Self,
-        _proxy: &wl_callback::WlCallback,
-        _event: <wl_callback::WlCallback as Proxy>::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-        // The compositor consumed the previous frame: it is safe to
-        // present again. The panel stays in whatever schedule state the
-        // engine updates left it (Dirty updates during the wait are
-        // coalesced into the next flush); we only clear the throttle.
-        state.clear_panel_frame_callback();
     }
 }
 

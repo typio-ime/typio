@@ -10,11 +10,22 @@ pub use setters::*;
 
 use crate::types::*;
 use std::collections::HashMap;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::ptr;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+/// Maximum wall-clock time a blocking config-file read may occupy. A config
+/// file is a few KB; on a healthy local filesystem this completes in
+/// microseconds. The bound exists for the pathological case: a config file on
+/// a stalled NFS hard-mount or wedged FUSE filesystem, where a bare
+/// `read_to_string` would block the (single-threaded) host loop indefinitely.
+/// On timeout the load fails and the previous config is retained.
+const CONFIG_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 /* -------------------------------------------------------------------------- */
 /* Internal representation                                                    */
@@ -117,7 +128,7 @@ impl Config {
 /// Create a new empty config object.
 ///
 /// Returns a pointer that must be freed with `typio_config_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_new() -> *mut Config {
     Box::into_raw(Box::new(Config::new()))
 }
@@ -125,15 +136,26 @@ pub extern "C" fn typio_config_new() -> *mut Config {
 /// Load a config from a TOML file.
 ///
 /// Returns a pointer that must be freed with `typio_config_free`, or NULL on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_load_file(path: *const c_char) -> *mut Config {
     if path.is_null() {
         return ptr::null_mut();
     }
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
-    let content = match fs::read_to_string(Path::new(&*path_str)) {
-        Ok(c) => c,
-        Err(_) => return ptr::null_mut(),
+    // Read off the main loop with a bounded deadline. `fs::read_to_string` is a
+    // raw blocking syscall with no timeout; on a stalled network/edge
+    // filesystem it can hang the host for the kernel's full RPC timeout
+    // (seconds to unbounded). A short-lived reader thread + channel timeout
+    // bounds it; on timeout the load fails and the previous config survives.
+    let path_buf = Path::new(&*path_str).to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(fs::read_to_string(&path_buf));
+    });
+    let content = match rx.recv_timeout(CONFIG_READ_TIMEOUT) {
+        Ok(Ok(c)) => c,
+        Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Timeout) => return ptr::null_mut(),
+        Err(mpsc::RecvTimeoutError::Disconnected) => return ptr::null_mut(),
     };
     // `load_string` only borrows the pointer, so keep ownership locally and let
     // the CString drop at end of scope. Using `into_raw()` here leaked the
@@ -148,7 +170,7 @@ pub extern "C" fn typio_config_load_file(path: *const c_char) -> *mut Config {
 /// Load a config from a TOML or INI-like string.
 ///
 /// Returns a pointer that must be freed with `typio_config_free`, or NULL on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_load_string(content: *const c_char) -> *mut Config {
     if content.is_null() {
         return ptr::null_mut();
@@ -164,7 +186,7 @@ pub extern "C" fn typio_config_load_string(content: *const c_char) -> *mut Confi
 }
 
 /// Free a config object and all owned values.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_free(config: *mut Config) {
     if !config.is_null() {
         unsafe { drop(Box::from_raw(config)) };
@@ -172,7 +194,7 @@ pub extern "C" fn typio_config_free(config: *mut Config) {
 }
 
 /// Save a config object to a file atomically (write-then-rename).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_save_file(
     config: *const Config,
     path: *const c_char,
@@ -211,7 +233,7 @@ pub extern "C" fn typio_config_save_file(
 /// Serialize a config object to a TOML string.
 ///
 /// Caller must free the returned string with `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_to_string(config: *const Config) -> *mut c_char {
     if config.is_null() {
         return ptr::null_mut();

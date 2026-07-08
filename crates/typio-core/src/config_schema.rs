@@ -21,15 +21,15 @@
 
 use crate::config::Config;
 use crate::types::*;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::os::raw::{c_double, c_int};
 use std::ptr;
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 
 /* -------------------------------------------------------------------------- */
 /* Static base schema                                                         */
 /* -------------------------------------------------------------------------- */
-/// Wrapper to make raw-pointer Vecs usable with lazy_static.
+/// Wrapper to make raw-pointer Vecs usable in a LazyLock static.
 struct SyncCStrVec(Vec<*const c_char>);
 unsafe impl Sync for SyncCStrVec {}
 unsafe impl Send for SyncCStrVec {}
@@ -57,25 +57,190 @@ enum SchemaDefault {
     Float(c_double),
 }
 
-lazy_static::lazy_static! {
-    static ref SCHEMA: Vec<SchemaEntry> = vec![
-    SchemaEntry { key: "keyboard.per_app_preferences", type_: TypioFieldType::TypioFieldBool, def: SchemaDefault::Bool(true), ui_label: Some("Per-app preferences"), ui_section: Some("keyboard"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "notifications.enable", type_: TypioFieldType::TypioFieldBool, def: SchemaDefault::Bool(true), ui_label: Some("Enable"), ui_section: Some("notifications"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "notifications.startup_checks", type_: TypioFieldType::TypioFieldBool, def: SchemaDefault::Bool(true), ui_label: Some("Startup checks"), ui_section: Some("notifications"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "notifications.runtime", type_: TypioFieldType::TypioFieldBool, def: SchemaDefault::Bool(true), ui_label: Some("Runtime alerts"), ui_section: Some("notifications"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "notifications.voice", type_: TypioFieldType::TypioFieldBool, def: SchemaDefault::Bool(true), ui_label: Some("Voice alerts"), ui_section: Some("notifications"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "notifications.cooldown_ms", type_: TypioFieldType::TypioFieldInt, def: SchemaDefault::Int(15000), ui_label: Some("Cooldown (ms)"), ui_section: Some("notifications"), ui_min: 0, ui_max: 300000, ui_step: 1000, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "shortcuts.switch_language", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String("Ctrl+Shift"), ui_label: Some("Switch language"), ui_section: Some("shortcuts"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "shortcuts.switch_keyboard_engine", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String(""), ui_label: Some("Switch keyboard engine"), ui_section: Some("shortcuts"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "languages.enabled", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String(""), ui_label: Some("Enabled languages"), ui_section: Some("languages"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "shortcuts.exit", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String("Ctrl+Shift+Escape"), ui_label: Some("Exit"), ui_section: Some("shortcuts"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "shortcuts.voice_ptt", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String("Super+v"), ui_label: Some("Voice (PTT)"), ui_section: Some("shortcuts"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "keyboard.engine", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String(""), ui_label: Some("Keyboard engine"), ui_section: Some("keyboard"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "keyboard.disabled", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String(""), ui_label: Some("Disabled keyboard engines"), ui_section: Some("keyboard"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "voice.engine", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String(""), ui_label: Some("Voice engine"), ui_section: Some("voice"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    SchemaEntry { key: "voice.disabled", type_: TypioFieldType::TypioFieldString, def: SchemaDefault::String(""), ui_label: Some("Disabled voice engines"), ui_section: Some("voice"), ui_min: 0, ui_max: 0, ui_step: 0, ui_options: None, runtime_property: None },
-    ];
-}
+static SCHEMA: LazyLock<Vec<SchemaEntry>> = LazyLock::new(|| {
+    vec![
+        SchemaEntry {
+            key: "keyboard.per_app_preferences",
+            type_: TypioFieldType::TypioFieldBool,
+            def: SchemaDefault::Bool(true),
+            ui_label: Some("Per-app preferences"),
+            ui_section: Some("keyboard"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "notifications.enable",
+            type_: TypioFieldType::TypioFieldBool,
+            def: SchemaDefault::Bool(true),
+            ui_label: Some("Enable"),
+            ui_section: Some("notifications"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "notifications.startup_checks",
+            type_: TypioFieldType::TypioFieldBool,
+            def: SchemaDefault::Bool(true),
+            ui_label: Some("Startup checks"),
+            ui_section: Some("notifications"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "notifications.runtime",
+            type_: TypioFieldType::TypioFieldBool,
+            def: SchemaDefault::Bool(true),
+            ui_label: Some("Runtime alerts"),
+            ui_section: Some("notifications"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "notifications.voice",
+            type_: TypioFieldType::TypioFieldBool,
+            def: SchemaDefault::Bool(true),
+            ui_label: Some("Voice alerts"),
+            ui_section: Some("notifications"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "notifications.cooldown_ms",
+            type_: TypioFieldType::TypioFieldInt,
+            def: SchemaDefault::Int(15000),
+            ui_label: Some("Cooldown (ms)"),
+            ui_section: Some("notifications"),
+            ui_min: 0,
+            ui_max: 300000,
+            ui_step: 1000,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "shortcuts.switch_language",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String("Ctrl+Shift"),
+            ui_label: Some("Switch language"),
+            ui_section: Some("shortcuts"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "shortcuts.switch_keyboard_engine",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String(""),
+            ui_label: Some("Switch keyboard engine"),
+            ui_section: Some("shortcuts"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "languages.enabled",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String(""),
+            ui_label: Some("Enabled languages"),
+            ui_section: Some("languages"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "shortcuts.exit",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String("Ctrl+Shift+Escape"),
+            ui_label: Some("Exit"),
+            ui_section: Some("shortcuts"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "shortcuts.voice_ptt",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String("Super+v"),
+            ui_label: Some("Voice (PTT)"),
+            ui_section: Some("shortcuts"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "keyboard.engine",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String(""),
+            ui_label: Some("Keyboard engine"),
+            ui_section: Some("keyboard"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "keyboard.disabled",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String(""),
+            ui_label: Some("Disabled keyboard engines"),
+            ui_section: Some("keyboard"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "voice.engine",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String(""),
+            ui_label: Some("Voice engine"),
+            ui_section: Some("voice"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+        SchemaEntry {
+            key: "voice.disabled",
+            type_: TypioFieldType::TypioFieldString,
+            def: SchemaDefault::String(""),
+            ui_label: Some("Disabled voice engines"),
+            ui_section: Some("voice"),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: None,
+            runtime_property: None,
+        },
+    ]
+});
 
 /* -------------------------------------------------------------------------- */
 /* Dynamic schema entry — owned copy of caller-supplied data                  */
@@ -320,8 +485,8 @@ struct StaticView(Vec<TypioConfigField>);
 unsafe impl Sync for StaticView {}
 unsafe impl Send for StaticView {}
 
-lazy_static::lazy_static! {
-    static ref STATIC_VIEW: StaticView = StaticView(
+static STATIC_VIEW: LazyLock<StaticView> = LazyLock::new(|| {
+    StaticView(
         SCHEMA
             .iter()
             .map(|e| {
@@ -352,18 +517,18 @@ lazy_static::lazy_static! {
                     }),
                 }
             })
-            .collect()
-    );
+            .collect(),
+    )
+});
 
-    static ref REGISTRY: RwLock<Registry> = RwLock::new(Registry::new());
-}
+static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| RwLock::new(Registry::new()));
 
 /* -------------------------------------------------------------------------- */
 /* C FFI — read                                                               */
 /* -------------------------------------------------------------------------- */
 
 /// Return the full combined schema (static base + dynamic entries).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_fields(count: *mut usize) -> *const TypioConfigField {
     let guard = REGISTRY.read().expect("schema registry poisoned");
     if !count.is_null() {
@@ -373,7 +538,7 @@ pub extern "C" fn typio_config_schema_fields(count: *mut usize) -> *const TypioC
 }
 
 /// Look up a single schema field by key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_find(key: *const c_char) -> *const TypioConfigField {
     if key.is_null() {
         return ptr::null();
@@ -401,7 +566,7 @@ pub extern "C" fn typio_config_schema_find(key: *const c_char) -> *const TypioCo
 ///
 /// Returns NULL with `*out_count = 0` when `prefix` is NULL or no field
 /// matches.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_fields_with_prefix(
     prefix: *const c_char,
     out_count: *mut usize,
@@ -436,7 +601,7 @@ pub extern "C" fn typio_config_schema_fields_with_prefix(
 ///
 /// Does NOT free the pointed-to `TypioConfigField`s; those are owned by the
 /// schema registry.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_fields_with_prefix_free(
     fields: *mut *const TypioConfigField,
     count: usize,
@@ -450,7 +615,7 @@ pub extern "C" fn typio_config_schema_fields_with_prefix_free(
 }
 
 /// Return the runtime property string for a schema key, if any.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_runtime_property(key: *const c_char) -> *const c_char {
     let field = typio_config_schema_find(key);
     if field.is_null() {
@@ -468,7 +633,7 @@ pub extern "C" fn typio_config_schema_runtime_property(key: *const c_char) -> *c
 }
 
 /// Populate missing config keys with their schema default values.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_apply_defaults(config: *mut Config) {
     if config.is_null() {
         return;
@@ -553,7 +718,7 @@ pub extern "C" fn typio_config_apply_defaults(config: *mut Config) {
 /// (or stack-drop) its memory after the call returns. Returns
 /// `TypioErrorAlreadyExists` if `field.key` collides with an existing static
 /// or dynamic key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_register(field: *const TypioConfigField) -> TypioResult {
     if field.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -565,7 +730,7 @@ pub extern "C" fn typio_config_schema_register(field: *const TypioConfigField) -
 
 /// Register an array of schema fields. Stops at and returns the first error
 /// encountered; fields registered before the error remain registered.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_register_many(
     fields: *const TypioConfigField,
     count: usize,
@@ -586,7 +751,7 @@ pub extern "C" fn typio_config_schema_register_many(
 
 /// Remove a previously-registered dynamic field by key. Static fields cannot
 /// be unregistered and produce `TypioErrorNotFound`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_schema_unregister(key: *const c_char) -> TypioResult {
     if key.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -608,9 +773,7 @@ mod tests {
     use std::sync::Mutex;
 
     // Registration mutates global state; serialize tests that touch it.
-    lazy_static::lazy_static! {
-        static ref TEST_LOCK: Mutex<()> = Mutex::new(());
-    }
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn apply_defaults_sets_known_keys() {

@@ -13,33 +13,10 @@
 //! is wired when the tray D-Bus surface is ported.
 
 use crate::language_display::language_menu_label;
-
-// ─── ID layout (kept in sync with sni.c — see ADR-0033) ──────────────────
-
-const SECTION_MISC: i32 = 1000; // Restart, Quit, separators
-const SECTION_LANG: i32 = 2000; // per-language entries (submenus or flat)
-const SECTION_ENGINE: i32 = 3000; // per-engine entries inside a language submenu
-const SECTION_ORPHAN: i32 = 4000; // engines that declare no registered language
-const SECTION_VOICE: i32 = 5000; // voice engine entries
-
-const LANG_BASE: i32 = SECTION_LANG;
-const LANG_MAX: usize = 16;
-const ENGINE_MAX: usize = 16;
-const ORPHAN_BASE: i32 = SECTION_ORPHAN;
-const VOICE_BASE: i32 = SECTION_VOICE;
-const VOICE_MAX: usize = 16;
-
-const ITEM_RESTART: i32 = SECTION_MISC + 1;
-const ITEM_QUIT: i32 = SECTION_MISC + 2;
-const ITEM_SEP_BEGIN: i32 = SECTION_MISC + 100;
-
-/// Composite ID for an engine appearing under a language submenu. A single
-/// engine may legitimately appear under several language submenus (e.g. rime
-/// under both zh and yue), so each (language, engine) pair needs a distinct
-/// dbusmenu ID: `ENGINE_BASE + lang_idx * ENGINE_MAX + engine_idx`.
-fn engine_in_lang(lang_idx: usize, engine_idx: usize) -> i32 {
-    SECTION_ENGINE + (lang_idx as i32) * (ENGINE_MAX as i32) + (engine_idx as i32)
-}
+use crate::tray_menu_ids::{
+    ENGINE_MAX, ITEM_QUIT, ITEM_RESTART, ITEM_SEP_BEGIN, LANG_MAX, SECTION_LANG, SECTION_ORPHAN,
+    SECTION_VOICE, VOICE_MAX, engine_in_lang,
+};
 
 // ─── Tree node ───────────────────────────────────────────────────────────
 
@@ -250,7 +227,7 @@ fn append_language_section(
         let lang_item = if child_match == 0 {
             // Layout-only language: clicking switches the language slot.
             TrayMenuItem::new_radio(
-                LANG_BASE + i as i32,
+                SECTION_LANG + i as i32,
                 Some(&lang_label),
                 true,
                 is_current,
@@ -258,7 +235,7 @@ fn append_language_section(
             )
         } else {
             let mut item = TrayMenuItem::new_submenu(
-                LANG_BASE + i as i32,
+                SECTION_LANG + i as i32,
                 Some(&lang_label),
                 true,
                 is_current,
@@ -306,7 +283,7 @@ fn append_language_section(
         }
         let is_current = engine_name == Some(engine.name.as_str());
         root.add_child(TrayMenuItem::new_radio(
-            ORPHAN_BASE + j as i32,
+            SECTION_ORPHAN + j as i32,
             Some(engine.display()),
             true,
             is_current,
@@ -329,7 +306,7 @@ fn append_voice_section(
     for (i, voice) in snapshot.voices.iter().take(VOICE_MAX).enumerate() {
         let is_current = snapshot.active_voice.as_deref() == Some(voice.name.as_str());
         root.add_child(TrayMenuItem::new_radio(
-            VOICE_BASE + i as i32,
+            SECTION_VOICE + i as i32,
             Some(voice.display()),
             true,
             is_current,
@@ -495,7 +472,7 @@ mod tests {
         assert!(!header.enabled);
         assert_eq!(header.toggle_state, -1);
         let mystery = root.child(1).unwrap();
-        assert_eq!(mystery.id, ORPHAN_BASE);
+        assert_eq!(mystery.id, SECTION_ORPHAN);
         assert_eq!(mystery.type_str(), Some("radio"));
         assert_misc_tail(&root);
     }
@@ -543,7 +520,7 @@ mod tests {
         };
         let root = build(&snap, None);
         let voice = root.child(0).unwrap();
-        assert_eq!(voice.id, VOICE_BASE);
+        assert_eq!(voice.id, SECTION_VOICE);
         assert_eq!(voice.label.as_deref(), Some("Whisper"));
         assert_eq!(voice.toggle_state, 1);
         assert_misc_tail(&root);

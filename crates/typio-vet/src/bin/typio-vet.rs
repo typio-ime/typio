@@ -1,13 +1,17 @@
 //! `typio-vet` — load a native Typio C ABI engine artifact and vet it across
 //! ABI, behavior, and packaged resources.
 
-use std::ffi::{c_void, CStr, CString};
+// This CLI loads native engine artifacts with dlopen/dlsym. The Rust 2024
+// edition migration keeps that FFI boundary intact.
+#![allow(unsafe_op_in_unsafe_fn)]
+
+use std::ffi::{CStr, CString, c_void};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use typio_vet::{
-    resource, scenario, CheckCategory, CheckResult, CheckStatus, Summary, TypioEngineInfo,
-    TypioEngineType, TypioKeyboardEngine, TypioVoiceEngine,
+    CheckCategory, CheckResult, CheckStatus, Summary, TypioEngineInfo, TypioEngineType,
+    TypioKeyboardEngine, TypioVoiceEngine, resource, scenario,
 };
 
 const USAGE: &str = "\

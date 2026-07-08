@@ -40,7 +40,8 @@ Install these from your system package manager:
 - Meson 1.0+, Ninja 1.10+, and `glslangValidator` to build `flux` from source
 - C23 compiler and `pkg-config`
 - Wayland client libraries and `xkbcommon`
-- Vulkan headers and loader
+- Vulkan headers (flux is Vulkan-rooted; the host uses only its CPU canvas, but
+  the headers are required to build libflux)
 - FreeType, HarfBuzz, fontconfig
 - PipeWire development headers for the `voice` feature
 

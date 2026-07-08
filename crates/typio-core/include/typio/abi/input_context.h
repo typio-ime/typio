@@ -134,6 +134,8 @@ void typio_input_context_commit(TypioInputContext *ctx, const char *text);
  * An empty composition is the Idle state; `clear` is the convenience for it. */
 void typio_input_context_set_composition(TypioInputContext *ctx,
                                          const TypioComposition *composition);
+TypioResult typio_input_context_set_candidate_selection(TypioInputContext *ctx,
+                                                        int selected);
 void typio_input_context_clear(TypioInputContext *ctx);
 
 /* Read projection of the stored preedit. Candidates are only delivered via

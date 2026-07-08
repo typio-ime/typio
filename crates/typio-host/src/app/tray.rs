@@ -7,14 +7,16 @@
 
 use std::ffi::CString;
 
+use typio::TypioResult;
 use typio::c_api::registry as c_registry;
 use typio::instance::TypioInstance;
-use typio::TypioResult;
 
 use crate::ipc_bus::TypioRegistryView;
 use crate::service::SvcError;
 use crate::state_controller::StateController;
+#[cfg(feature = "systray")]
 use crate::tray_menu::{EngineDesc, RegistrySnapshot};
+#[cfg(feature = "systray")]
 use crate::tray_sni::{MenuAction, Tray, TrayAction};
 
 use super::DaemonEvent;
@@ -43,9 +45,11 @@ pub(super) fn install_tray_action_handler(
                     .map(|_| DaemonEvent::StateRefresh)
             }
             TrayAction::Menu(MenuAction::EngineInLanguage {
-                lang_idx: _,
+                lang_idx,
                 engine_idx,
-            }) => keyboard_at_index(instance, engine_idx as usize)
+            }) => language_at_index(instance, lang_idx as usize)
+                .and_then(|tag| set_active_language(instance, &tag).ok())
+                .and_then(|_| keyboard_at_index(instance, engine_idx as usize))
                 .and_then(|name| set_active_keyboard(instance, &name).ok())
                 .map(|_| DaemonEvent::StateRefresh),
             TrayAction::Menu(MenuAction::OrphanEngine(idx)) => {
@@ -85,6 +89,7 @@ pub(super) fn update_tray_from_controller(
 
 /// Build the menu snapshot from the live registry: known languages,
 /// per-language keyboards, voice engines, and the active selections.
+#[cfg(feature = "systray")]
 pub(super) fn build_tray_snapshot(instance: *mut TypioInstance) -> Option<RegistrySnapshot> {
     let inst = unsafe { instance.as_ref() }?;
     let reg = inst.registry_rust()?;

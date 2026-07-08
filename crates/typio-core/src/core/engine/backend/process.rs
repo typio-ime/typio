@@ -17,7 +17,7 @@ use super::super::{
     InstanceHandle, KeyEvent, KeyProcessResult, KeyState, KeyboardEngine, ModeSalience, Result,
     VoiceEngine,
 };
-use super::engine_protocol::{read_frame, write_frame, Frame, MessageType, ENGINE_PROTOCOL_FD};
+use super::engine_protocol::{ENGINE_PROTOCOL_FD, Frame, MessageType, read_frame, write_frame};
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -181,7 +181,7 @@ impl ProcessEngine {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     Err(e) => {
-                        return Err(EngineError::Transport(format!("spawn {}: {e}", argv[0])))
+                        return Err(EngineError::Transport(format!("spawn {}: {e}", argv[0])));
                     }
                 }
             }

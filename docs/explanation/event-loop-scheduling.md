@@ -4,7 +4,7 @@
 
 This document defines how the typio event loop schedules work and
 preserves responsiveness. It covers the ordering constraints between Wayland
-dispatch, GPU rendering, D-Bus, config reload, and voice processing.
+dispatch, Panel rendering, D-Bus, config reload, and voice processing.
 
 The frontend uses one poll loop for Wayland and auxiliary runtime sources.
 Auxiliary fds are part of the scheduling model because they can otherwise
@@ -26,7 +26,7 @@ work can delay the focus controller's `reduce`/`diff`/`apply` pipeline.
 After the session pipeline completes, auxiliary work runs in a bounded
 fashion so no single source can starve the others.
 
-## GPU Rendering Bounds
+## Panel Render Bounds
 
 ### Panel render cycle
 
@@ -34,18 +34,18 @@ The candidate Panel is rendered once per loop iteration from the Panel
 Scheduler's `DIRTY` / `RETRY` state, never inline in the composition callback
 or key routing path.
 
-### Offscreen frame
+### CPU frame
 
-The candidate Panel renders to a flux offscreen image, not a Vulkan WSI
-swapchain. `flux_surface_begin_frame` uses a finite timeout so GPU frame setup
-cannot block the loop indefinitely.
+The candidate Panel renders on the CPU (flux software canvas + `TextRaster`)
+into a premultiplied RGBA8 framebuffer; there is no Vulkan WSI swapchain or
+GPU frame to acquire (ADR-0040), so frame setup cannot block the loop.
 
-### Readback and SHM attach
+### SHM attach
 
-After GPU submission, the host reads the offscreen image back and attaches the
-pixels through a double-buffered `wl_shm` pool. If every SHM buffer is still
-busy, the panel drops the frame and waits for the next dirty tick instead of
-blocking on compositor buffer release (ADR-0040).
+The framebuffer is byte-swapped into a double-buffered `wl_shm` pool and
+attached to the popup surface. If every SHM buffer is still busy, the panel
+drops the frame and waits for the next dirty tick instead of blocking on
+compositor buffer release (ADR-0040).
 
 ### Frame callback pacing
 
@@ -53,17 +53,12 @@ blocking on compositor buffer release (ADR-0040).
 callbacks are treated as a soft gate: the event loop wakes on a deadline and
 submits the latest coalesced candidate state rather than freezing.
 
-### Glyph atlas
+### Text rasterisation
 
-Glyphs are drawn from a **shared, persistent glyph atlas** — each glyph is
-rasterised once, packed into one R8 texture, and referenced by sub-rect
-(ADR-0012). The Panel draw path must not build or synchronously upload a
-texture per text run: that made every candidate **page** ~20 blocking
-`flux_image_create → submit_one_shot_and_wait → vkWaitForFences` calls on the
-loop, the cause of candidate-switch lag (and library-independent — it recurred
-across graphics backends). Colour stays a **draw-time tint** over the atlas's
-R8 coverage (R8 coverage + tint, ADR-0011), so changing the highlighted
-candidate only re-tints — no GPU upload.
+Glyphs are shaped and rasterised by flux-text (`TextRaster`) directly into the
+panel framebuffer each frame; measurement results are cached, so
+repeated candidate pages reuse the measured layout. There is no shared GPU
+glyph texture and no per-text-run upload in the CPU-canvas path.
 
 ## Poll and Deadline Management
 
@@ -78,11 +73,10 @@ no timeout. Only deadlines *not* backed by an fd shorten the timeout, each via a
   (ADR-0017) — previously covered only implicitly by a fixed baseline tick,
 - the virtual-keyboard keymap deadline while the grab is `needs_keymap`.
 
-The watchdog monitors the loop for stalls and `SIGKILL`s on an unrecoverable
-hang (systemd then restarts). It exempts the restful `POLL`/`IDLE` stages, so an
-indefinitely blocked idle loop is never mistaken for a stall — which is what
-allows the `-1` timeout above. See [Watchdog](watchdog.md) and
-[Performance & Idle-Power Strategy](performance-strategy.md) for the full model.
+The loop blocks indefinitely on `poll()` when idle; the `-1` timeout above is
+safe because every work stage is non-blocking or bounded (engine IPC at 100 ms,
+Wayland I/O non-blocking, config-read at 2 s). See
+[Performance & Idle-Power Strategy](performance-strategy.md).
 
 ## Auxiliary Source Bounding
 
@@ -175,10 +169,10 @@ deadline is the primary clue that the grab→keymap→vk chain did not close.
 
 - config reload bursts coalesce into a single runtime reload once the
   filesystem settles
-- the Panel's GPU render/readback/SHM attach path runs on the loop thread and
-  must stay bounded
-- glyphs are drawn from a shared, persistent glyph atlas; no synchronous
-  upload per text run
+- the Panel's CPU render + SHM attach path runs on the loop thread and must
+  stay bounded
+- text is rasterised by `TextRaster` into the framebuffer; glyph *measurement*
+  is cached, rasterisation is per-frame
 
 ## See Also
 
@@ -190,6 +184,6 @@ deadline is the primary clue that the grab→keymap→vk chain did not close.
   implementation and event handlers
 - [Panel Architecture](panel-architecture.md) — Panel content, zones, and
   rendering
-- [ADR-0004: Event Loop Scheduling and Watchdog](../adr/0004-event-loop-scheduling-and-watchdog.md)
-- [ADR-0024: Idle-Driven Event Loop and Demand-Gated Watchdog](../adr/0024-idle-driven-loop-and-demand-gated-watchdog.md)
-- [Watchdog](watchdog.md) · [Performance & Idle-Power Strategy](performance-strategy.md)
+- [ADR-0004: Event Loop Scheduling and Watchdog](../adr/0004-event-loop-scheduling-and-watchdog.md) (watchdog part superseded by ADR-0041)
+- [ADR-0024: Idle-Driven Event Loop and Demand-Gated Watchdog](../adr/0024-idle-driven-loop-and-demand-gated-watchdog.md) (watchdog part superseded by ADR-0041)
+- [Performance & Idle-Power Strategy](performance-strategy.md)

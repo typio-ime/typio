@@ -11,7 +11,7 @@
 use crate::types::{TypioLogCallback, TypioLogEvent, TypioLogLevel};
 use log::{Level, Log, Metadata, Record};
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, Once, OnceLock};
@@ -236,7 +236,7 @@ static INIT_LOGGER: Once = Once::new();
 ///
 /// Idempotent: safe to call multiple times.  Must be called before any
 /// `log::info!` / `typio_log_emit` usage if the host wants to capture logs.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_init() -> bool {
     LOGGER.get_or_init(TypioLogger::new);
 
@@ -255,7 +255,7 @@ pub extern "C" fn typio_logger_init() -> bool {
 ///
 /// `callback` may be `NULL` to disable host-side output.  When no callback is
 /// set, log records are only retained in the internal ring buffer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_set_callback(
     callback: Option<TypioLogCallback>,
     user_data: *mut c_void,
@@ -266,7 +266,7 @@ pub extern "C" fn typio_logger_set_callback(
 }
 
 /// Set the minimum log level.  Default is `TYPIO_LOG_INFO`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_set_level(level: TypioLogLevel) {
     if let Some(logger) = LOGGER.get() {
         logger.set_level(level);
@@ -274,7 +274,7 @@ pub extern "C" fn typio_logger_set_level(level: TypioLogLevel) {
 }
 
 /// Get the current minimum log level.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_get_level() -> TypioLogLevel {
     LOGGER
         .get()
@@ -282,7 +282,7 @@ pub extern "C" fn typio_logger_get_level() -> TypioLogLevel {
 }
 
 /// Set the capacity of the recent-log ring buffer.  Default is 256.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_set_recent_capacity(capacity: usize) {
     if let Some(logger) = LOGGER.get() {
         logger.set_capacity(capacity);
@@ -290,7 +290,7 @@ pub extern "C" fn typio_logger_set_recent_capacity(capacity: usize) {
 }
 
 /// Dump the recent-log ring buffer to a file.  Returns `true` on success.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_dump_recent(path: *const c_char) -> bool {
     if path.is_null() {
         return false;
@@ -315,7 +315,7 @@ pub extern "C" fn typio_logger_dump_recent(path: *const c_char) -> bool {
 /// Clears the callback, resets the level to `TYPIO_LOG_INFO`, and empties the
 /// ring buffer.  The global logger remains registered with the `log` crate but
 /// becomes a no-op.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_logger_shutdown() {
     if let Some(logger) = LOGGER.get() {
         logger.set_callback(None, std::ptr::null_mut());
@@ -328,7 +328,7 @@ pub extern "C" fn typio_logger_shutdown() {
 ///
 /// C engines should use the `typio_log` / `typio_logf` inline helpers in
 /// `typio/abi/log.h` rather than calling this directly.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_log_emit(level: TypioLogLevel, message: *const c_char) {
     if message.is_null() {
         return;

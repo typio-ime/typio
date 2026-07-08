@@ -1,6 +1,6 @@
 # ADR-0024: Idle-Driven Event Loop and Demand-Gated Watchdog
 
-- **Status**: Accepted
+- **Status**: Superseded (watchdog removed by ADR-0041; idle-driven loop retained)
 - **Date**: 2026-06-05
 - **Deciders**: Project maintainers
 

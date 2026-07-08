@@ -15,7 +15,7 @@ mod tray;
 use tray::{build_tray_snapshot, install_tray_action_handler, update_tray_from_controller};
 
 use std::cell::RefCell;
-use std::ffi::{c_char, CString};
+use std::ffi::{CString, c_char};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
@@ -36,9 +36,9 @@ use crate::ipc_bus::{IpcBus, TypioBackend, TypioRegistryView};
 use crate::resume_signal::ResumeSignal;
 use crate::session_glue::FocusDriver;
 use crate::state_controller::{StateChange, StateController};
+#[cfg(feature = "systray")]
 use crate::tray_sni::Tray;
 use crate::uds_server::UdsServer;
-use crate::watchdog::Watchdog;
 
 #[cfg(feature = "wayland")]
 use nix::sys::timerfd::{ClockId, TimerFd as NixTimerFd, TimerFlags};
@@ -140,7 +140,6 @@ pub struct App {
     #[cfg(feature = "wayland")]
     voice_pending_banner: Option<indicator::VoiceBanner>,
     config_watcher: Option<ConfigWatcher>,
-    watchdog: Option<Watchdog>,
     /// Sender half of the daemon event channel. Cloned into the IPC
     /// stop callback and the tray action handler.
     event_tx: std::sync::mpsc::Sender<DaemonEvent>,
@@ -227,7 +226,6 @@ impl App {
             #[cfg(feature = "wayland")]
             voice_pending_banner: None,
             config_watcher: None,
-            watchdog: None,
             event_tx,
             event_rx: Some(event_rx),
             saw_restart: false,
@@ -613,8 +611,6 @@ impl App {
 
         #[cfg(feature = "wayland")]
         if self.frontend.is_some() && self.router.is_some() && self.repeat_timer.is_some() {
-            let watchdog = Watchdog::start();
-            self.watchdog = Some(watchdog);
             return self.run_with_wayland(&ipc_bus);
         }
 
@@ -661,9 +657,9 @@ impl App {
                 self.refresh_state_surfaces();
                 // A reload may change the panel font (display.font_family /
                 // display.font_size). Re-read and push it down so the
-                // candidate text geometry reflects the new font; this also
-                // flushes the TextRaster coverage/face caches when the family
-                // changed, then forces a repaint.
+                // candidate text geometry reflects the new font, then force a
+                // repaint. (set_preferred_family is a no-op under flux-text;
+                // font selection is fontconfig's job — see text_raster.rs.)
                 self.panel_font_config = self.load_display_font_config();
                 if let Some(ref mut frontend) = self.frontend {
                     if let Some(panel) = frontend.panel_mut() {
@@ -855,8 +851,8 @@ fn arm_repeat(timer: &mut RepeatTimer, compositor_info: Option<(i32, i32)>, mods
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
     use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
 
     /// Serialises tests that touch the shared signal flags so they do not
     /// race with each other when `cargo test` runs them in parallel.
@@ -915,7 +911,6 @@ mod tests {
             #[cfg(feature = "wayland")]
             voice_pending_banner: None,
             config_watcher: None,
-            watchdog: None,
             event_tx: tx,
             event_rx: Some(rx),
             saw_restart: false,

@@ -23,7 +23,7 @@
 //!
 //! `typio.startup`, `typio.lifecycle`, `typio.indicator`, `typio.voice`,
 //! `typio.tray`, `typio.config`, `typio.panel.*`, `typio.wayland.*`,
-//! `typio.engine.*`, `typio.input.*`, `typio.watchdog`. Targets let
+//! `typio.engine.*`, `typio.input.*`. Targets let
 //! `RUST_LOG` refine one subsystem (e.g. `RUST_LOG=typio.indicator=debug`)
 //! without raising the global floor.
 //!
@@ -36,12 +36,12 @@
 //! loop via [`apply_pending_level_signals`].
 
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::reload;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, prelude::*};
 
 /// Handle to the reloadable global filter, installed once by
 /// [`init_logging`]. The `Registry` type parameter is the subscriber the

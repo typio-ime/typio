@@ -6,7 +6,7 @@
 //! [`typio_free_string_array`]. Mixing these with libc `free()` is undefined
 //! behaviour and on Windows will corrupt the heap (different CRTs).
 
-use std::ffi::{c_char, c_double, c_int, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_double, c_int};
 use std::slice;
 
 fn cstr_into_raw(bytes: &[u8]) -> *mut c_char {
@@ -19,7 +19,7 @@ fn cstr_into_raw(bytes: &[u8]) -> *mut c_char {
 /// Duplicate a C string (libc `strdup` equivalent using libtypio allocator).
 ///
 /// Returns NULL when `str` is NULL. Caller must free with `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_strdup(str: *const c_char) -> *mut c_char {
     if str.is_null() {
         return std::ptr::null_mut();
@@ -31,7 +31,7 @@ pub extern "C" fn typio_strdup(str: *const c_char) -> *mut c_char {
 /// Duplicate at most `n` bytes of a C string.
 ///
 /// Returns NULL when `str` is NULL. Caller must free with `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_strndup(str: *const c_char, n: usize) -> *mut c_char {
     if str.is_null() {
         return std::ptr::null_mut();
@@ -44,7 +44,7 @@ pub extern "C" fn typio_strndup(str: *const c_char, n: usize) -> *mut c_char {
 /// Concatenate two C strings.
 ///
 /// Returns NULL if both are NULL. Caller must free with `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_strjoin(a: *const c_char, b: *const c_char) -> *mut c_char {
     if a.is_null() && b.is_null() {
         return std::ptr::null_mut();
@@ -66,7 +66,7 @@ pub extern "C" fn typio_strjoin(a: *const c_char, b: *const c_char) -> *mut c_ch
 /// Concatenate three C strings.
 ///
 /// Returns NULL if the first two are NULL. Caller must free with `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_strjoin3(
     a: *const c_char,
     b: *const c_char,
@@ -84,7 +84,7 @@ pub extern "C" fn typio_strjoin3(
 /// Join two path components with a `/` if needed.
 ///
 /// Returns NULL if either argument is NULL. Caller must free with `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_path_join(base: *const c_char, suffix: *const c_char) -> *mut c_char {
     if base.is_null() || suffix.is_null() {
         return std::ptr::null_mut();
@@ -103,7 +103,7 @@ pub extern "C" fn typio_path_join(base: *const c_char, suffix: *const c_char) ->
 }
 
 /// Return true if `str` starts with `prefix`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_starts_with(str: *const c_char, prefix: *const c_char) -> bool {
     if str.is_null() || prefix.is_null() {
         return false;
@@ -116,7 +116,7 @@ pub extern "C" fn typio_str_starts_with(str: *const c_char, prefix: *const c_cha
 }
 
 /// Return true if `str` ends with `suffix`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_ends_with(str: *const c_char, suffix: *const c_char) -> bool {
     if str.is_null() || suffix.is_null() {
         return false;
@@ -129,7 +129,7 @@ pub extern "C" fn typio_str_ends_with(str: *const c_char, suffix: *const c_char)
 }
 
 /// Return true if two C strings are byte-for-byte equal.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_equals(a: *const c_char, b: *const c_char) -> bool {
     if a == b {
         return true;
@@ -141,7 +141,7 @@ pub extern "C" fn typio_str_equals(a: *const c_char, b: *const c_char) -> bool {
 }
 
 /// Case-insensitive ASCII comparison of two C strings.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_equals_nocase(a: *const c_char, b: *const c_char) -> bool {
     if a == b {
         return true;
@@ -159,7 +159,7 @@ pub extern "C" fn typio_str_equals_nocase(a: *const c_char, b: *const c_char) ->
 /// Find the first occurrence of `needle` in `haystack`.
 ///
 /// Returns a pointer into `haystack` (not a new allocation), or NULL if not found.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_find(haystack: *const c_char, needle: *const c_char) -> *const c_char {
     if haystack.is_null() || needle.is_null() {
         return std::ptr::null();
@@ -177,7 +177,7 @@ pub extern "C" fn typio_str_find(haystack: *const c_char, needle: *const c_char)
 /// Parse a C string as a signed 32-bit integer.
 ///
 /// Returns `default_val` if the string is NULL or not a valid integer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_to_int(str: *const c_char, default_val: c_int) -> c_int {
     if str.is_null() {
         return default_val;
@@ -191,7 +191,7 @@ pub extern "C" fn typio_str_to_int(str: *const c_char, default_val: c_int) -> c_
 /// Parse a C string as a 64-bit floating point number.
 ///
 /// Returns `default_val` if the string is NULL or not a valid number.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_to_double(str: *const c_char, default_val: c_double) -> c_double {
     if str.is_null() {
         return default_val;
@@ -206,7 +206,7 @@ pub extern "C" fn typio_str_to_double(str: *const c_char, default_val: c_double)
 ///
 /// Recognizes "true", "yes", "1", "on" and "false", "no", "0", "off".
 /// Returns `default_val` if the string is NULL or not recognized.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_str_to_bool(str: *const c_char, default_val: bool) -> bool {
     if str.is_null() {
         return default_val;
@@ -224,7 +224,7 @@ pub extern "C" fn typio_str_to_bool(str: *const c_char, default_val: bool) -> bo
 /* UTF-8 utilities */
 
 /// Return the number of Unicode scalar values in a UTF-8 string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_utf8_strlen(str: *const c_char) -> usize {
     if str.is_null() {
         return 0;
@@ -238,7 +238,7 @@ pub extern "C" fn typio_utf8_strlen(str: *const c_char) -> usize {
 /// Advance to the next UTF-8 code point.
 ///
 /// Returns `str` if it is NULL or points to a NUL byte.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_utf8_next(str: *const c_char) -> *const c_char {
     if str.is_null() || unsafe { *str } == 0 {
         return str;
@@ -255,7 +255,7 @@ pub extern "C" fn typio_utf8_next(str: *const c_char) -> *const c_char {
 /// Step back to the previous UTF-8 code point.
 ///
 /// Returns `start` if `str` is at or before `start`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_utf8_prev(str: *const c_char, start: *const c_char) -> *const c_char {
     if str.is_null() || start.is_null() || str <= start {
         return start;
@@ -272,7 +272,7 @@ pub extern "C" fn typio_utf8_prev(str: *const c_char, start: *const c_char) -> *
 /// Decode the first UTF-8 code point at `str`.
 ///
 /// Returns 0 if `str` is NULL or empty. Returns U+FFFD for invalid sequences.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_utf8_get_char(str: *const c_char) -> u32 {
     if str.is_null() || unsafe { *str } == 0 {
         return 0;
@@ -307,7 +307,7 @@ pub extern "C" fn typio_utf8_get_char(str: *const c_char) -> u32 {
 ///
 /// Returns the number of bytes written (1–4), or 0 if `buf` is NULL or the
 /// code point is out of range.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_utf8_encode(codepoint: u32, buf: *mut c_char) -> usize {
     if buf.is_null() {
         return 0;
@@ -343,7 +343,7 @@ pub extern "C" fn typio_utf8_encode(codepoint: u32, buf: *mut c_char) -> usize {
 ///
 /// No-op when `str` is NULL. Do not pass strings allocated by the C caller —
 /// use the matching allocator for those.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
         unsafe { drop(CString::from_raw(ptr)) };
@@ -351,7 +351,7 @@ pub extern "C" fn typio_free_string(ptr: *mut c_char) {
 }
 
 /// Free a name list previously returned by any `typio_registry_list_*` call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_free_string_array(list: *mut *mut c_char, count: usize) {
     if list.is_null() {
         return;

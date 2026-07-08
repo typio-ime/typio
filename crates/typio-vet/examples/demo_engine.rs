@@ -8,7 +8,7 @@
 //! same source as a `crate-type = ["cdylib"]` library and point `typio-vet` at
 //! the resulting `.so`.
 
-use std::ffi::{c_void, CString};
+use std::ffi::{CString, c_void};
 use std::ptr;
 use typio_vet::*;
 
@@ -101,12 +101,12 @@ static DEMO_INFO: TypioEngineInfo = TypioEngineInfo {
     optional_capabilities: ptr::null(),
 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_engine_get_info() -> *const TypioEngineInfo {
     &DEMO_INFO
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_keyboard_engine_create() -> *mut TypioKeyboardEngine {
     let engine = unsafe {
         libc::calloc(1, std::mem::size_of::<TypioKeyboardEngine>()) as *mut TypioKeyboardEngine

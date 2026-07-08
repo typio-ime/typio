@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Host watchdog.** The background thread that sampled the main loop's stage
+  progress and `SIGKILL`ed the daemon on a 3 s stall has been removed entirely
+  (ADR-0041). An audit found every main-loop stage non-blocking or already
+  bounded (engine IPC at 100 ms, Wayland I/O non-blocking, GPU present removed
+  by ADR-0040), so the watchdog guarded no live risk yet cost 327 lines and 39
+  intrusive `set_stage` annotations across the main loop. The one genuine
+  unbounded blocking point it covered — config-file `read_to_string` on a
+  stalled NFS/FUSE mount — is now bounded at 2 s at the source
+  (`typio_config_load_file` reads on a short-lived thread with a channel
+  timeout). The per-draw `heartbeat`/`before_present` callbacks were removed
+  from `FluxPanel::draw_candidates` / `draw_status_banner`, and the unused
+  `watchdogArmed` IPC field was dropped. Supersedes ADR-0004 (watchdog part),
+  ADR-0024, ADR-0037.
+
 ### Changed
 
+- **Dropped the `lazy_static` dependency in favor of `std::sync::LazyLock`.**
+  `typio-core` and `typio-vet` no longer depend on the `lazy_static` crate;
+  their once-initialized globals now use the standard-library `LazyLock`
+  (stable since Rust 1.80), and the test-only `static mut` capture slot in
+  `typio-core`'s input-context tests was rewritten as a `Mutex`-guarded
+  `Send` newtype to remove the last `static mut` from the crate.
 - **Framework, ABI, and vet crates moved into the host workspace.**
   `libtypio`, `typio-abi`, and `typio-vet` now live under `crates/` in this
   repository, so engine-contract, framework, vet, and host changes can land in
@@ -60,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Host-managed candidate navigation boundaries.** Candidate Up/Down
+  navigation now sends PageUp/PageDown to the engine at page edges so Rime can
+  page forward/backward, and host-local highlight moves keep libtypio's
+  selected candidate in sync with the panel.
 - **Candidate panel CJK font fallback.** The CPU text renderer now prefers a
   consistent sans CJK face for Han, kana, and Hangul candidates instead of
   accepting the first system font that happens to cover each codepoint. The
@@ -93,12 +119,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   double-buffered `wl_shm` pool. `wl_buffer.release` is a normal event on
   the host's own queue; when all buffers are busy the panel drops the frame
   and retries with the latest coalesced state next tick — never blocking.
-  The frame-callback present gate (100 ms ceiling) is retained as pacing
-  hygiene; `vkQueuePresentKHR` is no longer invoked anywhere in the panel
-  path. Panel state also records which candidate snapshot was actually
-  submitted, so repeated dirty ticks do not repaint an already-current
-  snapshot while scale, hide, and status-overlay ownership changes still
-  force a redraw.
+  Frame-callback pacing was removed entirely: candidate updates are now
+  zero-delay, with back-pressure handled solely by the SHM buffer pool and
+  presentation-record deduplication. `vkQueuePresentKHR` is no longer invoked
+  anywhere in the panel path. Panel state also records which candidate snapshot
+  was actually submitted, so repeated dirty ticks do not repaint an
+  already-current snapshot while scale, hide, and status-overlay ownership
+  changes still force a redraw.
 
 ### Removed
 

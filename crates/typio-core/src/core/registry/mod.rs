@@ -1,6 +1,6 @@
 //! Engine registry: lifecycle and switching (ADR-0005).
 
-use crate::core::engine::backend::EngineBackend;
+use crate::core::engine::backend::ProcessBackend;
 use crate::core::engine::{EngineError, EngineType, InstanceHandle, Result};
 use crate::log::log_msg;
 use crate::types::TypioLogLevel;
@@ -21,8 +21,8 @@ pub enum SwitchDirection {
 pub struct EngineSlot {
     /// Engine name.
     pub name: String,
-    /// Backend implementation.
-    pub backend: EngineBackend,
+    /// Out-of-process engine backend.
+    pub backend: ProcessBackend,
     /// Whether the engine is currently active.
     pub active: bool,
     /// Last time the engine was active.
@@ -199,8 +199,8 @@ impl EngineRegistry {
     /* Registration                                                          */
     /* --------------------------------------------------------------------- */
 
-    /// Register a new engine backend.
-    pub fn register(&mut self, backend: EngineBackend) -> Result<()> {
+    /// Register a new out-of-process engine backend.
+    pub fn register(&mut self, backend: ProcessBackend) -> Result<()> {
         let name = backend.info().name.clone();
         if self.find_index(&name).is_some() {
             return Err(EngineError::AlreadyExists);
@@ -989,13 +989,6 @@ impl EngineRegistry {
         self.active_voice_availability() == crate::core::engine::EngineAvailability::Ready
     }
 
-    /// Return the raw `TypioEngine` pointer of the active voice engine.
-    ///
-    /// Always returns null — the registry does not expose raw pointers.
-    pub fn active_voice_engine_ptr(&self) -> *mut crate::types::TypioEngine {
-        std::ptr::null_mut()
-    }
-
     /* --------------------------------------------------------------------- */
     /* Internal helpers                                                      */
     /* --------------------------------------------------------------------- */
@@ -1167,7 +1160,7 @@ while True:
             EngineInfo::new(name, EngineType::Keyboard),
             vec![worker, name.to_string(), "keyboard".to_string()],
         );
-        reg.register(EngineBackend::Process(backend)).unwrap();
+        reg.register(backend).unwrap();
     }
 
     fn register_voice(reg: &mut EngineRegistry, name: &str) {
@@ -1176,7 +1169,7 @@ while True:
             EngineInfo::new(name, EngineType::Voice),
             vec![worker, name.to_string(), "voice".to_string()],
         );
-        reg.register(EngineBackend::Process(backend)).unwrap();
+        reg.register(backend).unwrap();
     }
 
     #[test]

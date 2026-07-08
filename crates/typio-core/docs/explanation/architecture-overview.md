@@ -112,8 +112,8 @@ under `crates/typio-host/src/`:
   policy.
 - `panel.rs` and `panel_shm.rs` — flux offscreen rendering, text measurement,
   readback, and host-managed SHM presentation.
-- `app/event_loop.rs` — polling loop, Wayland dispatch, watchdog stages, and
-  auxiliary-fd integration.
+- `app/event_loop.rs` — polling loop, Wayland dispatch, and auxiliary-fd
+  integration.
 - `config_watcher.rs` — runtime config reload and config-watch rearming.
 
 Observability ownership follows the same boundary split. Control-surface binding rules live in the `typio-settings` repository's `docs/explanation/control-surfaces.md`.

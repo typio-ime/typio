@@ -7,7 +7,7 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 
 /// Allocate a new key event.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_new(
     type_: TypioEventType,
     keycode: u32,
@@ -29,7 +29,7 @@ pub extern "C" fn typio_key_event_new(
 }
 
 /// Free a key event allocated by `typio_key_event_new`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_free(event: *mut TypioKeyEvent) {
     if !event.is_null() {
         unsafe { drop(Box::from_raw(event)) };
@@ -37,7 +37,7 @@ pub extern "C" fn typio_key_event_free(event: *mut TypioKeyEvent) {
 }
 
 /// Return true if the event is a key press.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_press(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -46,7 +46,7 @@ pub extern "C" fn typio_key_event_is_press(event: *const TypioKeyEvent) -> bool 
 }
 
 /// Return true if the event is a key release.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_release(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -55,7 +55,7 @@ pub extern "C" fn typio_key_event_is_release(event: *const TypioKeyEvent) -> boo
 }
 
 /// Return true if the given modifier is active in the event.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_has_modifier(
     event: *const TypioKeyEvent,
     mod_: TypioModifier,
@@ -67,7 +67,7 @@ pub extern "C" fn typio_key_event_has_modifier(
 }
 
 /// Return true if the event is a pure modifier key (no printable character).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_modifier_only(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -87,7 +87,7 @@ pub extern "C" fn typio_key_event_is_modifier_only(event: *const TypioKeyEvent) 
 }
 
 /// Return the Unicode codepoint for the event, or 0 if none.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_get_unicode(event: *const TypioKeyEvent) -> u32 {
     if event.is_null() {
         return 0;
@@ -103,37 +103,37 @@ pub extern "C" fn typio_key_event_get_unicode(event: *const TypioKeyEvent) -> u3
 }
 
 /// Return true if the event is BackSpace.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_backspace(event: *const TypioKeyEvent) -> bool {
     !event.is_null() && unsafe { (*event).keysym == TYPIO_KEY_BackSpace }
 }
 
 /// Return true if the event is Enter/Return.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_enter(event: *const TypioKeyEvent) -> bool {
     !event.is_null() && unsafe { (*event).keysym == TYPIO_KEY_Return }
 }
 
 /// Return true if the event is Escape.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_escape(event: *const TypioKeyEvent) -> bool {
     !event.is_null() && unsafe { (*event).keysym == TYPIO_KEY_Escape }
 }
 
 /// Return true if the event is Space.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_space(event: *const TypioKeyEvent) -> bool {
     !event.is_null() && unsafe { (*event).keysym == TYPIO_KEY_space }
 }
 
 /// Return true if the event is Tab.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_tab(event: *const TypioKeyEvent) -> bool {
     !event.is_null() && unsafe { (*event).keysym == TYPIO_KEY_Tab }
 }
 
 /// Return true if the event is an arrow key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_arrow(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -146,7 +146,7 @@ pub extern "C" fn typio_key_event_is_arrow(event: *const TypioKeyEvent) -> bool 
 }
 
 /// Return true if the event is Page Up or Page Down.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_page(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -156,7 +156,7 @@ pub extern "C" fn typio_key_event_is_page(event: *const TypioKeyEvent) -> bool {
 }
 
 /// Allocate a new voice event.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_event_new(type_: TypioEventType) -> *mut TypioVoiceEvent {
     let event = Box::new(TypioVoiceEvent {
         type_,
@@ -170,7 +170,7 @@ pub extern "C" fn typio_voice_event_new(type_: TypioEventType) -> *mut TypioVoic
 }
 
 /// Free a voice event allocated by `typio_voice_event_new`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_event_free(event: *mut TypioVoiceEvent) {
     if !event.is_null() {
         unsafe { drop(Box::from_raw(event)) };
@@ -178,7 +178,7 @@ pub extern "C" fn typio_voice_event_free(event: *mut TypioVoiceEvent) {
 }
 
 /// Attach audio data to a voice event.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_voice_event_set_data(
     event: *mut TypioVoiceEvent,
     data: *const c_void,

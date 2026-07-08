@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ipc::framing::{Id, Response, StandardError};
 use crate::ipc::protocol;
@@ -134,7 +134,6 @@ pub struct RuntimeState {
     pub virtual_keyboard_state: String,
     pub keyboard_grab_active: bool,
     pub virtual_keyboard_has_keymap: bool,
-    pub watchdog_armed: bool,
     pub active_key_generation: u32,
     pub virtual_keyboard_keymap_generation: u32,
     pub virtual_keyboard_drop_count: u32,
@@ -784,7 +783,6 @@ impl<B: ServiceBackend> StatusService<B> {
                 "lifecyclePhase": state.lifecycle_phase,
                 "virtualKeyboardState": state.virtual_keyboard_state,
                 "keyboardGrabActive": state.keyboard_grab_active,
-                "watchdogArmed": state.watchdog_armed,
             });
         }
         ok(id, result)
@@ -1595,7 +1593,6 @@ mod tests {
         };
         rt.lifecycle_phase = "running".into();
         rt.keyboard_grab_active = true;
-        rt.watchdog_armed = false;
         b.runtime = Some(rt);
         let fake = b.build();
         let mut svc = StatusService::new(fake);

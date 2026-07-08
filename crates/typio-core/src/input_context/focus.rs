@@ -1,12 +1,12 @@
 //! Focus management and key event forwarding
 
 use super::TypioInputContext;
+use crate::TypioKeyEvent;
 use crate::instance::{
-    dispatch_observed_keyboard_mode, typio_instance_get_registry,
-    typio_instance_set_focused_context, TypioInstance,
+    TypioInstance, dispatch_observed_keyboard_mode, typio_instance_get_registry,
+    typio_instance_set_focused_context,
 };
 use crate::types::*;
-use crate::TypioKeyEvent;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
@@ -34,7 +34,7 @@ unsafe fn reconcile_keyboard_mode(instance: *mut TypioInstance, announce: bool) 
 }
 
 /// Notify the context that it has received focus.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_focus_in(ctx: *mut TypioInputContext) {
     if ctx.is_null() {
         return;
@@ -58,7 +58,7 @@ pub extern "C" fn typio_input_context_focus_in(ctx: *mut TypioInputContext) {
 }
 
 /// Notify the context that it has lost focus.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_focus_out(ctx: *mut TypioInputContext) {
     if ctx.is_null() {
         return;
@@ -82,7 +82,7 @@ pub extern "C" fn typio_input_context_focus_out(ctx: *mut TypioInputContext) {
 }
 
 /// Return true if the context currently has focus.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_is_focused(ctx: *mut TypioInputContext) -> bool {
     if ctx.is_null() {
         return false;
@@ -91,7 +91,7 @@ pub extern "C" fn typio_input_context_is_focused(ctx: *mut TypioInputContext) ->
 }
 
 /// Reset the context (clear composition and notify engine).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_reset(ctx: *mut TypioInputContext) {
     if ctx.is_null() {
         return;
@@ -110,7 +110,7 @@ pub extern "C" fn typio_input_context_reset(ctx: *mut TypioInputContext) {
 }
 
 /// Forward a key event to the active keyboard engine.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_process_key(
     ctx: *mut TypioInputContext,
     event: *const TypioKeyEvent,
@@ -162,7 +162,7 @@ pub extern "C" fn typio_input_context_process_key(
 /// `mode_id` is a previously reported `TypioKeyboardEngineMode::id`.
 /// Returns `TypioErrorNotFound` when there is no active keyboard, the engine
 /// has no `set_active_mode`, or the engine rejects the id.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_active_mode(
     ctx: *mut TypioInputContext,
     mode_id: *const c_char,
@@ -196,7 +196,7 @@ pub extern "C" fn typio_input_context_set_active_mode(
 /// Dispatches `commit_candidate` to the active keyboard engine.
 /// Returns `TypioErrorNotFound` when no keyboard engine is active or the
 /// engine does not implement `commit_candidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_commit_candidate(
     ctx: *mut TypioInputContext,
     candidate_index: i32,

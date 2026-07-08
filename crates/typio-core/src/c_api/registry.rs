@@ -6,12 +6,12 @@
 //! Engines are registered as out-of-process engine-process backends. There is no
 //! in-process plugin registration path.
 
-use crate::core::engine::backend::{process::ProcessBackend, EngineBackend};
+use crate::TypioInstance;
+use crate::core::engine::backend::ProcessBackend;
 use crate::core::engine::{EngineAvailability, EngineInfo, EngineType};
 use crate::core::registry::{EngineRegistry, SwitchDirection};
 use crate::types::*;
-use crate::TypioInstance;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 
 /* -------------------------------------------------------------------------- */
@@ -276,14 +276,14 @@ unsafe fn notify_voice_changed(registry: &TypioRegistry) {
 /// Create a new engine registry tied to the given instance.
 ///
 /// Returns a pointer that must be freed with `typio_registry_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_new(instance: *mut TypioInstance) -> *mut TypioRegistry {
     let inner = EngineRegistry::new();
     Box::into_raw(Box::new(TypioRegistry { inner, instance }))
 }
 
 /// Free a registry previously created by `typio_registry_new`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_free(registry: *mut TypioRegistry) {
     if registry.is_null() {
         return;
@@ -294,7 +294,7 @@ pub extern "C" fn typio_registry_free(registry: *mut TypioRegistry) {
 }
 
 /// Return the parent instance, or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_instance(registry: *mut TypioRegistry) -> *mut TypioInstance {
     if registry.is_null() {
         return ptr::null_mut();
@@ -316,7 +316,7 @@ pub extern "C" fn typio_registry_get_instance(registry: *mut TypioRegistry) -> *
 ///
 /// # Safety
 /// `plugin` must be NULL or point to a valid `TypioAbiVersion`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn typio_engine_abi_check(plugin: *const TypioAbiVersion) -> bool {
     if plugin.is_null() {
         return false;
@@ -334,7 +334,7 @@ pub unsafe extern "C" fn typio_engine_abi_check(plugin: *const TypioAbiVersion) 
 /// `info` is copied immediately. `argv` is a NULL-terminated argument vector;
 /// `argv[0]` is the executable path and remaining entries are passed as
 /// arguments when the engine is activated.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_register_engine_process(
     registry: *mut TypioRegistry,
     info: *const TypioEngineInfo,
@@ -355,7 +355,7 @@ pub extern "C" fn typio_registry_register_engine_process(
     let engine_info = engine_info_from_c(c_info);
     let backend = ProcessBackend::new(engine_info, argv);
     let reg = unsafe { &mut (*registry).inner };
-    match reg.register(EngineBackend::Process(backend)) {
+    match reg.register(backend) {
         Ok(()) => TypioResult::TypioOk,
         Err(crate::core::engine::EngineError::AlreadyExists) => {
             TypioResult::TypioErrorAlreadyExists
@@ -369,7 +369,7 @@ pub extern "C" fn typio_registry_register_engine_process(
 /* -------------------------------------------------------------------------- */
 
 /// Unload and unregister an engine by name.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_unload(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -406,7 +406,7 @@ fn names_to_c_array(names: Vec<&str>, count: *mut usize) -> *mut *mut c_char {
 ///
 /// Returns a NULL-terminated array of freshly allocated strings.
 /// Caller must free each string and the outer array.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_list_keyboards(
     registry: *mut TypioRegistry,
     count: *mut usize,
@@ -422,7 +422,7 @@ pub extern "C" fn typio_registry_list_keyboards(
 ///
 /// Returns a NULL-terminated array of freshly allocated strings.
 /// Caller must free each string and the outer array.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_list_voices(
     registry: *mut TypioRegistry,
     count: *mut usize,
@@ -440,7 +440,7 @@ pub extern "C" fn typio_registry_list_voices(
 /// access to the instance config; until then this is equivalent to
 /// [`typio_registry_list_keyboards`] (registration order). Callers that
 /// already hold a config-resolved ordering should use that directly.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_list_ordered_keyboards(
     registry: *mut TypioRegistry,
     count: *mut usize,
@@ -454,7 +454,7 @@ pub extern "C" fn typio_registry_list_ordered_keyboards(
 
 /// Return a fresh `TypioEngineInfo` for the named engine, or NULL.
 /// Caller must release with `typio_engine_info_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_info(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -472,7 +472,7 @@ pub extern "C" fn typio_registry_get_engine_info(
 
 /// Release a `TypioEngineInfo` previously returned by
 /// `typio_registry_get_engine_info`, including all interior strings.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_engine_info_free(info: *mut TypioEngineInfo) {
     if info.is_null() {
         return;
@@ -525,7 +525,7 @@ where
 /// Return the display name of the named engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_display_name(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -536,7 +536,7 @@ pub extern "C" fn typio_registry_get_engine_display_name(
 /// Return the icon name of the named engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_icon(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -558,7 +558,7 @@ pub extern "C" fn typio_registry_get_engine_icon(
 /// Return the description of the named engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_description(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -569,7 +569,7 @@ pub extern "C" fn typio_registry_get_engine_description(
 /// Return the author of the named engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_author(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -580,7 +580,7 @@ pub extern "C" fn typio_registry_get_engine_author(
 /// Return the BCP-47 language tag of the named engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_language(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -595,7 +595,7 @@ pub extern "C" fn typio_registry_get_engine_language(
 /// Activate the named keyboard engine.
 ///
 /// Returns `TypioErrorNotFound` if the engine is not registered.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_set_active_keyboard(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -618,7 +618,7 @@ pub extern "C" fn typio_registry_set_active_keyboard(
 /// Activate the named voice engine.
 ///
 /// Returns `TypioErrorNotFound` if the engine is not registered.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_set_active_voice(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -641,7 +641,7 @@ pub extern "C" fn typio_registry_set_active_voice(
 /// Return the name of the currently active keyboard engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_active_keyboard(registry: *mut TypioRegistry) -> *mut c_char {
     if registry.is_null() {
         return ptr::null_mut();
@@ -656,7 +656,7 @@ pub extern "C" fn typio_registry_get_active_keyboard(registry: *mut TypioRegistr
 /// Return the name of the currently active voice engine, or NULL.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_active_voice(registry: *mut TypioRegistry) -> *mut c_char {
     if registry.is_null() {
         return ptr::null_mut();
@@ -669,7 +669,7 @@ pub extern "C" fn typio_registry_get_active_voice(registry: *mut TypioRegistry) 
 }
 
 /// Return the active keyboard engine availability.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_active_keyboard_availability(
     registry: *mut TypioRegistry,
 ) -> TypioEngineAvailability {
@@ -681,7 +681,7 @@ pub extern "C" fn typio_registry_get_active_keyboard_availability(
 }
 
 /// Return the active voice engine availability.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_active_voice_availability(
     registry: *mut TypioRegistry,
 ) -> TypioEngineAvailability {
@@ -693,7 +693,7 @@ pub extern "C" fn typio_registry_get_active_voice_availability(
 }
 
 /// Switch to the next keyboard engine in the ordered list.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_next_keyboard(registry: *mut TypioRegistry) -> TypioResult {
     if registry.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -710,7 +710,7 @@ pub extern "C" fn typio_registry_next_keyboard(registry: *mut TypioRegistry) -> 
 }
 
 /// Switch to the previous keyboard engine in the ordered list.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_prev_keyboard(registry: *mut TypioRegistry) -> TypioResult {
     if registry.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -727,7 +727,7 @@ pub extern "C" fn typio_registry_prev_keyboard(registry: *mut TypioRegistry) -> 
 }
 
 /// Switch to the next voice engine in the ordered list.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_next_voice(registry: *mut TypioRegistry) -> TypioResult {
     if registry.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -744,7 +744,7 @@ pub extern "C" fn typio_registry_next_voice(registry: *mut TypioRegistry) -> Typ
 }
 
 /// Switch to the previous voice engine in the ordered list.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_prev_voice(registry: *mut TypioRegistry) -> TypioResult {
     if registry.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -847,7 +847,7 @@ fn activate_language_with_config(reg: &mut TypioRegistry, tag: &str) -> TypioRes
 /// `languages` is a NULL-terminated array of BCP-47 tags, primary first.
 /// Hosts call this right after registration with the manifest's `languages`
 /// value. Returns `TypioErrorNotFound` for an unknown engine.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_set_engine_languages(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -885,7 +885,7 @@ pub extern "C" fn typio_registry_set_engine_languages(
 /// Return the declared language list of the named engine.
 ///
 /// Caller must release with `typio_free_string_array(list, count)`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_engine_languages(
     registry: *mut TypioRegistry,
     name: *const c_char,
@@ -915,7 +915,7 @@ pub extern "C" fn typio_registry_get_engine_languages(
 /// every engine-declared language in registration order).
 ///
 /// Caller must release with `typio_free_string_array(list, count)`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_list_languages(
     registry: *mut TypioRegistry,
     count: *mut usize,
@@ -931,7 +931,7 @@ pub extern "C" fn typio_registry_list_languages(
 /// Return the active language tag, or NULL when no language was activated.
 ///
 /// Caller must free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_get_active_language(registry: *mut TypioRegistry) -> *mut c_char {
     if registry.is_null() {
         return ptr::null_mut();
@@ -950,7 +950,7 @@ pub extern "C" fn typio_registry_get_active_language(registry: *mut TypioRegistr
 /// the first registered engine declaring a matching language. A modality
 /// with no engine is deactivated; for keyboards this yields raw passthrough
 /// (layout-only languages).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_set_active_language(
     registry: *mut TypioRegistry,
     tag: *const c_char,
@@ -981,13 +981,13 @@ fn cycle_language_c(registry: *mut TypioRegistry, direction: SwitchDirection) ->
 ///
 /// Returns `TypioErrorNotFound` when no languages are enabled or declared,
 /// so hosts can fall back to engine cycling.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_next_language(registry: *mut TypioRegistry) -> TypioResult {
     cycle_language_c(registry, SwitchDirection::Next)
 }
 
 /// Switch to the previous language in the enabled cycle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_prev_language(registry: *mut TypioRegistry) -> TypioResult {
     cycle_language_c(registry, SwitchDirection::Previous)
 }
@@ -996,7 +996,7 @@ pub extern "C" fn typio_registry_prev_language(registry: *mut TypioRegistry) -> 
 /// enabled language. Hosts call this once at startup after engine discovery.
 ///
 /// Returns `TypioErrorNotFound` when no languages are enabled or declared.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_restore_language(registry: *mut TypioRegistry) -> TypioResult {
     if registry.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -1021,7 +1021,7 @@ pub extern "C" fn typio_registry_restore_language(registry: *mut TypioRegistry) 
 
 /// Activate the most recently used voice engine, falling back to the first
 /// available voice engine if no state exists.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_activate_last_used_voice(
     registry: *mut TypioRegistry,
 ) -> TypioResult {
@@ -1044,7 +1044,7 @@ pub extern "C" fn typio_registry_activate_last_used_voice(
 /* -------------------------------------------------------------------------- */
 
 /// Notify the registry that the active keyboard engine produced a commit.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_notify_keyboard_commit(registry: *mut TypioRegistry) {
     if registry.is_null() {
         return;
@@ -1054,7 +1054,7 @@ pub extern "C" fn typio_registry_notify_keyboard_commit(registry: *mut TypioRegi
 }
 
 /// Notify the registry that the active voice engine produced a commit.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_notify_voice_commit(registry: *mut TypioRegistry) {
     if registry.is_null() {
         return;
@@ -1080,7 +1080,7 @@ fn map_engine_error(err: crate::core::engine::EngineError) -> TypioResult {
 /// Invoke a command on the currently active keyboard engine.
 ///
 /// Returns `TypioErrorEngineNotAvailable` if the engine does not support commands.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_invoke_active_keyboard_command(
     registry: *mut TypioRegistry,
     id: *const c_char,
@@ -1097,7 +1097,7 @@ pub extern "C" fn typio_registry_invoke_active_keyboard_command(
 }
 
 /// Invoke a command on a named engine (ADR-0008).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_invoke_command(
     registry: *mut TypioRegistry,
     engine_name: *const c_char,
@@ -1121,7 +1121,7 @@ pub extern "C" fn typio_registry_invoke_command(
 /// and its interior strings are owned by the caller and must be released
 /// with `typio_engine_command_list_free`. Returns NULL on error or when the
 /// engine exposes no commands (sets `*out_count = 0`).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_list_commands(
     registry: *mut TypioRegistry,
     engine_name: *const c_char,
@@ -1158,7 +1158,7 @@ pub extern "C" fn typio_registry_list_commands(
 /// Free a command array returned by `typio_registry_list_commands`.
 ///
 /// Releases the array and every interior string. No-op for NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_engine_command_list_free(commands: *mut TypioEngineCommand, count: usize) {
     if commands.is_null() || count == 0 {
         return;
@@ -1182,7 +1182,7 @@ pub extern "C" fn typio_engine_command_list_free(commands: *mut TypioEngineComma
 /// The host calls this after writing `engines.<name>.<key>` through the
 /// unified config tree. No-op if the engine does not implement
 /// `on_config_change`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_registry_notify_config_change(
     registry: *mut TypioRegistry,
     engine_name: *const c_char,

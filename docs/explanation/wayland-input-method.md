@@ -220,7 +220,7 @@ heavyweight clients like Chrome.
 | Key generation + tracking | `crates/typio-host/src/keyboard_policy.rs`, `crates/typio-host/src/keyboard/router.rs` | Generation fence and symmetric press/release |
 | `zwp_virtual_keyboard_v1` | `crates/typio-host/src/input_method.rs` (`forward_key`, `forward_modifiers`) | Keymap forward, modifier mirror, unhandled-key forwarding |
 | `zwp_input_popup_surface_v2` | `crates/typio-host/src/input_method.rs`, `crates/typio-host/src/panel.rs` | Panel positioning, frame pacing, SHM commits |
-| Panel rendering | `crates/typio-host/src/panel.rs`, `crates/typio-host/src/panel_shm.rs` | Offscreen flux render, readback, host-managed SHM attach |
+| Panel rendering | `crates/typio-host/src/panel.rs`, `crates/typio-host/src/panel_shm.rs` | CPU canvas render + `TextRaster` glyph composite, host-managed SHM attach |
 | Resume detection | `crates/typio-host/src/resume_signal.rs` | logind + boottime heuristic (records facts) |
 | Protocol XML | `protocols/input-method-unstable-v2.xml` | Wayland protocol definition (upstream) |
 

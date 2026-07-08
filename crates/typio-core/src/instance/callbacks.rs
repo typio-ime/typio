@@ -3,11 +3,11 @@
 use super::TypioInstance;
 use crate::engine::{engine_mode_equal, engine_mode_store};
 use crate::types::*;
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 
 /// Register the engine-changed callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_engine_changed_callback(
     instance: *mut TypioInstance,
     callback: TypioEngineChangedCallback,
@@ -22,7 +22,7 @@ pub extern "C" fn typio_instance_set_engine_changed_callback(
 }
 
 /// Register the voice-engine-changed callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_voice_engine_changed_callback(
     instance: *mut TypioInstance,
     callback: TypioVoiceEngineChangedCallback,
@@ -37,7 +37,7 @@ pub extern "C" fn typio_instance_set_voice_engine_changed_callback(
 }
 
 /// Register the status-icon-changed callback.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_status_icon_changed_callback(
     instance: *mut TypioInstance,
     callback: TypioStatusIconChangedCallback,
@@ -52,7 +52,7 @@ pub extern "C" fn typio_instance_set_status_icon_changed_callback(
 }
 
 /// Notify the host that the status icon has changed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_status_icon(
     instance: *mut TypioInstance,
     icon_name: *const c_char,
@@ -76,7 +76,7 @@ pub extern "C" fn typio_instance_notify_status_icon(
 }
 
 /// Clear the cached status icon.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_clear_status_icon(instance: *mut TypioInstance) {
     if instance.is_null() {
         return;
@@ -86,7 +86,7 @@ pub extern "C" fn typio_instance_clear_status_icon(instance: *mut TypioInstance)
 }
 
 /// Return the last status icon, or NULL if none is set.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_last_status_icon(
     instance: *mut TypioInstance,
 ) -> *const c_char {
@@ -103,7 +103,7 @@ pub extern "C" fn typio_instance_get_last_status_icon(
 }
 
 /// Register the mode-changed callback (host-side).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_keyboard_mode_changed_callback(
     instance: *mut TypioInstance,
     callback: TypioKeyboardModeChangedCallback,
@@ -122,7 +122,7 @@ pub extern "C" fn typio_instance_set_keyboard_mode_changed_callback(
 /// This is the **deliberate** path: the change was a direct result of user
 /// input, so the host always confirms it (e.g. flashes the indicator),
 /// regardless of salience.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_keyboard_mode(
     instance: *mut TypioInstance,
     mode: *const TypioKeyboardEngineMode,
@@ -236,7 +236,7 @@ pub(crate) unsafe fn dispatch_observed_keyboard_mode(
 }
 
 /// Clear the cached mode state.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_clear_keyboard_mode(instance: *mut TypioInstance) {
     if instance.is_null() {
         return;
@@ -266,7 +266,7 @@ pub extern "C" fn typio_instance_clear_keyboard_mode(instance: *mut TypioInstanc
 }
 
 /// Return the last mode, or NULL if none is set.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_last_keyboard_mode(
     instance: *mut TypioInstance,
 ) -> *const TypioKeyboardEngineMode {
@@ -281,7 +281,7 @@ pub extern "C" fn typio_instance_get_last_keyboard_mode(
 }
 
 /// Register the engine-availability-changed callback (host-side, ADR-0014).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_engine_availability_changed_callback(
     instance: *mut TypioInstance,
     callback: TypioEngineAvailabilityChangedCallback,
@@ -297,7 +297,7 @@ pub extern "C" fn typio_instance_set_engine_availability_changed_callback(
 
 /// Notify the host that the active engine's availability changed
 /// (engine to framework). Caches the state + reason, de-duplicates, and fans out.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_engine_availability(
     instance: *mut TypioInstance,
     state: TypioEngineAvailability,
@@ -337,7 +337,7 @@ pub extern "C" fn typio_instance_notify_engine_availability(
 }
 
 /// Return the last notified availability (host pull / initial sync).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_engine_availability(
     instance: *mut TypioInstance,
 ) -> TypioEngineAvailability {
@@ -348,7 +348,7 @@ pub extern "C" fn typio_instance_get_engine_availability(
 }
 
 /// Notify the host that the active engine has changed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_engine_changed(
     instance: *mut TypioInstance,
     engine: *const TypioEngineInfo,
@@ -367,7 +367,7 @@ pub extern "C" fn typio_instance_notify_engine_changed(
 }
 
 /// Notify the host that the active voice engine has changed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_voice_engine_changed(
     instance: *mut TypioInstance,
     engine: *const TypioEngineInfo,
@@ -388,7 +388,7 @@ pub extern "C" fn typio_instance_notify_voice_engine_changed(
 /// Register the languages-changed callback (ADR-0034). Fired whenever an
 /// engine updates its declared languages at runtime via
 /// `typio_registry_set_engine_languages`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_languages_changed_callback(
     instance: *mut TypioInstance,
     callback: TypioLanguagesChangedCallback,
@@ -406,7 +406,7 @@ pub extern "C" fn typio_instance_set_languages_changed_callback(
 /// `engine_name` is the engine that triggered the change (borrowed, may be
 /// NULL to indicate a global refresh). The host re-queries
 /// `typio_registry_list_languages` and refreshes derived surfaces.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_languages_changed(
     instance: *mut TypioInstance,
     engine_name: *const c_char,

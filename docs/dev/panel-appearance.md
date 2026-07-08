@@ -1,50 +1,44 @@
 # Panel Appearance Development Notes
 
-Rendering pipeline for the candidate Panel: offscreen GPU rendering, SHM
+Rendering pipeline for the candidate Panel: CPU canvas rendering, SHM
 presentation, font loading, theme resolution, and cache invalidation.
 
 ---
 
-## GPU render and SHM present pipeline
+## CPU render and SHM present pipeline
 
-The Panel renders with flux (Vulkan) into an offscreen image and attaches the
-result to its `zwp_input_popup_surface_v2` `wl_surface` through host-managed
-`wl_shm` buffers. There is no Vulkan device, surface, or dma-buf in the panel
-path; see
-[ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
+The Panel renders entirely on the CPU — flux's software canvas for fills and
+flux-text for glyphs (FreeType/HarfBuzz/Fontconfig via flux-text-sys) — and
+attaches the result to its
+`zwp_input_popup_surface_v2` `wl_surface` through host-managed `wl_shm`
+buffers. There is no Vulkan device, surface, swapchain, dma-buf, or GPU readback
+in the panel path; see [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
 `FluxPanel` (`crates/typio-host/src/panel.rs`) drives the render pipeline:
 
-- `FluxPanel::new_from_surface()` creates a flux device without WSI extensions,
-  an offscreen `flux_surface` (`vk_surface_khr = NULL`), a `flux_canvas`, a
-  `flux_text` context, and a small arena.
-- `ensure_candidate_size()` / `ensure_banner_size()` grow the offscreen image in
+- `FluxPanel::new_from_surface()` creates a flux **CPU canvas**
+  (`flux_canvas_create_cpu`), the text rasteriser (`TextRaster`), and the
+  grow-only scratch framebuffer.
+- `ensure_candidate_size()` / `ensure_banner_size()` grow the framebuffer in
   quantised physical pixels. When `wp_viewporter` is available,
   `wp_viewport.set_source` / `set_destination` crop the oversized image to the
   exact logical panel size ([ADR-0013](../adr/0013-grow-only-popup-swapchain.md),
   adapted by ADR-0040).
 - `draw_candidates()` and `draw_status_banner()` record one frame:
-  `flux_surface_begin_frame` → `flux_canvas_begin` → paint → `flux_canvas_end`
-  → `flux_frame_submit` → `flux_frame_present` (offscreen no-op) →
-  `flux_surface_read_pixels`.
-- `present_shm()` copies the readback into a free SHM buffer, sets
-  `wl_surface.set_buffer_scale`, attaches the `wl_buffer`, damages the full
-  buffer, and commits the popup surface.
+  `flux_canvas_cpu_begin` → `flux_canvas_fill_rrect` (background + highlight)
+  → `TextRaster::draw` composites glyphs into the framebuffer →
+  `flux_canvas_cpu_end`.
+- `present_shm()` byte-swaps the framebuffer (RGBA8 → ARGB8888) into a free SHM
+  buffer, sets `wl_surface.set_buffer_scale`, attaches the `wl_buffer`, damages
+  the full buffer, and commits the popup surface.
 
-Text is drawn from a **shared, colour-independent glyph atlas**
-([ADR-0012](../adr/0012-glyph-atlas-shared-texture.md)). Each glyph is rasterised
-by FreeType once into a single long-lived R8 *coverage* texture;
-`typio_text_shape_fill` then draws one tinted quad per glyph sampling that
-sub-rect, so the colour (normal / muted / selection) is a **draw-time tint**
-([ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md)) and no per-text
-GPU upload happens during candidate navigation. Solid fills (background, border,
-selection) use premultiplied RGBA via `flux_color_rgba_premul`.
-
-The glyph atlas reclaims itself — a wholesale rebuild when the hash load exceeds
-75 % or the shelf packer exhausts the texture
-([ADR-0020](../adr/0020-atlas-reclamation-and-glyph-layer-modularization.md)),
-so neither lookup degradation nor texture saturation accumulates during extended
-CJK input sessions.
+Text is shaped and rasterised by flux-text (via `flux-text-sys`:
+FreeType/HarfBuzz/fontconfig) directly into the premultiplied RGBA8 framebuffer.
+Solid fills (background,
+border, selection) use premultiplied RGBA via `flux_color_rgba_premul`. There is
+**no shared GPU glyph atlas** in the CPU-canvas path; the retired coverage-texture
+model ([ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md)) belonged to
+the Vulkan renderer and is no longer in effect.
 
 ---
 
@@ -54,8 +48,6 @@ The panel render path runs synchronously on the single-threaded event loop. To
 keep the loop responsive when a compositor stops releasing buffers, the host
 owns the SHM pool and never waits for compositor release.
 
-- `flux_surface_begin_frame` is called with `PANEL_FRAME_TIMEOUT_NS` (200 ms)
-  instead of an infinite wait.
 - `ShmBufferPool::acquire()` returns `None` if every SHM buffer is busy. The
   panel drops that frame and lets the next dirty tick render the newest
   candidate state.
@@ -72,27 +64,22 @@ on-screen highlight is briefly behind.
 ## Font selection and sizing
 
 The candidate panel renders text on the CPU via `TextRaster`
-(`crates/typio-host/src/text_raster.rs`): `rustybuzz` (shaping), `fontdb`
-(per-codepoint face discovery — `fontdb` reads the system `fonts.conf`, so the
-family list mirrors the desktop's Fontconfig configuration), and `ab_glyph`
-(outline rasterisation). The legacy FreeType/HarfBuzz/Fontconfig `text_shaper.c`
-path was retired by [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
+(`crates/typio-host/src/text_raster.rs`): a thin FFI wrapper over **flux-text**
+(`flux-text-sys`: FreeType + HarfBuzz + Fontconfig + FriBidi), exposing
+`flux_text_create` / `flux_text_measure` / `flux_text_draw`. The former
+`ab_glyph`/`rustybuzz`/`fontdb` software rasteriser was retired by
+[ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md); those crates now serve
+only `icon_badge.rs` (tray badges, behind `feature = "systray"`).
 
-### Primary family + per-codepoint fallback
+### Family selection
 
-`TextRaster::face_score` assigns every covering face a sort key. The
-user-configured family (`display.font_family`) is the **highest-priority tier**
-(tier 0): it wins for every codepoint it covers. When it does not cover a
-codepoint (e.g. a Latin family meeting a CJK character), selection falls through
-to the built-in fallback lists (`CJK_SANS_FAMILIES`, `UI_SANS_FAMILIES`) and
-finally to any system face that covers the codepoint, with upright faces and
-weights near Regular preferred (CJK prefers ~Medium for visual balance at small
-sizes). This mirrors the fontconfig "first font then fallback" contract without
-a native `libfontconfig` dependency.
-
-Changing `display.font_family` (config reload) calls `set_preferred_family`,
-which flushes the per-codepoint coverage cache and all loaded faces so the new
-family is resolved from scratch.
+Font selection is delegated to flux-text's fontconfig backend: the configured
+family (`display.font_family`) is the preferred family, and fontconfig resolves
+per-codepoint fallback (e.g. a Latin family meeting a CJK character) through the
+desktop's `fonts.conf`. `TextRaster::set_preferred_family` is a **no-op**
+retained only for source compatibility with the former `ab_glyph` rasteriser —
+flux-text picks up the preferred family at `flux_text_create` time, and a family
+change is applied by recreating the text context on config reload.
 
 ### Sizing
 
@@ -106,14 +93,13 @@ config reload, then pushed onto the panel via `FluxPanel::set_font_config`.
 
 ## Font and glyph caches
 
-`TextRaster` keeps two caches, both flushed by `set_preferred_family`:
+`TextRaster` holds a single `flux_text*` context; face and glyph caches live
+inside flux-text (FreeType/HarfBuzz/fontconfig), so the Rust wrapper keeps none.
+`set_preferred_family` is a no-op (see above).
 
-- `by_face` / `entries`: loaded `(bytes, index, ab_glyph FontVec)` per font face.
-- `cover`: per-codepoint → covering face index (or `None`).
-
-Glyphs are rasterised on demand by `ab_glyph` directly into the panel's
-premultiplied-RGBA8 scratch framebuffer each frame — there is no shared GPU
-glyph atlas in the CPU-canvas path (contrast the retired
+Glyphs are rasterised on demand by flux-text into the panel's premultiplied
+RGBA8 framebuffer each frame via the host-coverage path (ADR-0019) — there is no
+shared GPU glyph atlas in the CPU-canvas path (contrast the retired
 [ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md) coverage-texture
 model, which belonged to the Vulkan renderer). Colour is a straight RGB
 parameter on `TextRaster::draw`.
@@ -147,6 +133,7 @@ Users can override individual channels per mode via `display.colors.light.*` and
 
 ## Layout cache invalidation
 
-`PanelRenderCtx` maintains an LRU layout cache keyed by candidate label + text + font description (label and main). Colour is not part of the key — glyphs are colour-independent R8 coverage ([ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md)), so the selected and unselected states of a row share one cache entry.
-
-Changing the font weight, size, or family produces a different cache key. The cache does **not** survive `panel_render_ctx_invalidate`, which happens on theme or config changes.
+`PanelRenderCtx` maintains an LRU layout cache keyed by candidate label + text +
+font description (label and main). Changing the font weight, size, or family
+produces a different cache key. The cache does **not** survive
+`panel_render_ctx_invalidate`, which happens on theme or config changes.

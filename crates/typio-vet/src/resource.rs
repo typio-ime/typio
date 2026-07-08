@@ -7,7 +7,7 @@
 //! resolves the name against the icon theme at runtime, so a mismatch here is
 //! invisible until a user sees a blank tray icon.
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::fs;
 use std::path::{Path, PathBuf};
 

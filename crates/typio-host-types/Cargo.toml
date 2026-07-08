@@ -1,0 +1,12 @@
+[package]
+name = "typio-host-types"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platform-neutral host state and policy types for typio-host"
+
+[dependencies]
+bitflags.workspace = true
+tracing.workspace = true

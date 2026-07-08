@@ -13,10 +13,12 @@ use std::time::Instant;
 
 /// Default anchor-probe enable flag. Mirrors `TYPIO_ANCHOR_PROBE_DEFAULT_ENABLED`.
 const DEFAULT_ANCHOR_PROBE_ENABLED: bool = true;
-/// Default anchor-probe timeout. Mirrors `TYPIO_ANCHOR_PROBE_DEFAULT_TIMEOUT_MS`.
-const DEFAULT_ANCHOR_TIMEOUT_MS: u64 = 150;
+/// Default anchor-probe timeout. Candidate UI should appear immediately even
+/// when a compositor is late with `text_input_rectangle`; a later caret rect
+/// can refine the popup position in place.
+const DEFAULT_ANCHOR_TIMEOUT_MS: u64 = 20;
 /// Minimum clamp for the configured timeout.
-const MIN_ANCHOR_TIMEOUT_MS: u64 = 50;
+const MIN_ANCHOR_TIMEOUT_MS: u64 = 10;
 /// Maximum clamp for the configured timeout.
 const MAX_ANCHOR_TIMEOUT_MS: u64 = 1000;
 
@@ -148,14 +150,6 @@ impl PanelCoordinator {
         self.position_anchor_has_caret = false;
     }
 
-    /// Whether the compositor has sent a real caret rectangle for the current
-    /// anchor generation (as opposed to the popup being shown via the anchor
-    /// timeout fallback). Diagnostic only — the timeout fallback now applies
-    /// to every owner regardless.
-    pub fn has_caret_rect(&self) -> bool {
-        self.position_anchor_has_caret
-    }
-
     /// Record that the compositor sent a text-input rectangle for this popup.
     pub fn note_caret_rect(&mut self) {
         self.position_anchor_has_caret = true;
@@ -242,13 +236,17 @@ impl PanelCoordinator {
 
     /// Decide whether a positioned popup for `owner` may be shown now.
     ///
-    /// If the anchor is not ready yet, the request is queued and
-    /// [`FlushDecision::Pending`] is returned. If the anchor is ready, any
-    /// pending state is cleared and [`FlushDecision::Show`] is returned.
+    /// Candidate updates are latency-critical: show them immediately using the
+    /// compositor's fallback placement if the caret anchor has not arrived yet.
+    /// Status overlays may still wait briefly so they do not steal the popup
+    /// surface during focus churn.
     pub fn decide_positioned_flush(&mut self, owner: UiOwner, label: &str) -> FlushDecision {
-        if self.anchor_ready() {
+        if self.anchor_ready() || owner == UiOwner::Candidate {
             self.cancel_pending();
             self.ui_owner = owner;
+            if owner == UiOwner::Candidate && !self.anchor_ready() {
+                self.mark_anchor_ready();
+            }
             return FlushDecision::Show;
         }
 
@@ -296,7 +294,7 @@ impl PanelCoordinator {
 
     /// Flush a pending positioned UI if the anchor is now ready. Returns the
     /// owner and label to show, or `None` if there is nothing to flush.
-    pub fn flush_pending(&mut self) -> Option<(UiOwner, String)> {
+    fn flush_pending(&mut self) -> Option<(UiOwner, String)> {
         if !self.positioned_ui_pending || !self.anchor_ready() {
             return None;
         }
@@ -399,11 +397,12 @@ mod tests {
         assert!(coord.has_pending());
         assert_eq!(coord.pending_owner(), UiOwner::Indicator);
         assert_eq!(coord.pending_label(), "EN");
-        // Not ready yet → flush_pending returns None.
-        assert!(coord.flush_pending().is_none());
+        // Not ready yet → flush_pending_with_timeout returns None.
+        let now = Instant::now();
+        assert!(coord.flush_pending_with_timeout(now).is_none());
         coord.mark_anchor_ready();
         assert_eq!(
-            coord.flush_pending(),
+            coord.flush_pending_with_timeout(now),
             Some((UiOwner::Indicator, "EN".to_string()))
         );
         assert!(!coord.has_pending());
@@ -437,25 +436,18 @@ mod tests {
     }
 
     #[test]
-    fn candidate_panel_falls_back_after_anchor_timeout() {
-        // Regression: a missing/slow `text_input_rectangle` must not strand
-        // the candidate panel. After the anchor timeout the pending candidate
-        // is shown via the fallback anchor, not cancelled.
+    fn candidate_panel_uses_immediate_anchor_fallback() {
+        // Candidate UX is latency-sensitive: a missing/slow
+        // `text_input_rectangle` must not delay the first visible frame.
         let mut coord =
             PanelCoordinator::with_config(PanelCoordinatorConfig::from_values(true, 50));
         coord.reset_anchor();
         assert_eq!(
             coord.decide_positioned_flush(UiOwner::Candidate, "candidate"),
-            FlushDecision::Pending
+            FlushDecision::Show
         );
-        // No caret rect ever arrives.
-        assert!(!coord.has_caret_rect());
-
-        let later = Instant::now() + std::time::Duration::from_millis(60);
-        assert_eq!(
-            coord.flush_pending_with_timeout(later),
-            Some((UiOwner::Candidate, "candidate".to_string()))
-        );
+        // No caret rect ever arrives, but the candidate panel is visible via
+        // fallback placement and later caret rects can still refine position.
         assert_eq!(coord.visible_owner(), UiOwner::Candidate);
         assert!(coord.anchor_ready());
         assert!(!coord.has_pending());
@@ -463,10 +455,12 @@ mod tests {
 
     #[test]
     fn config_clamps_timeout() {
-        let cfg = PanelCoordinatorConfig::from_values(true, 10);
+        let cfg = PanelCoordinatorConfig::from_values(true, 5);
         assert_eq!(cfg.anchor_timeout_ms, DEFAULT_ANCHOR_TIMEOUT_MS);
         let cfg = PanelCoordinatorConfig::from_values(true, 5000);
         assert_eq!(cfg.anchor_timeout_ms, MAX_ANCHOR_TIMEOUT_MS);
+        let cfg = PanelCoordinatorConfig::from_values(true, 10);
+        assert_eq!(cfg.anchor_timeout_ms, 10);
         let cfg = PanelCoordinatorConfig::from_values(true, 200);
         assert_eq!(cfg.anchor_timeout_ms, 200);
     }

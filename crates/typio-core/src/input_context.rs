@@ -11,12 +11,12 @@ pub use callbacks::*;
 pub use content::*;
 pub use focus::*;
 
+use crate::TypioInstance;
 use crate::types::{
     TypioCandidate, TypioCommitCallback, TypioComposition, TypioCompositionCallback,
     TypioDeleteSurroundingCallback, TypioPreedit, TypioPreeditSegment,
 };
-use crate::TypioInstance;
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 
 /// Internal candidate-list storage. Not part of the public C ABI — the
@@ -245,14 +245,14 @@ pub(super) fn candidate_signature(list: &CandidatesState) -> u64 {
 /// Create a new input context associated with the given instance.
 ///
 /// Returns a pointer that must be freed with `typio_input_context_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_new(instance: *mut TypioInstance) -> *mut TypioInputContext {
     let ctx = Box::new(TypioInputContext::new(instance));
     Box::into_raw(ctx)
 }
 
 /// Free an input context and all owned resources.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_free(ctx: *mut TypioInputContext) {
     if !ctx.is_null() {
         unsafe { drop(Box::from_raw(ctx)) };
@@ -263,6 +263,7 @@ pub extern "C" fn typio_input_context_free(ctx: *mut TypioInputContext) {
 mod tests {
     use super::*;
     use crate::instance;
+    use crate::types::TypioResult;
     use std::ffi::{CStr, CString};
     use std::ptr;
 
@@ -294,20 +295,25 @@ mod tests {
 
     #[test]
     fn context_commit_and_clear() {
+        use std::sync::Mutex;
+
         let inst = instance::typio_instance_new();
         instance::typio_instance_init(inst);
         let ctx = typio_input_context_new(inst);
 
-        // Set up a commit callback to capture the committed text
-        static mut LAST_COMMIT: *const c_char = ptr::null();
+        // Capture committed text from the callback into a Mutex-protected slot.
+        // The inner wrapper is a plain `Send` newtype around the raw pointer;
+        // `static mut` would be UB-prone and is rejected by edition-2024 rules.
+        // Safety of the pointed-to bytes is local to this single-threaded test.
+        struct Captured(*const c_char);
+        unsafe impl Send for Captured {}
+        static LAST_COMMIT: Mutex<Captured> = Mutex::new(Captured(ptr::null()));
         extern "C" fn capture_commit(
             _ctx: *mut typio_abi::TypioInputContext,
             text: *const c_char,
             _ud: *mut c_void,
         ) {
-            unsafe {
-                LAST_COMMIT = libc::strdup(text);
-            }
+            LAST_COMMIT.lock().unwrap().0 = unsafe { libc::strdup(text) };
         }
         unsafe {
             (*ctx).commit_callback = Some(capture_commit);
@@ -316,13 +322,72 @@ mod tests {
         let text = CString::new("hello").unwrap();
         typio_input_context_commit(ctx, text.as_ptr());
 
+        let captured = LAST_COMMIT.lock().unwrap().0;
         unsafe {
-            assert!(!LAST_COMMIT.is_null());
-            let s = CStr::from_ptr(LAST_COMMIT).to_str().unwrap();
+            assert!(!captured.is_null());
+            let s = CStr::from_ptr(captured).to_str().unwrap();
             assert_eq!(s, "hello");
-            libc::free(LAST_COMMIT as *mut c_void);
-            LAST_COMMIT = ptr::null();
+            libc::free(captured as *mut c_void);
+            LAST_COMMIT.lock().unwrap().0 = ptr::null();
         }
+
+        typio_input_context_free(ctx);
+        instance::typio_instance_free(inst);
+    }
+
+    #[test]
+    fn context_set_candidate_selection_updates_only_selected() {
+        let inst = instance::typio_instance_new();
+        let ctx = typio_input_context_new(inst);
+
+        let alpha = CString::new("alpha").unwrap();
+        let beta = CString::new("beta").unwrap();
+        let mut candidates = [
+            TypioCandidate {
+                text: alpha.as_ptr(),
+                comment: ptr::null(),
+                label: ptr::null(),
+            },
+            TypioCandidate {
+                text: beta.as_ptr(),
+                comment: ptr::null(),
+                label: ptr::null(),
+            },
+        ];
+        let comp = TypioComposition {
+            struct_size: std::mem::size_of::<TypioComposition>(),
+            segments: ptr::null(),
+            segment_count: 0,
+            cursor_pos: 0,
+            candidates: candidates.as_mut_ptr(),
+            candidate_count: candidates.len(),
+            page: 0,
+            page_size: 2,
+            total: 2,
+            selected: 0,
+            has_prev: false,
+            has_next: false,
+            content_signature: 0,
+            host_managed_selection: 0,
+            revision: 0,
+        };
+
+        typio_input_context_set_composition(ctx, &comp);
+        let signature = unsafe { (*ctx).candidates.content_signature };
+
+        assert_eq!(
+            typio_input_context_set_candidate_selection(ctx, 1),
+            TypioResult::TypioOk
+        );
+        unsafe {
+            assert_eq!((*ctx).candidates.selected, 1);
+            assert_eq!((*ctx).candidates.content_signature, signature);
+            assert_eq!((*ctx).candidates.count, 2);
+        }
+        assert_eq!(
+            typio_input_context_set_candidate_selection(ctx, 2),
+            TypioResult::TypioErrorInvalidArgument
+        );
 
         typio_input_context_free(ctx);
         instance::typio_instance_free(inst);

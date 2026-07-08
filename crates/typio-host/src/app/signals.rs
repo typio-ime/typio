@@ -7,8 +7,8 @@
 //! and let the main loop react on its own thread.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::DaemonEvent;
 

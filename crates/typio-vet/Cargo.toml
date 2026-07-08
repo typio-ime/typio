@@ -1,7 +1,7 @@
 [package]
 name = "typio-vet"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 authors = ["Typio Contributors"]
 license = "MIT"
 description = "Conformance vetting tool for Typio engine plugins (ABI, behavior, and packaged resources)"
@@ -15,5 +15,4 @@ path = "src/bin/typio-vet.rs"
 
 [dependencies]
 libc = "0.2"
-lazy_static = "1.5"
 typio-abi = { workspace = true }

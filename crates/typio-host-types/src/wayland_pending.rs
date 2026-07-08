@@ -8,7 +8,7 @@
 //! - `grab_keyboard`   →  `keymap` event (grab keymap delivery)
 //! - anchor probe      →  `text_input_rectangle` event (caret-rect delivery)
 //!
-//! The design mirrors [`crate::panel_present_gate`]: an `Option<Instant>`
+//! The design mirrors the presentation record pattern: an `Option<Instant>`
 //! recorded when the request is sent, a `Duration` threshold, and one warn per
 //! stalled episode (the compositor is never retried — a missing response is
 //! almost always its bug, and retrying would only mask it). The earliest
@@ -64,7 +64,9 @@ impl PendingSlot {
     /// Record that the awaited response arrived. Returns the elapsed time
     /// since the request was sent, if one was outstanding.
     fn note_resolved(&mut self, now: Instant) -> Option<Duration> {
-        let elapsed = self.sent_at.map(|since| now.saturating_duration_since(since));
+        let elapsed = self
+            .sent_at
+            .map(|since| now.saturating_duration_since(since));
         self.sent_at = None;
         self.reported = false;
         elapsed

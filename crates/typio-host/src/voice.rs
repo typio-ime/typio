@@ -24,20 +24,20 @@
 //! keeps the host free of a heavy native dependency and lets PipeWire do
 //! the device selection and resampling.
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::io::Read;
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
 use typio::types::TypioVoiceSession;
 use typio::voice::session::{
-    typio_voice_session_dispatch, typio_voice_session_feed_audio, typio_voice_session_free,
-    typio_voice_session_get_fd, typio_voice_session_get_unavail_reason,
-    typio_voice_session_is_available, typio_voice_session_new,
-    typio_voice_session_set_audio_source, typio_voice_session_set_callback,
-    typio_voice_session_start, typio_voice_session_stop, TypioAudioSource, TypioAudioSourceOps,
+    TypioAudioSource, TypioAudioSourceOps, typio_voice_session_dispatch,
+    typio_voice_session_feed_audio, typio_voice_session_free, typio_voice_session_get_fd,
+    typio_voice_session_get_unavail_reason, typio_voice_session_is_available,
+    typio_voice_session_new, typio_voice_session_set_audio_source,
+    typio_voice_session_set_callback, typio_voice_session_start, typio_voice_session_stop,
 };
 use typio::voice::types::{TypioVoiceSessionEvent, TypioVoiceSessionEventType, VoiceState};
 

@@ -1,6 +1,6 @@
 # ADR-0004: Event-Loop Scheduling and Watchdog
 
-- **Status**: Accepted
+- **Status**: Superseded (watchdog removed by ADR-0041; event-loop scheduling retained)
 - **Date**: 2026-05-28
 - **Deciders**: Project maintainers
 

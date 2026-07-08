@@ -829,9 +829,10 @@ mod tests {
         };
         let src = Sources::new().lang("zh").engine("rime", "Rime");
         let m = notable("中/A");
-        assert!(ind
-            .show_for_state_change(t0(), Some(&m), &cfg, &src)
-            .is_none());
+        assert!(
+            ind.show_for_state_change(t0(), Some(&m), &cfg, &src)
+                .is_none()
+        );
     }
 
     // -- show_on_summon --

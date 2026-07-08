@@ -44,7 +44,7 @@
 #![allow(non_snake_case)]
 
 use crate::keyboard_policy::Keysym;
-use bitflags::bitflags;
+pub use typio_host_types::HostSelectionFlags;
 
 // Navigation + commit keysyms consulted by `host_selection_keysym` /
 // `is_navigation_keysym`.
@@ -103,23 +103,6 @@ pub enum HostSelCategory {
     CommitRaw = 3,
     /// Number keys 0–9 — pick by index.
     IndexPick = 4,
-}
-
-bitflags! {
-    /// Engine-declared host-managed-selection capability flags. Matches
-    /// the C constants in `typio/abi/input_context.h`:
-    /// `TYPIO_HOST_SEL_NAVIGATE / _COMMIT / _INDEX_PICK / _COMMIT_RAW`.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub struct HostSelectionFlags: u32 {
-        /// Up/Down/Left/Right.
-        const NAVIGATE   = 1 << 0;
-        /// Space.
-        const COMMIT     = 1 << 1;
-        /// 0–9.
-        const INDEX_PICK = 1 << 2;
-        /// Enter / KP_Enter — commit preedit as-is.
-        const COMMIT_RAW = 1 << 3;
-    }
 }
 
 /// True iff `keysym` is Up/Down/Left/Right.
@@ -260,10 +243,21 @@ pub enum HostSelectionAction {
     /// Call `typio_input_context_commit_candidate(ctx, index)` so the
     /// engine can dispatch its `commit_candidate` vtable entry.
     Commit(usize),
+    /// Forward a synthetic PageUp/PageDown press to the engine so it can
+    /// perform candidate paging at a host-managed navigation boundary.
+    PageUp,
+    PageDown,
     /// Swallow the key without further action. Used for releases under
     /// host-managed selection so the engine doesn't observe an unpaired
     /// release for a press it didn't see.
     Swallow,
+}
+
+/// Page availability for host-managed boundary navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HostSelectionPageState {
+    pub has_prev: bool,
+    pub has_next: bool,
 }
 
 /// Pure decision: given the key state, keysym, candidate count,
@@ -281,15 +275,26 @@ pub fn classify_host_selection(
     candidate_count: usize,
     selected: usize,
     flags: HostSelectionFlags,
+    page_state: HostSelectionPageState,
 ) -> Option<HostSelectionAction> {
     if !should_consume_key(candidate_count, flags, keysym) {
         return None;
     }
+    let sel_key = host_selection_keysym(keysym);
     // After this point the host owns the key.
     if !key_state_pressed {
         return Some(HostSelectionAction::Swallow);
     }
-    let sel_key = host_selection_keysym(keysym);
+    if matches!(sel_key, HostSelKey::NavUp) && selected == 0 && page_state.has_prev {
+        return Some(HostSelectionAction::PageUp);
+    }
+    if matches!(sel_key, HostSelKey::NavDown)
+        && candidate_count > 0
+        && selected >= candidate_count - 1
+        && page_state.has_next
+    {
+        return Some(HostSelectionAction::PageDown);
+    }
     if host_selection_is_commit(sel_key) {
         // CommitRaw (Enter) does not resolve to an index — let the
         // engine handle the raw preedit commit.
@@ -346,6 +351,23 @@ mod tests {
     const XKB_KEY_2: Keysym = 0x0032;
     const XKB_KEY_3: Keysym = 0x0033;
     const XKB_KEY_5: Keysym = 0x0035;
+
+    fn classify(
+        key_state_pressed: bool,
+        keysym: Keysym,
+        candidate_count: usize,
+        selected: usize,
+        flags: HostSelectionFlags,
+    ) -> Option<HostSelectionAction> {
+        classify_host_selection(
+            key_state_pressed,
+            keysym,
+            candidate_count,
+            selected,
+            flags,
+            HostSelectionPageState::default(),
+        )
+    }
 
     #[test]
     fn keysym_classification_basic() {
@@ -537,11 +559,11 @@ mod tests {
     fn classify_returns_none_when_engine_did_not_opt_in() {
         // Empty flags → host stays out of the way.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_UP, 5, 0, HostSelectionFlags::empty()),
+            classify(true, XKB_KEY_UP, 5, 0, HostSelectionFlags::empty()),
             None
         );
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::empty()),
+            classify(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::empty()),
             None
         );
     }
@@ -550,7 +572,7 @@ mod tests {
     fn classify_returns_none_when_no_candidates() {
         // No candidates to navigate → fall through to engine.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_UP, 0, 0, HostSelectionFlags::NAVIGATE),
+            classify(true, XKB_KEY_UP, 0, 0, HostSelectionFlags::NAVIGATE),
             None
         );
     }
@@ -559,18 +581,64 @@ mod tests {
     fn classify_navigate_press_moves_highlight() {
         // Down at index 0 with NAVIGATE flag → Navigate(1).
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::NAVIGATE),
+            classify(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::NAVIGATE),
             Some(HostSelectionAction::Navigate(1))
         );
         // Up at index 3 → Navigate(2).
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_UP, 5, 3, HostSelectionFlags::NAVIGATE),
+            classify(true, XKB_KEY_UP, 5, 3, HostSelectionFlags::NAVIGATE),
             Some(HostSelectionAction::Navigate(2))
         );
         // Up at index 0 clamps to 0.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_UP, 5, 0, HostSelectionFlags::NAVIGATE),
+            classify(true, XKB_KEY_UP, 5, 0, HostSelectionFlags::NAVIGATE),
             Some(HostSelectionAction::Navigate(0))
+        );
+    }
+
+    #[test]
+    fn classify_navigation_pages_at_page_boundaries() {
+        assert_eq!(
+            classify_host_selection(
+                true,
+                XKB_KEY_DOWN,
+                5,
+                4,
+                HostSelectionFlags::NAVIGATE,
+                HostSelectionPageState {
+                    has_prev: false,
+                    has_next: true,
+                },
+            ),
+            Some(HostSelectionAction::PageDown)
+        );
+        assert_eq!(
+            classify_host_selection(
+                true,
+                XKB_KEY_UP,
+                5,
+                0,
+                HostSelectionFlags::NAVIGATE,
+                HostSelectionPageState {
+                    has_prev: true,
+                    has_next: false,
+                },
+            ),
+            Some(HostSelectionAction::PageUp)
+        );
+        assert_eq!(
+            classify_host_selection(
+                true,
+                XKB_KEY_DOWN,
+                5,
+                3,
+                HostSelectionFlags::NAVIGATE,
+                HostSelectionPageState {
+                    has_prev: false,
+                    has_next: true,
+                },
+            ),
+            Some(HostSelectionAction::Navigate(4))
         );
     }
 
@@ -579,7 +647,7 @@ mod tests {
         // Press Down → Navigate. Release Down (state=0) under the same
         // flag → Swallow, so the engine doesn't see an unpaired release.
         assert_eq!(
-            classify_host_selection(false, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::NAVIGATE),
+            classify(false, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::NAVIGATE),
             Some(HostSelectionAction::Swallow)
         );
     }
@@ -588,12 +656,12 @@ mod tests {
     fn classify_commit_index_press_resolves_target() {
         // '3' key with INDEX_PICK + 5 candidates → Commit(2).
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_3, 5, 0, HostSelectionFlags::INDEX_PICK),
+            classify(true, XKB_KEY_3, 5, 0, HostSelectionFlags::INDEX_PICK),
             Some(HostSelectionAction::Commit(2))
         );
         // Space with COMMIT flag → Commit(currently selected).
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_SPACE, 5, 2, HostSelectionFlags::COMMIT),
+            classify(true, XKB_KEY_SPACE, 5, 2, HostSelectionFlags::COMMIT),
             Some(HostSelectionAction::Commit(2))
         );
     }
@@ -604,7 +672,7 @@ mod tests {
         // commit (the host doesn't know how). classify returns None so
         // try_host_selection falls back to process_key.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_RETURN, 5, 0, HostSelectionFlags::COMMIT_RAW),
+            classify(true, XKB_KEY_RETURN, 5, 0, HostSelectionFlags::COMMIT_RAW),
             None
         );
     }
@@ -614,7 +682,7 @@ mod tests {
         // '5' key with INDEX_PICK + only 3 candidates → no resolution,
         // fall through to engine.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_5, 3, 0, HostSelectionFlags::INDEX_PICK),
+            classify(true, XKB_KEY_5, 3, 0, HostSelectionFlags::INDEX_PICK),
             None
         );
     }
@@ -624,12 +692,12 @@ mod tests {
         // Down arrow with COMMIT flag (not NAVIGATE) → host did not
         // declare navigation, fall through.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::COMMIT),
+            classify(true, XKB_KEY_DOWN, 5, 0, HostSelectionFlags::COMMIT),
             None
         );
         // Space with NAVIGATE flag (not COMMIT) → fall through.
         assert_eq!(
-            classify_host_selection(true, XKB_KEY_SPACE, 5, 0, HostSelectionFlags::NAVIGATE),
+            classify(true, XKB_KEY_SPACE, 5, 0, HostSelectionFlags::NAVIGATE),
             None
         );
     }

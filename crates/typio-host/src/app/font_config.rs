@@ -7,7 +7,7 @@
 //! indicator config, snapshotting once at startup and on every reload so the
 //! render hot path never touches FFI.
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 
 use typio::TypioInstance;
 
@@ -22,61 +22,7 @@ pub(crate) const DEFAULT_FONT_SIZE_PT: f64 = 11.0;
 const FONT_SIZE_MIN_PT: f64 = 6.0;
 const FONT_SIZE_MAX_PT: f64 = 72.0;
 
-/// Pixel-per-point factor. The panel sizes everything in physical pixels; a
-/// point maps to 96/72 logical px (CSS point), then the HiDPI scale is applied
-/// separately at draw time.
-const PT_TO_PX: f64 = 96.0 / 72.0;
-
-/// Snapshot of the panel font configuration (logical units; the HiDPI scale is
-/// applied at draw time).
-#[derive(Clone, Debug)]
-pub struct PanelFontConfig {
-    /// User-configured primary family, or empty for built-in fallback.
-    pub family: String,
-    /// Font size in points, clamped to 6–72.
-    pub size_pt: f64,
-}
-
-impl Default for PanelFontConfig {
-    fn default() -> Self {
-        Self {
-            family: DEFAULT_FONT_FAMILY.to_string(),
-            size_pt: DEFAULT_FONT_SIZE_PT,
-        }
-    }
-}
-
-impl PartialEq for PanelFontConfig {
-    fn eq(&self, other: &Self) -> bool {
-        self.family == other.family && (self.size_pt - other.size_pt).abs() < 0.01
-    }
-}
-
-impl PanelFontConfig {
-    /// Candidate/main text size in logical pixels.
-    pub fn candidate_size_px(&self) -> f32 {
-        (self.size_pt * PT_TO_PX) as f32
-    }
-
-    /// Candidate index-number size in logical pixels (one step smaller).
-    pub fn number_size_px(&self) -> f32 {
-        (self.size_pt * 0.69 * PT_TO_PX) as f32
-    }
-
-    /// Status-banner text size in logical pixels.
-    pub fn banner_size_px(&self) -> f32 {
-        (self.size_pt * 0.94 * PT_TO_PX) as f32
-    }
-
-    /// The configured family, or `None` when empty (pure fallback selection).
-    pub fn family_opt(&self) -> Option<String> {
-        if self.family.is_empty() {
-            None
-        } else {
-            Some(self.family.clone())
-        }
-    }
-}
+pub use typio_host_types::PanelFontConfig;
 
 impl App {
     /// Read `display.font_family` / `display.font_size` from libtypio's config
@@ -92,11 +38,7 @@ impl App {
             return PanelFontConfig::default();
         }
 
-        let family = get_string(
-            cfg,
-            "display.font_family",
-            DEFAULT_FONT_FAMILY,
-        );
+        let family = get_string(cfg, "display.font_family", DEFAULT_FONT_FAMILY);
 
         let size_pt = typio::config::typio_config_get_float(
             cfg,
@@ -113,11 +55,8 @@ impl App {
 fn get_string(cfg: *const typio::config::Config, key: &str, default: &str) -> String {
     let key_c = CString::new(key).unwrap();
     let default_c = CString::new(default).unwrap();
-    let ptr: *const c_char = typio::config::typio_config_get_string(
-        cfg,
-        key_c.as_ptr(),
-        default_c.as_ptr(),
-    );
+    let ptr: *const c_char =
+        typio::config::typio_config_get_string(cfg, key_c.as_ptr(), default_c.as_ptr());
     if ptr.is_null() {
         return default.to_string();
     }

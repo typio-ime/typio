@@ -12,7 +12,7 @@ fn main() {
 
     // Restrict the cdylib's exported symbols to the public `typio_*` /
     // `TYPIO_*` namespace via a version script. Without this every Rust
-    // `#[no_mangle]` helper and a sprinkling of runtime symbols ship as
+    // `#[unsafe(no_mangle)]` helper and a sprinkling of runtime symbols ship as
     // part of libtypio.so, polluting the ABI surface.
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "macos" && target_os != "windows" {

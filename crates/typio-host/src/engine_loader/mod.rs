@@ -34,16 +34,16 @@ pub mod manifest;
 
 use std::path::{Path, PathBuf};
 
-use typio::core::engine::backend::{process::ProcessBackend, EngineBackend};
-use typio::core::engine::{BackendPreference, EngineCapabilities, EngineInfo, EngineType};
+use typio::core::engine::backend::ProcessBackend;
+use typio::core::engine::{EngineCapabilities, EngineInfo, EngineType};
 use typio::core::registry::EngineRegistry;
 
 use caps::HostCapabilities;
-use manifest::{is_manifest_filename, EngineManifest, ManifestError};
+use manifest::{EngineManifest, ManifestError, is_manifest_filename};
 
 pub use caps::{HostCapabilities as Capabilities, NegotiationFailure};
-pub use dirs::{find_manifest_for, resolve_engine_dirs, ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR};
-pub use manifest::{resolve_path_arg, ManifestError as Error, DEFAULT_LANGUAGE};
+pub use dirs::{ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR, find_manifest_for, resolve_engine_dirs};
+pub use manifest::{DEFAULT_LANGUAGE, ManifestError as Error, resolve_path_arg};
 
 /// Loader state: a host capability set + a remembered icon theme path.
 ///
@@ -209,7 +209,7 @@ impl EngineLoader {
         let argv = manifest.argv(path)?;
 
         // Register via libtypio's native Rust API.
-        let backend = EngineBackend::Process(ProcessBackend::new(info.clone(), argv));
+        let backend = ProcessBackend::new(info.clone(), argv);
         if let Err(err) = registry.register(backend) {
             match err {
                 typio::core::engine::EngineError::AlreadyExists => {
@@ -256,7 +256,6 @@ impl EngineLoader {
                 required: manifest.required.clone().unwrap_or_default(),
                 optional: manifest.optional.clone().unwrap_or_default(),
             },
-            backend_preference: BackendPreference::FfiPreferred,
         }
     }
 }

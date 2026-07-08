@@ -110,7 +110,7 @@ impl TypioFieldDefault {
     /// integers, bool, double). The caller must still manage the lifetime of
     /// any pointed-to data; this function does not allocate or free.
     pub unsafe fn raw_copy(&self) -> Self {
-        std::ptr::read(self)
+        unsafe { std::ptr::read(self) }
     }
 }
 

@@ -1,11 +1,11 @@
 //! Configuration operations — reload, save, get/set config text
 
-use super::{build_config_path, TypioInstance};
+use super::{TypioInstance, build_config_path};
 use crate::config;
 use crate::config_schema;
 use crate::types::*;
 use std::collections::HashMap;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 
 type EngineDirMap = HashMap<String, CString>;
@@ -48,7 +48,7 @@ fn typio_instance_get_engine_dir(
 }
 
 /// Get the configured config directory, or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_config_dir(instance: *mut TypioInstance) -> *const c_char {
     if instance.is_null() {
         return ptr::null();
@@ -63,7 +63,7 @@ pub extern "C" fn typio_instance_get_config_dir(instance: *mut TypioInstance) ->
 }
 
 /// Get the configured data directory, or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_data_dir(instance: *mut TypioInstance) -> *const c_char {
     if instance.is_null() {
         return ptr::null();
@@ -78,7 +78,7 @@ pub extern "C" fn typio_instance_get_data_dir(instance: *mut TypioInstance) -> *
 }
 
 /// Get the configured state directory, or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_state_dir(instance: *mut TypioInstance) -> *const c_char {
     if instance.is_null() {
         return ptr::null();
@@ -93,7 +93,7 @@ pub extern "C" fn typio_instance_get_state_dir(instance: *mut TypioInstance) -> 
 }
 
 /// Get the engine-scoped data directory, creating it if necessary.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_engine_data_dir(
     instance: *mut TypioInstance,
     engine_name: *const c_char,
@@ -107,7 +107,7 @@ pub extern "C" fn typio_instance_get_engine_data_dir(
 }
 
 /// Get the engine-scoped state directory, creating it if necessary.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_engine_state_dir(
     instance: *mut TypioInstance,
     engine_name: *const c_char,
@@ -121,7 +121,7 @@ pub extern "C" fn typio_instance_get_engine_state_dir(
 }
 
 /// Get the raw configuration object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_config(instance: *mut TypioInstance) -> *mut config::Config {
     if instance.is_null() {
         return ptr::null_mut();
@@ -130,7 +130,7 @@ pub extern "C" fn typio_instance_get_config(instance: *mut TypioInstance) -> *mu
 }
 
 /// Get the configuration section for the named engine.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_engine_config(
     instance: *mut TypioInstance,
     engine_name: *const c_char,
@@ -152,7 +152,7 @@ pub extern "C" fn typio_instance_get_engine_config(
 }
 
 /// Reload configuration from disk and apply defaults.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_reload_config(instance: *mut TypioInstance) -> TypioResult {
     if instance.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -196,7 +196,7 @@ pub extern "C" fn typio_instance_reload_config(instance: *mut TypioInstance) -> 
 }
 
 /// Save the current configuration to disk.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_save_config(instance: *mut TypioInstance) -> TypioResult {
     if instance.is_null() {
         return TypioResult::TypioErrorInvalidArgument;
@@ -206,7 +206,7 @@ pub extern "C" fn typio_instance_save_config(instance: *mut TypioInstance) -> Ty
 }
 
 /// Serialize the current configuration to a newly allocated TOML string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_config_text(instance: *mut TypioInstance) -> *mut c_char {
     if instance.is_null() {
         return ptr::null_mut();
@@ -219,7 +219,7 @@ pub extern "C" fn typio_instance_get_config_text(instance: *mut TypioInstance) -
 }
 
 /// Parse the given TOML string and replace the current configuration.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_config_text(
     instance: *mut TypioInstance,
     content: *const c_char,
@@ -277,7 +277,7 @@ pub extern "C" fn typio_instance_set_config_text(
 }
 
 /// Write an engine-owned config key, persist, and notify the engine.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_set_engine_config_key(
     instance: *mut TypioInstance,
     engine_name: *const c_char,

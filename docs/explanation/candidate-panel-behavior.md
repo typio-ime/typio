@@ -58,7 +58,7 @@ The host sends an **anchor probe** — an empty preedit followed by a
 no-op `commit(serial)` — to make browsers and other clients that
 refresh caret rectangles on input-method traffic send a fresh
 `text_input_rectangle`. The probe is bounded by
-`display.anchor_probe_timeout_ms` (default 150 ms, clamped 50–1000 ms).
+`display.anchor_probe_timeout_ms` (default 20 ms, clamped 10–1000 ms). Candidate popups use immediate fallback placement so a slow caret rectangle does not delay the first frame; the timeout mainly applies to status overlays.
 
 If the anchor becomes ready within the timeout, the Panel maps and the
 state becomes `Visible`. If the timeout expires, the host applies the
@@ -150,11 +150,12 @@ highlight briefly lags behind. This is the central design property
 established in [ADR-0006](../adr/0006-resilient-candidate-popup-present.md)
 and revisited in [Frontend Graphics](frontend-graphics.md#a-corollary-graphics-and-input-correctness-are-decoupled).
 
-The current panel path does not use Vulkan WSI present. It renders to a flux
-offscreen image, reads the pixels back, and attaches them through a host-owned
-`wl_shm` buffer. If the compositor is slow to release buffers, the SHM pool
-reports no free slot and the daemon drops that frame instead of blocking the
-input loop. The next dirty tick renders the newest coalesced candidate state.
+The current panel path renders entirely on the CPU (flux software canvas +
+`TextRaster`) and presents over host-managed `wl_shm` only — no Vulkan device,
+no GPU readback, no dma-buf (ADR-0040). If the compositor is slow to release
+buffers, the SHM pool reports no free slot and the daemon drops that frame
+instead of blocking the input loop. The next dirty tick renders the newest
+coalesced candidate state.
 
 `wl_surface.frame` callbacks are still used as a soft pacing hint. A healthy
 callback wakes the panel at compositor refresh. If a callback goes missing, the

@@ -1,11 +1,11 @@
 //! Mock libtypio host.
 //!
-//! The functions in this module are exported with `#[no_mangle]` so that an
+//! The functions in this module are exported with `#[unsafe(no_mangle)]` so that an
 //! native engine artifact loaded via `dlopen` resolves its `typio_*` host
 //! imports against `typio-vet` instead of the real `libtypio`. Each call is
 //! recorded so scenarios can assert on what the engine actually did.
 //!
-//! The `#[no_mangle] extern "C"` exports below dereference raw pointers by
+//! The `#[unsafe(no_mangle)] extern "C"` exports below dereference raw pointers by
 //! design: they must mirror the real `libtypio` C ABI byte-for-byte, which the
 //! engine calls across FFI. The Rust `unsafe` keyword is invisible to a C
 //! caller, so marking them `unsafe` would buy no safety while diverging from
@@ -14,8 +14,8 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref, clippy::missing_safety_doc)]
 
 use std::collections::HashMap;
-use std::ffi::{c_char, c_void, CStr, CString};
-use std::sync::Mutex;
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::sync::{LazyLock, Mutex};
 
 use typio_abi::*;
 
@@ -44,11 +44,11 @@ pub enum ConfigValue {
     Float(f64),
 }
 
-lazy_static::lazy_static! {
-    static ref CONTEXT_LOGS: Mutex<HashMap<u64, Vec<ContextEvent>>> = Mutex::new(HashMap::new());
-    static ref CONFIGS: Mutex<HashMap<u64, HashMap<String, ConfigValue>>> = Mutex::new(HashMap::new());
-    static ref NEXT_ID: Mutex<u64> = Mutex::new(1);
-}
+static CONTEXT_LOGS: LazyLock<Mutex<HashMap<u64, Vec<ContextEvent>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static CONFIGS: LazyLock<Mutex<HashMap<u64, HashMap<String, ConfigValue>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_ID: Mutex<u64> = Mutex::new(1);
 
 fn next_id() -> u64 {
     let mut g = NEXT_ID.lock().unwrap();
@@ -80,7 +80,7 @@ pub fn peek_log(ctx_id: u64) -> Vec<ContextEvent> {
 /* Mock ABI implementations                                                   */
 /* -------------------------------------------------------------------------- */
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_commit(ctx: *mut TypioInputContext, text: *const c_char) {
     if ctx.is_null() || text.is_null() {
         return;
@@ -97,7 +97,7 @@ pub extern "C" fn typio_input_context_commit(ctx: *mut TypioInputContext, text: 
         .push(ContextEvent::Commit(s));
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_clear(ctx: *mut TypioInputContext) {
     if ctx.is_null() {
         return;
@@ -111,7 +111,7 @@ pub extern "C" fn typio_input_context_clear(ctx: *mut TypioInputContext) {
         .push(ContextEvent::Clear);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_input_context_set_composition(
     ctx: *mut TypioInputContext,
     comp: *const TypioComposition,
@@ -147,7 +147,7 @@ pub extern "C" fn typio_input_context_set_composition(
         });
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_config(instance: *mut TypioInstance) -> *mut c_void {
     if instance.is_null() {
         return std::ptr::null_mut();
@@ -155,7 +155,7 @@ pub extern "C" fn typio_instance_get_config(instance: *mut TypioInstance) -> *mu
     instance as *mut c_void
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_get_engine_config(
     instance: *mut TypioInstance,
     _name: *const c_char,
@@ -167,7 +167,7 @@ fn inst_id_from_config(config: *mut c_void) -> u64 {
     unsafe { *(config as *mut u64) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_bool(
     config: *mut c_void,
     key: *const c_char,
@@ -187,7 +187,7 @@ pub extern "C" fn typio_config_get_bool(
     default
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_string(
     config: *mut c_void,
     key: *const c_char,
@@ -207,7 +207,7 @@ pub extern "C" fn typio_config_get_string(
     default
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_int(
     config: *mut c_void,
     key: *const c_char,
@@ -227,7 +227,7 @@ pub extern "C" fn typio_config_get_int(
     default
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_config_get_float(
     config: *mut c_void,
     key: *const c_char,
@@ -247,7 +247,7 @@ pub extern "C" fn typio_config_get_float(
     default
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_modifier_only(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -257,7 +257,7 @@ pub extern "C" fn typio_key_event_is_modifier_only(event: *const TypioKeyEvent) 
     (0xFFE1..=0xFFEE).contains(&e.keysym)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_key_event_is_escape(event: *const TypioKeyEvent) -> bool {
     if event.is_null() {
         return false;
@@ -265,14 +265,14 @@ pub extern "C" fn typio_key_event_is_escape(event: *const TypioKeyEvent) -> bool
     unsafe { &*event }.keysym == TYPIO_KEY_Escape
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_notify_keyboard_mode(
     _instance: *mut TypioInstance,
     _mode: *const TypioKeyboardEngineMode,
 ) {
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_instance_clear_keyboard_mode(_instance: *mut TypioInstance) {}
 
 /* -------------------------------------------------------------------------- */

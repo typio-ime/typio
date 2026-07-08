@@ -37,6 +37,11 @@
 //! typio-vet ../typio-engine-basic/target/debug/libtypio_engine_basic.so
 //! ```
 
+// The vet harness intentionally drives native C ABI engines through raw
+// pointers and exported callbacks. Keep the migration to Rust 2024 semantic-only;
+// a finer-grained unsafe audit belongs in a separate change.
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use std::path::Path;
 
 pub mod check;

@@ -5,10 +5,10 @@
 //! IDs (e.g. "switch_language", "voice_ptt") rather than hard-coded struct
 //! fields, so adding a new action is an additive change.
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 
-use crate::config::{typio_config_get_string, Config};
+use crate::config::{Config, typio_config_get_string};
 use crate::types::TypioModifier;
 
 /* ── XKB keysym constants (copied so core needs no xkbcommon dependency) ── */
@@ -188,7 +188,7 @@ fn parse_str(s: &str) -> Option<TypioShortcutBinding> {
 
 /// Parse a shortcut string like "Ctrl+Shift" or "Super+v"
 /// into a TypioShortcutBinding. Returns true on success.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_shortcut_parse(str: *const c_char, out: *mut TypioShortcutBinding) -> bool {
     if str.is_null() || out.is_null() {
         return false;
@@ -210,7 +210,7 @@ pub extern "C" fn typio_shortcut_parse(str: *const c_char, out: *mut TypioShortc
 
 /// Format a binding back to a human-readable string. Caller frees with
 /// `typio_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_shortcut_format(binding: *const TypioShortcutBinding) -> *mut c_char {
     if binding.is_null() {
         return ptr::null_mut();
@@ -266,7 +266,7 @@ pub extern "C" fn typio_shortcut_format(binding: *const TypioShortcutBinding) ->
 ///
 /// Standard action IDs: `switch_language`, `exit`, `voice_ptt`.
 /// Returns true if the ID is known.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_shortcut_default(
     action_id: *const c_char,
     out: *mut TypioShortcutBinding,
@@ -292,7 +292,7 @@ pub extern "C" fn typio_shortcut_default(
 ///
 /// Reads `shortcuts.<action_id>` from `config`; if missing or unparseable,
 /// uses [`typio_shortcut_default`]. Returns true when `out` was written.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn typio_shortcut_get(
     config: *const Config,
     action_id: *const c_char,
