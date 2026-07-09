@@ -45,14 +45,9 @@ commits are not blindly flushed after every composition:
 At the end of the pending-key drain the router flushes any remaining staged
 preedit through `InputMethodState::text_transaction_and_flush`.  This prevents
 fast key bursts from producing multiple same-serial `zwp_input_method_v2.commit`
-requests while still keeping commit-producing keys ordered.
-
-`text_transaction_and_flush` also applies a **preedit-only serial gate**: if
-the current serial was already used, pure preedit updates are deferred in
-`TextSerialGate` and flushed on the next `done` (or when a `commit_string`
-forces a send). Real commit text is never deferred — compositor `done` is not
-an ack of our text commit. See
-[ADR-0042](../adr/0042-text-input-transaction-staging.md).
+requests while still keeping commit-producing keys ordered.  Preedit is not
+held for compositor `done` — that event is a compositor state boundary, not a
+text-commit ack.  See [ADR-0042](../adr/0042-text-input-transaction-staging.md).
 
 ## Panel Render Bounds
 

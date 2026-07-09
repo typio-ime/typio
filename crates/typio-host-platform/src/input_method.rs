@@ -19,9 +19,7 @@
 //! layer and drives this state through its `pub` accessors.
 //!
 //! The serial-commit protocol increments the serial on every `done`; a
-//! commit before the first `done` is silently dropped. Text payloads further
-//! enforce one `commit(serial)` per serial via [`TextSerialGate`] so later
-//! preedit updates are not applied with a stale serial.
+//! commit before the first `done` is silently dropped.
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
@@ -38,7 +36,6 @@ use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
 use crate::panel_present_gate::PresentationRecord;
 use crate::panel_scheduler::{self, PanelScheduleState};
-use crate::text_serial_gate::{TextSerialGate, TextSubmit};
 use crate::protocols::input_method_v2::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
 };
@@ -296,9 +293,6 @@ pub struct InputMethodState {
     /// (`commit`→`done`, `grab_keyboard`→`keymap`, probe→`text_input_rectangle`).
     /// Diagnoses "compositor did not send X" stalls; see [`crate::wayland_pending`].
     pub wayland_pending: crate::wayland_pending::PendingRequestTracker,
-    /// Preedit-only serial gate: pure preedit may wait for `done`; commit
-    /// string always sends immediately (see ADR-0042 follow-up).
-    text_serial_gate: TextSerialGate,
 }
 
 impl InputMethodState {
@@ -414,7 +408,6 @@ impl InputMethodState {
         self.composition.clear();
         self.panel_schedule_state = panel_scheduler::complete();
         self.invalidate_panel_presentation();
-        self.text_serial_gate.clear();
     }
 
     /// Whether a keyboard grab object currently exists.
@@ -508,14 +501,9 @@ impl InputMethodState {
     /// applied atomically in protocol order.  Keeping this helper as the single
     /// commit point avoids scattering multiple same-serial commits through the
     /// keyboard path and lets the router combine "commit current segment + show
-    /// remaining preedit" into one protocol transaction.
-    ///
-    /// Preedit-only updates: at most one text `commit(serial)` per serial; if
-    /// the serial was already used, the latest preedit is deferred until
-    /// compositor `done` (or until a `commit_string` forces a send).
-    ///
-    /// **`commit_string` always sends immediately** — `done` is not an ack of
-    /// our text commit, so holding 上屏 text until `done` stalls Space commits.
+    /// remaining preedit" into one protocol transaction (ADR-0042 batch
+    /// coalesce). Preedit is not held for compositor `done` — that event is a
+    /// compositor state boundary, not a text-commit ack.
     pub fn text_transaction_and_flush(
         &mut self,
         commit_text: Option<&str>,
@@ -527,57 +515,15 @@ impl InputMethodState {
         if commit_text.is_none() && preedit.is_none() {
             return;
         }
-        match self.text_serial_gate.submit(self.serial, commit_text, preedit) {
-            TextSubmit::Deferred => {
-                tracing::debug!(
-                    target: "typio.wayland.text",
-                    serial = self.serial,
-                    has_preedit = preedit.is_some(),
-                    "defer preedit-only transaction: serial already committed"
-                );
-            }
-            TextSubmit::Send {
-                commit_text,
-                preedit,
-            } => {
-                self.send_text_transaction(commit_text.as_deref(), preedit.as_ref());
-            }
-        }
-    }
-
-    /// Wire a text transaction that the serial gate has already approved.
-    fn send_text_transaction(
-        &mut self,
-        commit_text: Option<&str>,
-        preedit: Option<&(String, u32)>,
-    ) {
         if let Some(text) = commit_text {
             self.input_method.commit_string(text.to_string());
         }
         if let Some((text, cursor)) = preedit {
             self.input_method
-                .set_preedit_string(text.clone(), *cursor as i32, *cursor as i32);
+                .set_preedit_string(text.to_string(), cursor as i32, cursor as i32);
         }
         self.input_method.commit(self.serial);
         self.wayland_pending.note_commit_sent(Instant::now());
-    }
-
-    /// After compositor `done` advances `serial`, flush any deferred preedit.
-    fn flush_deferred_text_after_done(&mut self) {
-        if let Some(deferred) = self.text_serial_gate.on_serial_advanced(self.serial) {
-            if !self.active {
-                // Focus gone while we waited; drop the staged payload.
-                self.text_serial_gate.clear();
-                return;
-            }
-            tracing::debug!(
-                target: "typio.wayland.text",
-                serial = self.serial,
-                has_preedit = deferred.preedit.is_some(),
-                "flush deferred preedit after done"
-            );
-            self.send_text_transaction(None, deferred.preedit.as_ref());
-        }
     }
 
     /// Load an XKB keymap from a compositor-provided file descriptor.
@@ -876,7 +822,6 @@ impl InputMethodFrontend {
             buffer_scale: 1.0,
             compositor_repeat_info: None,
             wayland_pending: crate::wayland_pending::PendingRequestTracker::default(),
-            text_serial_gate: TextSerialGate::default(),
         };
 
         Ok(Self {
@@ -1169,9 +1114,6 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 state.active = false;
                 state.facts.im_deactivate_seen = true;
                 state.pending.active = false;
-                // Drop deferred text so a later activation cannot flush a
-                // preedit belonging to the previous field.
-                state.text_serial_gate.clear();
                 state.fire(LifecycleEvent::Deactivated);
             }
             Event::SurroundingText {
@@ -1218,14 +1160,10 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 // focus controller consumes them at the end of the tick.
                 state.facts.im_activate_seen = false;
                 state.facts.im_deactivate_seen = false;
-                state.wayland_pending.note_done_received(Instant::now());
-                // Flush text that waited for a free serial *before* lifecycle
-                // observers run, so focus/key work in this tick sees the
-                // latest committed preedit intent.
-                state.flush_deferred_text_after_done();
                 state.fire(LifecycleEvent::Done {
                     serial: state.serial,
                 });
+                state.wayland_pending.note_done_received(Instant::now());
             }
             Event::Unavailable => {
                 state.stopped = true;

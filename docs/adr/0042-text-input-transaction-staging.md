@@ -87,27 +87,13 @@ transaction staging model.
   `text_transaction_and_flush`; raw `commit_protocol_state` is reserved for
   non-text lifecycle state.
 
-## Follow-up: preedit-only serial gate (cross-tick)
+## Non-goal: waiting on compositor `done` for preedit
 
-Batch-boundary coalescing alone is not enough. Two keys can land in *different*
-event-loop ticks before the compositor replies with `done`, so the host would
-still issue:
-
-```text
-tick 1: set_preedit("n")  + commit(S)
-tick 2: set_preedit("ni") + commit(S)   // done for S not yet received
-```
-
-`InputMethodState` owns a `TextSerialGate`:
-
-- **Preedit-only**: first `commit(S)` proceeds; further pure preedit for the
-  same serial is deferred and flushed when `done` advances the serial (or when
-  a later `commit_string` forces a send).
-- **`commit_string`**: always sent immediately. Compositor `done` is not an
-  acknowledgment of the client's text `commit` — waiting for it stalls Space
-  上屏 until an unrelated `done` or another key arrives.
-
-Engine/candidate state is still updated immediately.
+Compositor `done` is a state-batch boundary (and serial advance), not an ack
+of the client's text `commit`. Holding preedit until the next `done` was tried
+as a same-serial workaround and made composition feel laggy; it is not part of
+this decision. Cross-tick same-serial preedit is left to the compositor; the
+host only coalesces within a pending-key drain.
 
 ## Related
 

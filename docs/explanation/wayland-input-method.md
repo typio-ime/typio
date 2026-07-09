@@ -97,9 +97,7 @@ The helper stages `commit_string` and/or `set_preedit_string`, then sends one `c
 
 The keyboard router owns the staging boundary. It updates candidate state immediately, but coalesces composition-only preedit updates to the latest value for the current pending-key drain. If an engine emits real commit text, the router flushes before routing the next key so commit order remains strict. If one key produces both commit text and a replacement preedit, both are sent in the same Wayland transaction.
 
-This is deliberate: two fast key events can be delivered before Typio reads the compositor's next `done`. Submitting every intermediate preedit as its own `commit(serial)` can create same-serial commits where later values become stale. See [ADR-0042](../adr/0042-text-input-transaction-staging.md).
-
-`text_transaction_and_flush` additionally applies a **preedit-only serial gate**: a second pure-preedit payload for the same serial is deferred in `TextSerialGate` and flushed when `done` advances the serial (or when `commit_string` forces a send). Commit text is never held for `done`.
+This is deliberate: two fast key events can be delivered before Typio reads the compositor's next `done`. Submitting every intermediate preedit as its own `commit(serial)` can create same-serial commits where later values become stale. See [ADR-0042](../adr/0042-text-input-transaction-staging.md). The host does not hold preedit for compositor `done`; that event is a compositor state boundary, not a text-commit ack.
 
 ## Keyboard Grab Lifecycle
 

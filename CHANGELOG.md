@@ -82,17 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Cross-tick preedit coalescing without stalling Space 上屏.** ADR-0042
-  coalesced composition-only preedit within one key-batch drain, but two keys
-  in consecutive ticks could still issue same-serial preedit commits before
-  compositor `done`. `TextSerialGate` defers *preedit-only* updates on a busy
-  serial and flushes them on `done`. **`commit_string` always sends immediately**
-  — `done` is not an ack of our text commit, so holding 上屏 text until `done`
-  made Space appear stuck until another key unblocked the gate.
-- **Space commit no longer waits on serial `done`.** An intermediate gate that
-  deferred all text (including `commit_string`) until the next compositor
-  `done` could leave Rime Space 上屏 pending indefinitely; only pure preedit is
-  deferred now.
+- **Removed preedit wait-on-`done` serial gate.** Holding pure preedit until
+  compositor `done` was a same-serial workaround that made composition lag;
+  `done` is a compositor state boundary, not a text-commit ack. ADR-0042 batch
+  coalesce remains the only host-side preedit merge (pending-key drain).
 - **Fast Rime preedit/candidate updates now use staged text-input transactions.**
   The keyboard router no longer maps every composition callback to an immediate
   `zwp_input_method_v2.commit(serial)`. Composition-only preedit bursts are
