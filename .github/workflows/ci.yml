@@ -12,14 +12,48 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The libtypio release this host is developed and released against.
-  # Bump deliberately, in its own commit, when adopting new libtypio API.
-  LIBTYPIO_PINNED_REF: v0.4.0
   OPTICS_PINNED_REF: main
 
 jobs:
+  cargo-check-format-lint:
+    name: Check, Format, and Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libpipewire-0.3-dev \
+            libfreetype6-dev libharfbuzz-dev libfontconfig-dev \
+            libvulkan-dev glslang-tools
+
+      - name: Clone optics (pinned)
+        run: |
+          git clone --depth 1 --branch ${{ env.OPTICS_PINNED_REF }} \
+            https://github.com/ming2k/optics.git \
+            ${{ github.workspace }}/../../optics
+
+      - name: Build optics
+        run: |
+          meson setup ${{ github.workspace }}/../../optics/build \
+            --prefix="$HOME/.local"
+          meson compile -C ${{ github.workspace }}/../../optics/build
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo clippy
+        env:
+          FLUX_BUILD_DIR: ${{ github.workspace }}/../../optics/build
+          FLUX_SOURCE_DIR: ${{ github.workspace }}/../../optics/libs/flux
+        run: cargo clippy --workspace -- -D warnings
+
   cargo-test:
-    name: Cargo build & test (libtypio pinned)
+    name: Cargo build & test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -33,66 +67,6 @@ jobs:
             libpipewire-0.3-dev \
             libfreetype6-dev libharfbuzz-dev libfontconfig-dev \
             libvulkan-dev glslang-tools
-
-      - name: Clone libtypio (pinned)
-        run: |
-          git clone --depth 1 --branch ${{ env.LIBTYPIO_PINNED_REF }} \
-            https://github.com/${{ github.repository_owner }}/libtypio.git \
-            ${{ github.workspace }}/../libtypio
-
-      - name: Build libtypio
-        run: cargo build --release --manifest-path ${{ github.workspace }}/../libtypio/Cargo.toml
-
-      - name: Clone optics (pinned)
-        run: |
-          git clone --depth 1 --branch ${{ env.OPTICS_PINNED_REF }} \
-            https://github.com/ming2k/optics.git \
-            ${{ github.workspace }}/../../optics
-
-      - name: Build optics
-        run: |
-          meson setup ${{ github.workspace }}/../../optics/build \
-            --prefix="$HOME/.local"
-          meson compile -C ${{ github.workspace }}/../../optics/build
-
-      - name: Cargo build
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/../libtypio/target/release:${{ github.workspace }}/../../optics/build
-        run: cargo build --release -p typio-host --bin typio
-
-      - name: Cargo test
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/../libtypio/target/release:${{ github.workspace }}/../../optics/build
-        run: cargo test -p typio-host
-
-  # Early warning for upstream drift: build against libtypio main HEAD.
-  # Allowed to fail — a red canary means the next pin bump needs host
-  # changes, not that this commit is broken.
-  canary-libtypio-head:
-    name: Canary - libtypio main HEAD
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            meson ninja-build pkg-config \
-            libwayland-dev wayland-protocols libxkbcommon-dev \
-            libpipewire-0.3-dev \
-            libfreetype6-dev libharfbuzz-dev libfontconfig-dev \
-            libvulkan-dev glslang-tools
-
-      - name: Clone libtypio (main)
-        run: |
-          git clone --depth 1 \
-            https://github.com/${{ github.repository_owner }}/libtypio.git \
-            ${{ github.workspace }}/../libtypio
-
-      - name: Build libtypio
-        run: cargo build --release --manifest-path ${{ github.workspace }}/../libtypio/Cargo.toml
 
       - name: Clone optics (pinned)
         run: |
@@ -108,5 +82,10 @@ jobs:
 
       - name: Cargo test
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/../libtypio/target/release:${{ github.workspace }}/../../optics/build
-        run: cargo test -p typio-host
+          FLUX_BUILD_DIR: ${{ github.workspace }}/../../optics/build
+          FLUX_SOURCE_DIR: ${{ github.workspace }}/../../optics/libs/flux
+          # typio-vet tests dlopen against the mock host
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../../optics/build
+        run: |
+          cargo build --workspace
+          cargo test --workspace
