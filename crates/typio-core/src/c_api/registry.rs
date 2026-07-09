@@ -965,6 +965,41 @@ pub extern "C" fn typio_registry_set_active_language(
     activate_language_with_config(reg, &tag_str)
 }
 
+/// Activate a language and explicitly set its keyboard engine in one atomic
+/// step, overriding the default configured for that language.
+#[unsafe(no_mangle)]
+pub extern "C" fn typio_registry_set_language_keyboard(
+    registry: *mut TypioRegistry,
+    tag: *const c_char,
+    engine_name: *const c_char,
+) -> TypioResult {
+    if registry.is_null() || tag.is_null() || engine_name.is_null() {
+        return TypioResult::TypioErrorInvalidArgument;
+    }
+    let tag_str = unsafe { CStr::from_ptr(tag) }
+        .to_string_lossy()
+        .into_owned();
+    let engine_str = unsafe { CStr::from_ptr(engine_name) }.to_string_lossy();
+    let reg = unsafe { &mut *registry };
+    let voice = language_override(reg, &tag_str, "voice");
+    match reg
+        .inner
+        .activate_language(&tag_str, Some(&engine_str), voice.as_deref())
+    {
+        Ok(()) => {
+            unsafe {
+                notify_keyboard_changed(reg);
+                notify_voice_changed(reg);
+            }
+            TypioResult::TypioOk
+        }
+        Err(crate::core::engine::EngineError::InvalidArgument) => {
+            TypioResult::TypioErrorInvalidArgument
+        }
+        Err(_) => TypioResult::TypioError,
+    }
+}
+
 fn cycle_language_c(registry: *mut TypioRegistry, direction: SwitchDirection) -> TypioResult {
     if registry.is_null() {
         return TypioResult::TypioErrorInvalidArgument;

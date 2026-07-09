@@ -702,13 +702,19 @@ mod tests {
 
     /// Drive `server.dispatch()` in a background thread until `stop`
     /// becomes true. Returns the join handle.
+    struct ServerWrapper(Arc<Mutex<UdsServer>>);
+    unsafe impl Send for ServerWrapper {}
+    unsafe impl Sync for ServerWrapper {}
+
     fn spawn_dispatcher(
         server: Arc<Mutex<UdsServer>>,
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) -> thread::JoinHandle<()> {
+        let wrapper = ServerWrapper(server);
         thread::spawn(move || {
+            let wrapper = wrapper;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                if let Ok(mut s) = server.lock() {
+                if let Ok(mut s) = wrapper.0.lock() {
                     s.dispatch();
                 }
                 thread::sleep(Duration::from_millis(2));

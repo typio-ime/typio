@@ -20,8 +20,8 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::fd::RawFd;
 use std::ptr;
-use std::sync::{Arc, Mutex};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 

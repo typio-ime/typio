@@ -10,8 +10,7 @@ rust-version.workspace = true
 [features]
 default = ["wayland", "systray"]
 wayland = ["dep:typio-host-platform", "dep:wayland-client", "dep:wayland-scanner", "dep:wayland-backend", "dep:xkbcommon", "dep:flux-sys", "dep:flux-text-sys", "dep:wayland-sys"]
-systray = ["dep:zbus", "dep:ab_glyph", "dep:rustybuzz", "dep:fontdb"]
-
+systray = ["dep:zbus", "dep:flux-sys", "dep:flux-text-sys"]
 [dependencies]
 wayland-client = { optional = true, version = "0.31" }
 wayland-scanner = { workspace = true, optional = true }
@@ -30,14 +29,13 @@ nix.workspace = true
 zbus = { workspace = true, optional = true }
 libc.workspace = true
 xkbcommon = { workspace = true, optional = true }
-ab_glyph = { workspace = true, optional = true }
+
 flux-sys = { workspace = true, optional = true }
 flux-text-sys = { workspace = true, optional = true }
 wayland-sys = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rustybuzz = { version = "0.20.1", optional = true }
-fontdb = { version = "0.23.0", optional = true }
+
 
 [dev-dependencies]
 tempfile = "3"

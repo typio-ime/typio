@@ -4,6 +4,6 @@
 //! context. Pure policy helpers (modifiers, chords, repeat guard, tracker)
 //! live in [`crate::keyboard_policy`].
 
-pub mod router;
 mod ffi_callbacks;
 mod helpers;
+pub mod router;

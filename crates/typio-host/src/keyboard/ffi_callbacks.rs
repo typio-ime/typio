@@ -1,6 +1,6 @@
+use crate::candidate_guard::HostSelectionFlags;
 use std::ffi::{CStr, c_char, c_void};
 use typio_abi::TypioComposition;
-use crate::candidate_guard::HostSelectionFlags;
 
 /// Engine output staged by libtypio callbacks during `process_key`.
 #[derive(Default)]
@@ -37,7 +37,7 @@ pub(super) extern "C" fn on_commit_abi(
     on_commit(ctx as *mut typio::TypioInputContext, text, user_data)
 }
 
-extern "C" fn on_commit(
+pub(super) extern "C" fn on_commit(
     _ctx: *mut typio::TypioInputContext,
     text: *const c_char,
     user_data: *mut c_void,

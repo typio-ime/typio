@@ -43,7 +43,7 @@ libc = "0.2"
 # — the sync API surface we use from the logind worker thread.
 zbus = { version = "5", default-features = true, features = ["blocking-api"] }
 xkbcommon = "0.9"
-ab_glyph = "0.2"
+
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
 flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
 wayland-sys = "0.31"

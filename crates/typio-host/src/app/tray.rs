@@ -47,11 +47,17 @@ pub(super) fn install_tray_action_handler(
             TrayAction::Menu(MenuAction::EngineInLanguage {
                 lang_idx,
                 engine_idx,
-            }) => language_at_index(instance, lang_idx as usize)
-                .and_then(|tag| set_active_language(instance, &tag).ok())
-                .and_then(|_| keyboard_at_index(instance, engine_idx as usize))
-                .and_then(|name| set_active_keyboard(instance, &name).ok())
-                .map(|_| DaemonEvent::StateRefresh),
+            }) => {
+                let tag = language_at_index(instance, lang_idx as usize);
+                let name = keyboard_at_index(instance, engine_idx as usize);
+                if let (Some(t), Some(n)) = (tag, name) {
+                    set_language_keyboard(instance, &t, &n)
+                        .ok()
+                        .map(|_| DaemonEvent::StateRefresh)
+                } else {
+                    None
+                }
+            }
             TrayAction::Menu(MenuAction::OrphanEngine(idx)) => {
                 orphan_keyboard_at_index(instance, idx as usize)
                     .and_then(|name| set_active_keyboard(instance, &name).ok())
@@ -170,6 +176,26 @@ pub(super) fn set_active_language(instance: *mut TypioInstance, tag: &str) -> Re
     match c_registry::typio_registry_set_active_language(reg, tag_c.as_ptr()) {
         TypioResult::TypioOk => Ok(()),
         _ => Err(SvcError),
+    }
+}
+
+pub(super) fn set_language_keyboard(
+    instance: *mut TypioInstance,
+    tag: &str,
+    name: &str,
+) -> Result<(), SvcError> {
+    let reg = registry_ptr(instance).ok_or(SvcError)?;
+    let tag_c = CString::new(tag).map_err(|_| SvcError)?;
+    let name_c = CString::new(name).map_err(|_| SvcError)?;
+    match c_registry::typio_registry_set_language_keyboard(reg, tag_c.as_ptr(), name_c.as_ptr()) {
+        TypioResult::TypioOk => {
+            tracing::debug!(target: "typio.tray", language = %tag, keyboard = %name, "active language and keyboard changed atomically");
+            Ok(())
+        }
+        _ => {
+            tracing::warn!(target: "typio.tray", language = %tag, keyboard = %name, "set_language_keyboard failed");
+            Err(SvcError)
+        }
     }
 }
 

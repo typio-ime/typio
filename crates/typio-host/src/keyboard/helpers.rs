@@ -31,7 +31,10 @@ pub(super) fn host_selection_plain_key(modifiers: Modifiers) -> bool {
     (modifiers.0 & selection_modifiers) == 0
 }
 
-pub(super) fn should_suppress_untracked_modifier_release(bit: Modifiers, effective_held: Modifiers) -> bool {
+pub(super) fn should_suppress_untracked_modifier_release(
+    bit: Modifiers,
+    effective_held: Modifiers,
+) -> bool {
     if bit == Modifiers::SHIFT {
         let blocking = Modifiers(Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0);
         effective_held.intersects(blocking)
