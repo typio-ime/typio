@@ -4,141 +4,28 @@
 //! context. Decides whether a key is consumed by the engine or forwarded
 //! to the focused application via the virtual keyboard.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::c_void;
 
-use typio_abi::{TypioComposition, TypioEventType, TypioKeyEvent};
+use typio_abi::{TypioEventType, TypioKeyEvent};
 
 use crate::candidate_guard::{
-    HostSelectionAction, HostSelectionFlags, HostSelectionPageState, classify_host_selection,
+    HostSelectionAction, HostSelectionPageState, classify_host_selection,
 };
 use crate::input_method::{DecodedKeyEvent, InputMethodState};
 use crate::keyboard_policy::{
-    KEY_CAPITAL_V, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_V, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
+    KEY_PAGE_DOWN, KEY_PAGE_UP, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
     WL_KEYBOARD_KEY_STATE_RELEASED, effective_modifiers, modifier_bit_for_keysym,
     tracking_mark_released_pending, tracking_reset, tracking_reset_generations,
 };
 use crate::repeat_timer::Modifiers;
 use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
+use super::ffi_callbacks::{PendingEngineOutput, PendingComposition, on_commit_abi, on_composition_abi};
+use super::helpers::{is_voice_ptt_key, page_boundary_selected_index, commit_candidate_should_fallback, host_selection_plain_key, should_suppress_untracked_modifier_release};
 
 /// Maximum number of keys tracked for symmetric press/release. Mirrors
 /// `TYPIO_WL_MAX_TRACKED_KEYS` in the C host.
 pub const MAX_TRACKED_KEYS: usize = 256;
 
-/// Engine output staged by libtypio callbacks during `process_key`.
-#[derive(Default)]
-struct PendingEngineOutput {
-    commit: Option<String>,
-    composition: Option<PendingComposition>,
-}
-
-/// Pending composition state since the last key dispatch. Staged by the
-/// engine's composition callback on the same thread that called
-/// `typio_input_context_process_key`; drained by `drain_composition`.
-///
-/// `cursor_pos` is the engine's requested byte offset into `preedit_text`
-/// (negative means "place at the end"); see [`crate::preedit::resolve_cursor`].
-/// `host_managed_selection` carries the engine's declared
-/// selection-intercept flags (ADR-0012) so the host can apply
-/// [`crate::candidate_guard`] without a separate engine→host round-trip.
-#[derive(Default)]
-struct PendingComposition {
-    preedit_text: String,
-    cursor_pos: i32,
-    candidates: Vec<String>,
-    selected: usize,
-    has_prev: bool,
-    has_next: bool,
-    host_managed_selection: HostSelectionFlags,
-}
-
-extern "C" fn on_commit_abi(
-    ctx: *mut typio_abi::TypioInputContext,
-    text: *const c_char,
-    user_data: *mut c_void,
-) {
-    on_commit(ctx as *mut typio::TypioInputContext, text, user_data)
-}
-
-extern "C" fn on_commit(
-    _ctx: *mut typio::TypioInputContext,
-    text: *const c_char,
-    user_data: *mut c_void,
-) {
-    if text.is_null() || user_data.is_null() {
-        return;
-    }
-    let s = unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned();
-    unsafe {
-        (*(user_data as *mut PendingEngineOutput)).commit = Some(s);
-    }
-}
-
-extern "C" fn on_composition_abi(
-    ctx: *mut typio_abi::TypioInputContext,
-    comp: *const TypioComposition,
-    user_data: *mut c_void,
-) {
-    on_composition(ctx as *mut typio::TypioInputContext, comp, user_data)
-}
-
-extern "C" fn on_composition(
-    _ctx: *mut typio::TypioInputContext,
-    comp: *const TypioComposition,
-    user_data: *mut c_void,
-) {
-    if comp.is_null() || user_data.is_null() {
-        return;
-    }
-    let comp = unsafe { &*comp };
-
-    let mut candidates = Vec::new();
-    if !comp.candidates.is_null() && comp.candidate_count > 0 {
-        for i in 0..comp.candidate_count {
-            let c = unsafe { &*comp.candidates.add(i) };
-            if !c.text.is_null() {
-                let text = unsafe { CStr::from_ptr(c.text) }
-                    .to_string_lossy()
-                    .into_owned();
-                candidates.push(text);
-            }
-        }
-    }
-
-    let mut preedit = String::new();
-    if !comp.segments.is_null() && comp.segment_count > 0 {
-        for i in 0..comp.segment_count {
-            let seg = unsafe { &*comp.segments.add(i) };
-            if !seg.text.is_null() {
-                preedit.push_str(&unsafe { CStr::from_ptr(seg.text) }.to_string_lossy());
-            }
-        }
-    }
-
-    let selected = comp.selected.max(0) as usize;
-    let cursor_pos = comp.cursor_pos;
-    let host_managed_selection =
-        HostSelectionFlags::from_bits_truncate(comp.host_managed_selection);
-
-    unsafe {
-        (*(user_data as *mut PendingEngineOutput)).composition = Some(PendingComposition {
-            preedit_text: preedit,
-            cursor_pos,
-            candidates,
-            selected,
-            has_prev: comp.has_prev,
-            has_next: comp.has_next,
-            host_managed_selection,
-        });
-    }
-}
-
-/// What the repeat timer should do when it fires for a held key.
-///
-/// The initial key press is either consumed by the engine (in which case
-/// repeats must re-enter the engine with `is_repeat: true`) or forwarded
-/// to the focused application via the virtual keyboard (in which case
 /// repeats are synthetic key presses sent the same way). The router
 /// remembers which path is active so the main loop can drive both kinds
 /// of repeat through a single timer.
@@ -245,46 +132,6 @@ pub fn default_switch_binding() -> crate::keyboard_policy::ShortcutBinding {
         keysym: 0, // unused — chord_is_switch_modifier covers both sides
     }
 }
-
-fn is_voice_ptt_key(keysym: u32) -> bool {
-    keysym == KEY_V || keysym == KEY_CAPITAL_V
-}
-
-fn page_boundary_selected_index(keysym: u32, candidate_count: usize) -> Option<usize> {
-    if candidate_count == 0 {
-        return None;
-    }
-    if keysym == KEY_PAGE_UP {
-        Some(candidate_count - 1)
-    } else if keysym == KEY_PAGE_DOWN {
-        Some(0)
-    } else {
-        None
-    }
-}
-
-fn commit_candidate_should_fallback(
-    result: typio_abi::TypioResult,
-    produced_engine_output: bool,
-) -> bool {
-    result != typio_abi::TypioResult::TypioOk && !produced_engine_output
-}
-
-fn host_selection_plain_key(modifiers: Modifiers) -> bool {
-    let selection_modifiers =
-        Modifiers::SHIFT.0 | Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0;
-    (modifiers.0 & selection_modifiers) == 0
-}
-
-fn should_suppress_untracked_modifier_release(bit: Modifiers, effective_held: Modifiers) -> bool {
-    if bit == Modifiers::SHIFT {
-        let blocking = Modifiers(Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0);
-        effective_held.intersects(blocking)
-    } else {
-        true
-    }
-}
-
 impl KeyboardRouter {
     /// Create a new router for the given TypioInstance.
     ///
