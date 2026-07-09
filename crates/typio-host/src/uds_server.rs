@@ -205,7 +205,7 @@ impl Client {
 
 /// Type alias so the handler's boxed closure type stays readable in the
 /// struct definition above.
-pub type RequestHandler = Box<dyn FnMut(&str, ClientId) -> RequestOutcome + Send>;
+pub type RequestHandler = Box<dyn FnMut(&str, ClientId) -> RequestOutcome>;
 
 /// UDS server with epoll multiplexing.
 ///
@@ -282,7 +282,7 @@ impl UdsServer {
     /// the response and any subscription update.
     pub fn set_handler<F>(&mut self, handler: F)
     where
-        F: FnMut(&str, ClientId) -> RequestOutcome + Send + 'static,
+        F: FnMut(&str, ClientId) -> RequestOutcome + 'static,
     {
         self.handler = Some(Box::new(handler));
     }

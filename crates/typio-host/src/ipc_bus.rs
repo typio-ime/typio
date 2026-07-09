@@ -16,10 +16,12 @@
 //! - Implement [`ServiceBackend`] for a raw [`TypioInstance`] pointer so the
 //!   generic dispatch service can drive the live framework state.
 
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::fd::RawFd;
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use serde_json::Value;
 
@@ -34,32 +36,23 @@ use crate::uds_server::{ClientId, RequestOutcome, SubscriptionUpdate, UdsServer}
 /// The live UDS + dispatch surface.
 pub struct IpcBus {
     server: UdsServer,
-    service: Box<crate::service::StatusService<TypioBackend>>,
+    service: Rc<RefCell<crate::service::StatusService<TypioBackend>>>,
 }
-
-/// Opaque wrapper that makes a raw `*mut StatusService` safely sharable with the
-/// UDS handler closure. The pointer is only ever dereferenced on the daemon's
-/// main thread while [`IpcBus::dispatch`] runs; the Send/Sync impls are a type-
-/// system workaround for the closure's Send bound.
-struct UnsafeService(*mut crate::service::StatusService<TypioBackend>);
-unsafe impl Send for UnsafeService {}
-unsafe impl Sync for UnsafeService {}
 
 impl IpcBus {
     /// Wrap a bound UDS server and a configured service. The constructor installs
     /// the JSON-RPC request handler on the server.
     pub fn new(server: UdsServer, service: crate::service::StatusService<TypioBackend>) -> Self {
-        let mut service = Box::new(service);
-        let service_ptr = service.as_mut() as *mut crate::service::StatusService<TypioBackend>;
-        let wrapper = Arc::new(UnsafeService(service_ptr));
+        let svc_rc = Rc::new(RefCell::new(service));
 
         let pending_sub: Arc<Mutex<Option<SubscriptionUpdate>>> = Arc::new(Mutex::new(None));
 
         let mut server = server;
         server.set_handler({
             let pending_sub = pending_sub.clone();
+            let svc_clone = svc_rc.clone();
             move |json: &str, client_id: ClientId| {
-                let svc = wrapper.0;
+                let mut svc = svc_clone.borrow_mut();
 
                 let req = match Request::parse(json) {
                     Ok(r) => r,
@@ -82,7 +75,7 @@ impl IpcBus {
                 // Capture the subscription request (if any) so it can be applied
                 // by the server after this closure returns.
                 let pending = pending_sub.clone();
-                unsafe { &mut (*svc) }.set_subscribe_callback({
+                svc.set_subscribe_callback({
                     let p = pending.clone();
                     move |_token, topics| {
                         let update = if topics.is_empty() {
@@ -94,7 +87,7 @@ impl IpcBus {
                     }
                 });
 
-                let resp = unsafe { &mut (*svc) }.handle(&req.method, &params, id, client_id.0);
+                let resp = svc.handle(&req.method, &params, id, client_id.0);
                 let sub = pending.lock().unwrap().take();
 
                 let json_resp = match resp.to_json() {
@@ -109,12 +102,15 @@ impl IpcBus {
             }
         });
 
-        Self { server, service }
+        Self {
+            server,
+            service: svc_rc,
+        }
     }
 
     /// Install the callback triggered by `daemon.stop`.
     pub fn set_stop_callback<F: FnMut() + 'static>(&mut self, cb: F) {
-        self.service.set_stop_callback(cb);
+        self.service.borrow_mut().set_stop_callback(cb);
     }
 
     /// Install the callback triggered after any IPC-driven state mutation
@@ -122,7 +118,7 @@ impl IpcBus {
     /// core uses this to push a `StateRefresh` so derived surfaces (controller
     /// snapshot, tray icon, tooltip) re-sync against the mutated registry.
     pub fn set_state_change_callback<F: FnMut() + 'static>(&mut self, cb: F) {
-        self.service.set_state_change_callback(cb);
+        self.service.borrow_mut().set_state_change_callback(cb);
     }
 
     /// Drain pending UDS events. Call once per loop iteration.
