@@ -8,6 +8,13 @@ use std::ffi::c_void;
 
 use typio_abi::{TypioEventType, TypioKeyEvent};
 
+use super::ffi_callbacks::{
+    PendingComposition, PendingEngineOutput, on_commit_abi, on_composition_abi,
+};
+use super::helpers::{
+    commit_candidate_should_fallback, host_selection_plain_key, is_voice_ptt_key,
+    page_boundary_selected_index, should_suppress_untracked_modifier_release,
+};
 use crate::candidate_guard::{
     HostSelectionAction, HostSelectionPageState, classify_host_selection,
 };
@@ -19,8 +26,6 @@ use crate::keyboard_policy::{
 };
 use crate::repeat_timer::Modifiers;
 use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
-use super::ffi_callbacks::{PendingEngineOutput, PendingComposition, on_commit_abi, on_composition_abi};
-use super::helpers::{is_voice_ptt_key, page_boundary_selected_index, commit_candidate_should_fallback, host_selection_plain_key, should_suppress_untracked_modifier_release};
 
 /// Maximum number of keys tracked for symmetric press/release. Mirrors
 /// `TYPIO_WL_MAX_TRACKED_KEYS` in the C host.
@@ -48,6 +53,13 @@ pub enum RepeatOutcome {
     /// The repeat chain has ended — either no key is pending or the
     /// engine declined the repeat. The caller should stop the timer.
     Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPreeditFlush {
+    text: String,
+    cursor: u32,
+    engine_cursor_pos: i32,
 }
 
 /// A keyboard router tied to a libtypio input context.
@@ -112,6 +124,16 @@ pub struct KeyboardRouter {
     /// only the candidate highlight, leaving the inline preedit text
     /// untouched). See [`crate::text_ui_state::text_ui_plan_update`].
     preedit_tracking: PreeditTracking,
+    /// Commit text waiting to be sent in the next text-input transaction.
+    pending_commit_flush: Option<String>,
+    /// Latest preedit update waiting to be committed to Wayland.
+    /// Composition callbacks can fire multiple times while the event loop is
+    /// draining a burst of key events.  Only the last inline preedit is useful
+    /// to the compositor; committing every intermediate value with the same
+    /// input-method serial risks making later values stale.  Candidate state is
+    /// still updated immediately in host memory; this field coalesces only the
+    /// text-input protocol transaction.
+    pending_preedit_flush: Option<PendingPreeditFlush>,
     /// Keycode currently held as the voice push-to-talk trigger, if any.
     voice_ptt_keycode: Option<u32>,
     /// Latched when `Super+V` starts voice push-to-talk.
@@ -170,6 +192,8 @@ impl KeyboardRouter {
             shortcut_fired: false,
             engine_tracked_mods: Modifiers::NONE,
             preedit_tracking: PreeditTracking::new(),
+            pending_commit_flush: None,
+            pending_preedit_flush: None,
             voice_ptt_keycode: None,
             voice_ptt_pressed: false,
             voice_ptt_released: false,
@@ -192,6 +216,8 @@ impl KeyboardRouter {
     /// next composition is not suppressed against stale tracking.
     pub fn preedit_tracking_reset(&mut self) {
         self.preedit_tracking.reset();
+        self.pending_commit_flush = None;
+        self.pending_preedit_flush = None;
     }
 
     /// True iff the libtypio input context currently reports itself focused.
@@ -204,6 +230,8 @@ impl KeyboardRouter {
         typio::input_context::typio_input_context_reset(self.ctx);
         self.pending_output.commit = None;
         self.pending_output.composition = None;
+        self.pending_commit_flush = None;
+        self.pending_preedit_flush = None;
         // Forget any preedit we claimed to have sent — the engine reset
         // may be followed by the compositor clearing the field on its
         // own, and the next composition must not be suppressed as a
@@ -244,9 +272,13 @@ impl KeyboardRouter {
                 // "nothing to show" (e.g. after every commit).
                 if self.preedit_tracking.last_text.is_some()
                     || self.preedit_tracking.last_cursor != -1
+                    || self.pending_preedit_flush.is_some()
                 {
-                    frontend.clear_preedit_and_flush();
-                    self.preedit_tracking.reset();
+                    self.pending_preedit_flush = Some(PendingPreeditFlush {
+                        text: String::new(),
+                        cursor: 0,
+                        engine_cursor_pos: -1,
+                    });
                 }
             } else {
                 // Resolve the engine's cursor_pos (non-negative wins,
@@ -261,16 +293,28 @@ impl KeyboardRouter {
                 // `selected` — re-sending the preedit there is pure
                 // waste (a `set_preedit_string` + `commit` Wayland
                 // round-trip per arrow press).
+                let effective_last_text = self
+                    .pending_preedit_flush
+                    .as_ref()
+                    .map(|p| p.text.as_str())
+                    .or(self.preedit_tracking.last_text.as_deref());
+                let effective_last_cursor = self
+                    .pending_preedit_flush
+                    .as_ref()
+                    .map(|p| p.engine_cursor_pos)
+                    .unwrap_or(self.preedit_tracking.last_cursor);
                 let plan = text_ui_plan_update(
-                    self.preedit_tracking.last_text.as_deref(),
-                    self.preedit_tracking.last_cursor,
+                    effective_last_text,
+                    effective_last_cursor,
                     Some(preedit.as_str()),
                     cursor_pos,
                 );
                 if plan == TextUiPlan::SyncPreeditAndPanel {
-                    frontend.set_preedit_and_flush(&preedit, cursor);
-                    self.preedit_tracking.last_text = Some(preedit.clone());
-                    self.preedit_tracking.last_cursor = cursor_pos;
+                    self.pending_preedit_flush = Some(PendingPreeditFlush {
+                        text: preedit.clone(),
+                        cursor,
+                        engine_cursor_pos: cursor_pos,
+                    });
                 }
                 // SyncPanelOnly: skip the Wayland round-trip; the
                 // candidate-panel repaint below is driven independently
@@ -299,6 +343,8 @@ impl KeyboardRouter {
         tracking_mark_released_pending(&mut self.key_tracking_states);
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
+        self.pending_commit_flush = None;
+        self.pending_preedit_flush = None;
         self.physical_modifiers = Modifiers::NONE;
         self.modifiers_acquired = false;
         self.engine_tracked_mods = Modifiers::NONE;
@@ -319,6 +365,8 @@ impl KeyboardRouter {
         tracking_reset_generations(&mut self.key_tracking_generations);
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
+        self.pending_commit_flush = None;
+        self.pending_preedit_flush = None;
         // Drop any physical modifier state: a grab handoff crosses a
         // focus boundary where the previously held modifiers are no
         // longer ours to reason about. They get re-seeded from the
@@ -835,10 +883,52 @@ impl KeyboardRouter {
         consumed
     }
 
-    /// Drain any pending commit text and forward it to the compositor.
-    pub fn drain_commit(&mut self, frontend: &mut InputMethodState) {
+    /// Drain any pending commit text from the engine callback into the next
+    /// text-input transaction.  The transaction is flushed by
+    /// [`Self::flush_pending_text`] after the matching composition has also had
+    /// a chance to contribute a replacement preedit.
+    pub fn drain_commit(&mut self, _frontend: &mut InputMethodState) {
         if let Some(text) = self.pending_output.commit.take() {
-            frontend.commit_string_and_flush(&text);
+            // A commit replaces the existing preedit with the cursor before
+            // inserting text.  Any deferred composition-only preedit from an
+            // earlier key is now obsolete; a same-response remaining preedit
+            // will be staged by drain_composition immediately after this.
+            self.pending_preedit_flush = None;
+            self.pending_commit_flush = Some(text);
+        }
+    }
+
+    /// Flush the staged text-input transaction, if any.
+    pub fn flush_pending_text(&mut self, frontend: &mut InputMethodState) {
+        if self.pending_commit_flush.is_none() && self.pending_preedit_flush.is_none() {
+            return;
+        }
+
+        let commit = self.pending_commit_flush.take();
+        let preedit = self.pending_preedit_flush.take();
+        frontend.text_transaction_and_flush(
+            commit.as_deref(),
+            preedit.as_ref().map(|p| (p.text.as_str(), p.cursor)),
+        );
+
+        match preedit {
+            Some(p) if p.text.is_empty() => self.preedit_tracking.reset(),
+            Some(p) => {
+                self.preedit_tracking.last_text = Some(p.text);
+                self.preedit_tracking.last_cursor = p.engine_cursor_pos;
+            }
+            None if commit.is_some() => self.preedit_tracking.reset(),
+            None => {}
+        }
+    }
+
+    /// Commit immediately when the engine produced real commit text; this
+    /// preserves ordering before the next key is routed.  Pure preedit updates
+    /// remain staged so a burst of composition-only keys coalesces to one
+    /// Wayland commit at the drain boundary.
+    pub fn flush_pending_text_if_commit(&mut self, frontend: &mut InputMethodState) {
+        if self.pending_commit_flush.is_some() {
+            self.flush_pending_text(frontend);
         }
     }
 
@@ -928,6 +1018,8 @@ impl Drop for KeyboardRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keyboard::ffi_callbacks::on_commit;
+    use crate::keyboard_policy::{KEY_CAPITAL_V, KEY_V};
 
     impl KeyboardRouter {
         /// Test-only constructor that bypasses the libtypio setup. The
@@ -950,6 +1042,8 @@ mod tests {
                 shortcut_fired: false,
                 engine_tracked_mods: Modifiers::NONE,
                 preedit_tracking: PreeditTracking::new(),
+                pending_commit_flush: None,
+                pending_preedit_flush: None,
                 voice_ptt_keycode: None,
                 voice_ptt_pressed: false,
                 voice_ptt_released: false,

@@ -140,8 +140,7 @@ field or auto-commit into the one being left. Both defocus paths — soft-pause
 
 ### Apply
 
-`apply(effects)` executes in a fixed order, enforced by a compile-time
-`_Static_assert` in `focus_effects.c`:
+`apply(effects)` executes in a fixed order in `crates/typio-host/src/session_glue.rs`:
 
 1. `discard_composition` — drop the engine's in-flight composition + candidate UI while still focused
 2. `send_focus_out`

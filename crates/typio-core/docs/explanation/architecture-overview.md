@@ -262,7 +262,7 @@ Design rules:
 3. Typio grabs the keyboard and builds XKB state.
 4. Key presses become `TypioKeyEvent`.
 5. The active engine returns one of: not handled, handled internally, composing, committed.
-6. Composition and commit callbacks are translated into `zwp_input_method_v2` requests (the composition's preedit via `set_preedit_string`, commit via `commit_string`).
+6. Composition and commit callbacks are staged by the host router and flushed as `zwp_input_method_v2` text transactions (commit text via `commit_string`, inline preedit via `set_preedit_string`, then one `commit(serial)`).
 7. The composition's candidate list is rendered through `zwp_input_popup_surface_v2` when the session exposes the necessary Wayland globals. If candidate popup rendering is unavailable, Typio keeps candidate state visible inline in preedit.
 
 ## Candidate Popup Pipeline
@@ -272,8 +272,8 @@ The candidate-list UI is intentionally layered so state and rendering stay separ
 1. the keyboard engine owns candidate content and the selected index
 2. `TypioInputContext` stores the composition (preedit + candidates) as the UI source of truth
 3. the composition callback marks the popup dirty; the event-loop flush refreshes it once per iteration, diffing against the last composition sent
-4. `text_ui_backend.c` provides the Typio-side UI backend boundary
-5. `candidate_panel.cc` classifies the change and dispatches to the correct render path over `zwp_input_popup_surface_v2`
+4. `crates/typio-host/src/keyboard/router.rs` bridges composition state into host text/panel state
+5. `crates/typio-host-platform/src/panel.rs` renders the candidate row over `zwp_input_popup_surface_v2`
 
 The important architectural rule is that the refresh path depends on the text-UI backend abstraction, not on a concrete popup implementation.
 

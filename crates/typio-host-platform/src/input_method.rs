@@ -117,8 +117,8 @@ pub enum LifecycleEvent {
 /// `KeyboardRouter::drain_composition` (engine → host) and by
 /// `KeyboardRouter::try_host_selection` (host-local highlight moves
 /// under ADR-0012). The host's preedit text is *not* part of this
-/// struct: it is forwarded to the compositor immediately via
-/// `set_preedit_and_flush` and tracked by `KeyboardRouter::preedit_tracking`.
+/// struct: it is sent through the text-input transaction path and tracked by
+/// `KeyboardRouter::preedit_tracking`.
 #[derive(Debug, Default)]
 pub struct CompositionState {
     /// Current candidate list for the panel to render.
@@ -383,7 +383,7 @@ impl InputMethodState {
     /// to emit a fresh `text_input_rectangle` for this popup.
     pub fn probe_anchor(&mut self) {
         if self.panel_coord.should_probe_anchor() {
-            self.set_preedit_and_flush("", 0);
+            self.text_transaction_and_flush(None, Some(("", 0)));
             self.panel_coord.record_probe_sent();
             self.wayland_pending.note_probe_sent(Instant::now());
         }
@@ -435,9 +435,14 @@ impl InputMethodState {
         }
     }
 
-    /// Commit pending state to the compositor. Silently dropped before
-    /// the first `done` — matching the C serial chokepoint.
-    pub fn commit(&mut self) {
+    /// Commit non-text input-method protocol state to the compositor.
+    ///
+    /// Text updates must use [`Self::text_transaction_and_flush`] so commit text
+    /// and preedit are ordered and coalesced in one transaction.  This helper is
+    /// reserved for lifecycle/focus state where no text payload is staged.
+    /// Silently dropped before the first `done` — matching the C serial
+    /// chokepoint.
+    pub fn commit_protocol_state(&mut self) {
         if !self.initialized {
             return;
         }
@@ -483,43 +488,38 @@ impl InputMethodState {
         }
     }
 
-    /// Drain any pending commit text. Called by the event loop driver
-    /// after each dispatch round. If non-empty, the caller should
-    /// call `commit_string(text)` + `commit(serial)` on the
-    /// input-method proxy.
+    /// Drain commit text staged by platform-local producers. If non-empty, the
+    /// caller must pass it through [`Self::text_transaction_and_flush`].
     pub fn take_pending_commit(&mut self) -> Option<String> {
         self.composition.take_pending_commit()
     }
 
-    /// Flush a commit directly to the compositor.
-    pub fn commit_string_and_flush(&mut self, text: &str) {
+    /// Apply one text-input transaction to the compositor.
+    ///
+    /// `zwp_input_method_v2` state is double-buffered: any `commit_string` and
+    /// `set_preedit_string` requests sent before one `commit(serial)` are
+    /// applied atomically in protocol order.  Keeping this helper as the single
+    /// commit point avoids scattering multiple same-serial commits through the
+    /// keyboard path and lets the router combine "commit current segment + show
+    /// remaining preedit" into one protocol transaction.
+    pub fn text_transaction_and_flush(
+        &mut self,
+        commit_text: Option<&str>,
+        preedit: Option<(&str, u32)>,
+    ) {
         if !self.initialized || !self.active {
             return;
         }
-        self.input_method.commit_string(text.to_string());
-        self.input_method.commit(self.serial);
-        self.wayland_pending.note_commit_sent(Instant::now());
-    }
-
-    /// Send preedit text to the compositor (shows inline composition
-    /// in the focused text field). Followed by commit(serial) to flush.
-    pub fn set_preedit_and_flush(&mut self, text: &str, cursor: u32) {
-        if !self.initialized || !self.active {
+        if commit_text.is_none() && preedit.is_none() {
             return;
         }
-        self.input_method
-            .set_preedit_string(text.to_string(), cursor as i32, cursor as i32);
-        self.input_method.commit(self.serial);
-        self.wayland_pending.note_commit_sent(Instant::now());
-    }
-
-    /// Clear any preedit and commit nothing (used on key release or
-    /// engine reset).
-    pub fn clear_preedit_and_flush(&mut self) {
-        if !self.initialized || !self.active {
-            return;
+        if let Some(text) = commit_text {
+            self.input_method.commit_string(text.to_string());
         }
-        self.input_method.set_preedit_string(String::new(), 0, 0);
+        if let Some((text, cursor)) = preedit {
+            self.input_method
+                .set_preedit_string(text.to_string(), cursor as i32, cursor as i32);
+        }
         self.input_method.commit(self.serial);
         self.wayland_pending.note_commit_sent(Instant::now());
     }
@@ -949,7 +949,7 @@ impl InputMethodFrontend {
 
             // Flush any pending commit text to the compositor.
             if let Some(text) = self.state.take_pending_commit() {
-                self.state.commit_string_and_flush(&text);
+                self.state.text_transaction_and_flush(Some(&text), None);
             }
 
             if let Some(read_guard) = self.queue.prepare_read() {

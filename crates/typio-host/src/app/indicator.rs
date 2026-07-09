@@ -474,7 +474,9 @@ impl App {
                 } else {
                     tracing::debug!(target: "typio.voice", text = %text, "transcription result");
                     if let Some(frontend) = self.frontend.as_mut() {
-                        frontend.state_mut().commit_string_and_flush(&text);
+                        frontend
+                            .state_mut()
+                            .text_transaction_and_flush(Some(&text), None);
                     }
                     self.show_voice_transient(format!("Voice: {text}"), now);
                 }

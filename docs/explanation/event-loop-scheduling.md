@@ -26,6 +26,28 @@ work can delay the focus controller's `reduce`/`diff`/`apply` pipeline.
 After the session pipeline completes, auxiliary work runs in a bounded
 fashion so no single source can starve the others.
 
+## Key Drain and Text Transactions
+
+Wayland keyboard-grab events are appended to `InputMethodState::pending_keys`
+during dispatch.  The event loop drains that queue in arrival order after the
+focus-controller pipeline has converged.
+
+Engine output is drained after each consumed key, but compositor-facing text
+commits are not blindly flushed after every composition:
+
+- commit text is staged and flushed before the next key is routed, preserving
+  strict text order;
+- composition-only preedit updates are staged and coalesced to the latest value
+  for the current pending-key drain;
+- candidate state and panel dirtiness are updated immediately in host memory, so
+  panel rendering still sees the latest candidates in the same loop iteration.
+
+At the end of the pending-key drain the router flushes any remaining staged
+preedit through `InputMethodState::text_transaction_and_flush`.  This prevents
+fast key bursts from producing multiple same-serial `zwp_input_method_v2.commit`
+requests while still keeping commit-producing keys ordered.  See
+[ADR-0042](../adr/0042-text-input-transaction-staging.md).
+
 ## Panel Render Bounds
 
 ### Panel render cycle
@@ -118,10 +140,10 @@ Operational rules:
 
 Responsibility split:
 
-- focus-controller effect summaries belong to `event_loop.c`
-- teardown-cause and grab create/destroy logs belong to `focus_effects.c`
-- virtual-keyboard health and fail-safe logs belong to `bridge.c`
-- per-key sequencing and modifier-path traces belong to `keyboard.rs`
+- focus-controller effect summaries belong to `crates/typio-host/src/app/event_loop.rs`
+- teardown-cause and grab create/destroy logs belong to `crates/typio-host/src/session_glue.rs` / `focus_controller.rs`
+- virtual-keyboard health and fail-safe logs belong to the platform input-method bridge in `crates/typio-host-platform/src/input_method.rs`
+- per-key sequencing and modifier-path traces belong to `crates/typio-host/src/keyboard/router.rs`
 
 Do not duplicate one transition across layers at the same log level. Prefer
 `debug` detail in a helper and one `info` summary at the boundary owner.

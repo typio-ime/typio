@@ -298,6 +298,7 @@ impl App {
 
                 router.drain_commit(state);
                 router.drain_composition(state);
+                router.flush_pending_text(state);
 
                 let pending_keys = state.take_pending_keys();
                 if !pending_keys.is_empty() {
@@ -382,6 +383,7 @@ impl App {
                             // long preedit one char per tick).
                             router.drain_commit(state);
                             router.drain_composition(state);
+                            router.flush_pending_text_if_commit(state);
                             router.on_consumed(key.clone());
                             arm_repeat(timer, compositor_info, mods);
                         } else {
@@ -419,6 +421,7 @@ impl App {
                         } else if consumed {
                             router.drain_commit(state);
                             router.drain_composition(state);
+                            router.flush_pending_text_if_commit(state);
                         } else {
                             state.forward_key(key.time, key.keycode, key.state);
                         }
@@ -426,6 +429,7 @@ impl App {
                         let _ = timer.stop();
                     }
                 }
+                router.flush_pending_text(state);
                 if tracing::enabled!(target: "typio.input.perf", tracing::Level::TRACE)
                     && (pending_key_count > 1 || host_nav_updates > 0)
                 {
@@ -469,11 +473,13 @@ impl App {
                     RepeatOutcome::Consumed => {
                         router.drain_commit(state);
                         router.drain_composition(state);
+                        router.flush_pending_text_if_commit(state);
                     }
                     RepeatOutcome::Stopped => {
                         let _ = timer.stop();
                     }
                 }
+                router.flush_pending_text(state);
                 let seq_after_repeat = state.composition.composition_seq;
                 if tracing::enabled!(target: "typio.input.perf", tracing::Level::TRACE) {
                     tracing::trace!(

@@ -66,6 +66,7 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038) |
 | [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dmabuf/flux-text from the panel) |
 | [ADR-0041](0041-remove-watchdog.md) | Remove the host watchdog | Accepted (supersedes ADR-0004/0024/0037; bounds config-read instead) |
+| [ADR-0042](0042-text-input-transaction-staging.md) | Text-input transaction staging at key-batch boundaries | Accepted |
 
 ## Looking for something else?
 

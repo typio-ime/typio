@@ -72,30 +72,32 @@ The compositor's double-buffer commit point, and where focus facts become lifecy
 
 1. **Serial increment**. `im_serial++`. The serial is the count of `done` events received; it is the commit serial for every `zwp_input_method_v2_commit()` call.
 2. **Apply facts**. The buffered `surrounding_text`, `content_type`, `text_change_cause`, and `active` facts become current atomically.
-3. **Classify the state change.** The focus facts are reduced by the pure `typio_wl_focus_classify_done(was_active, now_active, activate_seen)` into one action — `FIRST_ACTIVATE`, `DEACTIVATE`, `REACTIVATE`, or `NOOP` — which the per-tick pipeline (event_loop.c) consumes through the `TypioWlDesiredState.focus_in` / `focus_out` / `reactivate` edges. The classifier lives in `engine/focus_controller.c` and is unit-tested (`tests/test_state_machine_properties.c`). Diff converges every tick, so a `NOOP` that still finds a non-routable grab recovers naturally on the next iteration; there is no separate reconciler. See [ADR-0018](../adr/0018-focus-transition-classification.md) and [ADR-0003](../adr/0003-session-controller-reduce-diff.md).
+3. **Classify the state change.** The focus facts are reduced by the pure `focus_controller` classifier into one action — `FIRST_ACTIVATE`, `DEACTIVATE`, `REACTIVATE`, or `NOOP` — which the per-iteration pipeline in `crates/typio-host/src/app/event_loop.rs` consumes through focus-in, focus-out, and reactivation effects. Diff converges every iteration, so a `NOOP` that still finds a non-routable grab recovers naturally on the next pass; there is no separate reconciler. See [ADR-0018](../adr/0018-focus-transition-classification.md) and [ADR-0003](../adr/0003-session-controller-reduce-diff.md).
 
 ### `unavailable`
 
 Another input method has taken the seat. The daemon sets `frontend->running = false`, logs a warning, and stops.
 
-## Commit Serial and the Chokepoint
+## Commit Serial and Text Transactions
 
-`zwp_input_method_v2` requires a serial on every `commit()` call. The serial must match the most recent `done` event. Before the first `done`, the serial is 0.
+`zwp_input_method_v2` requires a serial on every `commit()` call. The serial must match the most recent `done` event known to the daemon. Before the first `done`, the serial is 0.
 
-The daemon treats serial 0 as a **write barrier**: `typio_wl_commit()` refuses to send `set_preedit_string` or `commit_string` when `im_serial == 0`. This prevents a race where the IME stages preedit text before the compositor has established the input-method connection, which would cause the compositor to silently drop the staged text without error.
+The daemon treats serial 0 as a **write barrier**: `InputMethodState::text_transaction_and_flush()` and `commit_protocol_state()` refuse to send protocol commits before the compositor has established the input-method connection. This prevents a race where Typio stages preedit text before the compositor can apply it, which would cause the compositor to silently drop the staged text without error.
 
-```c
-if (frontend->im_serial == 0) {
-    /* Skip: compositor has not sent done yet. */
-    return;
-}
-zwp_input_method_v2_commit(im, frontend->im_serial);
-frontend->last_committed_serial = frontend->im_serial;
+Text payloads use one explicit transaction entry point:
+
+```rust
+InputMethodState::text_transaction_and_flush(
+    commit_text: Option<&str>,
+    preedit: Option<(&str, u32)>,
+);
 ```
 
-`last_committed_serial` is a diagnostic breadcrumb. It is also the hook for future reconnect work: if the compositor restarts and the serial resets, the daemon can detect the discontinuity.
+The helper stages `commit_string` and/or `set_preedit_string`, then sends one `commit(serial)`.  It is the only path for text payload commits.  Non-text lifecycle/focus state uses `commit_protocol_state()` so code reviewers can see that no preedit or commit string is being sent.
 
-This chokepoint is the single place where every protocol write is validated. All preedit updates, commit strings, and Panel geometry requests funnel through `typio_wl_commit`.
+The keyboard router owns the staging boundary. It updates candidate state immediately, but coalesces composition-only preedit updates to the latest value for the current pending-key drain. If an engine emits real commit text, the router flushes before routing the next key so commit order remains strict. If one key produces both commit text and a replacement preedit, both are sent in the same Wayland transaction.
+
+This is deliberate: two fast key events can be delivered before Typio reads the compositor's next `done`. Submitting every intermediate preedit as its own `commit(serial)` can create same-serial commits where later values become stale. See [ADR-0042](../adr/0042-text-input-transaction-staging.md).
 
 ## Keyboard Grab Lifecycle
 
@@ -142,7 +144,7 @@ code runs inside direct engine executables, not inside the daemon.
 
 See the [libtypio Engine Contract](../../crates/typio-core/docs/explanation/engine-contract.md#9-fault-isolation-protecting-the-daemon-from-engine-failures) for the complete list of sandboxed callbacks and their fallback behaviors.
 
-## Virtual Keyboard Forwarding (`bridge.c`)
+## Virtual Keyboard Forwarding
 
 `zwp_virtual_keyboard_v1` is the daemon's output path for keys the engine declined (`TYPIO_KEY_NOT_HANDLED`). The virtual-keyboard bridge manages:
 
@@ -193,27 +195,23 @@ Consequences for indicator behaviour:
 
 This limitation also affects the candidate Panel position: the input-popup surface is anchored to the terminal's cursor rectangle, not to a tmux pane boundary.
 
-## Preedit Round-Trip Optimisation
+## Preedit Transaction Optimisation
 
-When the user navigates candidates with `Up`/`Down`, only the `selected` index changes; the preedit text is identical. The daemon detects this in `update_wayland_text_ui`:
+When the user navigates candidates with `Up`/`Down`, only the `selected` index changes; the preedit text is identical. The daemon detects this with `text_ui_plan_update` against the last compositor-facing preedit, including any preedit already staged for the current key drain:
 
-```c
-update_plan = typio_wl_text_ui_plan_update(session->last_preedit_text,
-                                           session->last_preedit_cursor,
-                                           new_text, cursor_pos);
+```rust
+let plan = text_ui_plan_update(last_text, last_cursor, new_text, cursor_pos);
 ```
 
-If `update_plan == TYPIO_WL_TEXT_UI_SYNC_PANEL_ONLY`, the Panel Scheduler
-refreshes only the Candidate Panel during the event-loop Panel stage. The
-expensive `zwp_input_method_v2.set_preedit_string` → `done` round-trip to the
-application is skipped entirely. This avoids composition-update jank in
-heavyweight clients like Chrome.
+If `plan == TextUiPlan::SyncPanelOnly`, the Panel Scheduler refreshes only the Candidate Panel during the event-loop Panel stage. The expensive `zwp_input_method_v2.set_preedit_string` → `commit(serial)` → `done` round-trip to the application is skipped entirely.
+
+If the preedit did change, the router stages the new preedit rather than committing it immediately. Composition-only bursts coalesce to the latest staged value; commit-producing keys flush immediately after the matching composition is drained so text order stays correct. This avoids both redundant round-trips and stale same-serial commits in heavyweight clients and compositors.
 
 ## Source Map
 
 | Protocol object | Source file | Responsibility |
 |---|---|---|
-| `zwp_input_method_v2` | `crates/typio-host-platform/src/input_method.rs` | Event handlers (record facts), serial chokepoint |
+| `zwp_input_method_v2` | `crates/typio-host-platform/src/input_method.rs` | Event handlers (record facts), text transaction entry point, lifecycle protocol commits |
 | Focus controller (pure) | `crates/typio-host/src/focus_controller.rs` | `reduce` / `diff` / guard predicates — dependency-free, unit-tested |
 | Session effects (effectful) | `crates/typio-host/src/session_glue.rs` | `observe` and `apply`, including hard teardown and effect ordering |
 | `zwp_input_method_keyboard_grab_v2` | `crates/typio-host-platform/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | Grab create/destroy, key/modifiers/repeat listeners, keymap handoff to vk |
@@ -228,4 +226,5 @@ heavyweight clients like Chrome.
 
 - [Input-Method Session](input-method-session.md) — declared lifecycle phase, observed axes, key generation fencing, and daemon resilience (suspend/resume, compositor restart, silent grab loss)
 - [Event Loop Scheduling](event-loop-scheduling.md) — event-loop scheduling, GPU bounds, D-Bus dispatch, and poll deadlines
+- [ADR-0042: Text-input transaction staging](../adr/0042-text-input-transaction-staging.md) — why preedit commits are staged/coalesced at key-drain boundaries
 - [Panel Appearance](../dev/panel-appearance.md) — offscreen Panel rendering pipeline

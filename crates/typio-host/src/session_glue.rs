@@ -77,7 +77,9 @@ impl ApplyTarget
     }
 
     fn clear_preedit(&mut self) {
-        self.0.state_mut().clear_preedit_and_flush();
+        self.0
+            .state_mut()
+            .text_transaction_and_flush(None, Some(("", 0)));
         // The compositor has been told the preedit is gone; mirror that
         // into the router's tracking so the next engine composition is
         // not suppressed as a "no-op" against a preedit the user can no
@@ -86,7 +88,7 @@ impl ApplyTarget
     }
 
     fn commit(&mut self) {
-        self.0.state_mut().commit();
+        self.0.state_mut().commit_protocol_state();
     }
 
     fn scrub_generation(&mut self) {

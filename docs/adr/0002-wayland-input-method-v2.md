@@ -16,8 +16,9 @@ The host implements `zwp_input_method_v2` directly and treats the unstable statu
 
 1. **Bind the protocol at runtime** via `zwp_input_method_manager_v2.get_input_method`. If the compositor does not advertise the manager, the host exits cleanly with a descriptive error.
 2. **Defensive serial handling.** The `done` serial is a commit serial, not a sequence number. A serial of 0 means no `done` has arrived yet; the host refuses to commit preedit or text in that state to avoid silently dropped writes.
-3. **Isolate protocol knowledge in one layer.** `wl_input_method.c` is the only file that speaks `zwp_input_method_v2`. The engine layer (in `libtypio`) knows nothing about Wayland. This limits the blast radius if the protocol changes.
-4. **Pair with `zwp_virtual_keyboard_v1`** for forwarded keys. The grab and the vk keymap form one logical resource — see [ADR-0003](0003-session-controller-reduce-diff.md).
+3. **Stage text-input transactions.** Engine composition updates are not mapped one-for-one to `commit(serial)`. The host stages commit text and preedit in the keyboard router, coalesces composition-only bursts, and flushes through one text transaction entry point; see [ADR-0042](0042-text-input-transaction-staging.md).
+4. **Isolate protocol knowledge in one layer.** `crates/typio-host-platform/src/input_method.rs` is the only module that speaks `zwp_input_method_v2`. The engine layer (in `libtypio`) knows nothing about Wayland. This limits the blast radius if the protocol changes.
+5. **Pair with `zwp_virtual_keyboard_v1`** for forwarded keys. The grab and the vk keymap form one logical resource — see [ADR-0003](0003-session-controller-reduce-diff.md).
 
 ## Alternatives considered
 

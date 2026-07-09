@@ -82,6 +82,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fast Rime preedit/candidate updates now use staged text-input transactions.**
+  The keyboard router no longer maps every composition callback to an immediate
+  `zwp_input_method_v2.commit(serial)`. Composition-only preedit bursts are
+  coalesced to the latest value for the pending-key drain, while commit text is
+  flushed before the next key to preserve order. The old direct
+  `*_and_flush()` helpers were removed so text payloads go through
+  `InputMethodState::text_transaction_and_flush()` (ADR-0042).
 - **Host-managed candidate navigation boundaries.** Candidate Up/Down
   navigation now sends PageUp/PageDown to the engine at page edges so Rime can
   page forward/backward, and host-local highlight moves keep libtypio's
