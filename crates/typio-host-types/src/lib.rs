@@ -4,6 +4,7 @@
 pub mod panel_coordinator;
 pub mod panel_present_gate;
 pub mod panel_scheduler;
+pub mod text_serial_gate;
 pub mod wayland_pending;
 
 /// Pure input facts recorded from platform events and consumed by the focus
@@ -86,4 +87,5 @@ impl PanelFontConfig {
 pub use panel_coordinator::*;
 pub use panel_present_gate::*;
 pub use panel_scheduler::*;
+pub use text_serial_gate::*;
 pub use wayland_pending::*;

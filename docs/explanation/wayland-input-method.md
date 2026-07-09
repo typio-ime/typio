@@ -99,6 +99,8 @@ The keyboard router owns the staging boundary. It updates candidate state immedi
 
 This is deliberate: two fast key events can be delivered before Typio reads the compositor's next `done`. Submitting every intermediate preedit as its own `commit(serial)` can create same-serial commits where later values become stale. See [ADR-0042](../adr/0042-text-input-transaction-staging.md).
 
+`text_transaction_and_flush` additionally applies a **preedit-only serial gate**: a second pure-preedit payload for the same serial is deferred in `TextSerialGate` and flushed when `done` advances the serial (or when `commit_string` forces a send). Commit text is never held for `done`.
+
 ## Keyboard Grab Lifecycle
 
 The grab and its keymap handshake are **one resource** (`absent → needs_keymap → ready → broken`) that the focus controller creates and repairs every tick; the rules are in [Input-Method Session](input-method-session.md).

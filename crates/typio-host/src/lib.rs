@@ -41,7 +41,7 @@ pub mod keyboard;
 pub mod keyboard_policy;
 pub mod language_display;
 pub use typio_host_types::{
-    panel_coordinator, panel_present_gate, panel_scheduler, wayland_pending,
+    panel_coordinator, panel_present_gate, panel_scheduler, text_serial_gate, wayland_pending,
 };
 pub mod preedit;
 pub mod repeat_timer;
