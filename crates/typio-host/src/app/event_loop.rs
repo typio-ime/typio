@@ -157,10 +157,10 @@ impl App {
                     return 1;
                 }
             }
-            let read_guard = {
+            let (read_guard, did_dispatch) = {
                 let frontend = self.frontend.as_mut().unwrap();
                 match frontend.prepare_read_loop() {
-                    Ok(guard) => Some(guard),
+                    Ok(res) => (Some(res.0), res.1),
                     Err(e) => {
                         tracing::error!(target: "typio.wayland.io", error = %e, "prepare_read failed");
                         return 1;
@@ -195,6 +195,9 @@ impl App {
                 }
                 if let Some(remaining) = state.wayland_pending.min_deadline_ms(now) {
                     reduce_timeout(remaining);
+                }
+                if did_dispatch {
+                    reduce_timeout(0);
                 }
                 timeout_ms
             };

@@ -905,14 +905,19 @@ impl InputMethodFrontend {
     /// Prepare a read from the Wayland socket, dispatching any already-queued
     /// events first. Mirrors `wl_display_prepare_read` + `dispatch_pending` in
     /// the C event loop.
-    pub fn prepare_read_loop(&mut self) -> io::Result<ReadEventsGuard> {
+    pub fn prepare_read_loop(&mut self) -> io::Result<(ReadEventsGuard, bool)> {
+        let mut dispatched_any = false;
         loop {
             match self.queue.prepare_read() {
-                Some(guard) => return Ok(guard),
+                Some(guard) => return Ok((guard, dispatched_any)),
                 None => {
-                    self.queue
+                    let count = self
+                        .queue
                         .dispatch_pending(&mut self.state)
                         .map_err(|e| io::Error::other(format!("dispatch: {e}")))?;
+                    if count > 0 {
+                        dispatched_any = true;
+                    }
                 }
             }
         }
