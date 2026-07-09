@@ -318,7 +318,7 @@ impl App {
                         // round-trip; engines that don't opt in see no
                         // behaviour change.
                         let seq_before_host_selection = state.composition.composition_seq;
-                        let consumed = match router.try_host_selection(&key, state) {
+                        let consumed = match router.try_host_selection(&key, state, mods) {
                             Some(handled) => {
                                 if handled
                                     && state.composition.composition_seq
@@ -401,7 +401,7 @@ impl App {
                         // releases are swallowed by `try_host_selection`
                         // so the engine never sees an unpaired release
                         // for a press the host intercepted.
-                        let consumed = match router.try_host_selection(&key, state) {
+                        let consumed = match router.try_host_selection(&key, state, mods) {
                             Some(handled) => handled,
                             None => router.dispatch_key(&key, mods),
                         };

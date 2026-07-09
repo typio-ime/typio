@@ -263,6 +263,28 @@ fn page_boundary_selected_index(keysym: u32, candidate_count: usize) -> Option<u
     }
 }
 
+fn commit_candidate_should_fallback(
+    result: typio_abi::TypioResult,
+    produced_engine_output: bool,
+) -> bool {
+    result != typio_abi::TypioResult::TypioOk && !produced_engine_output
+}
+
+fn host_selection_plain_key(modifiers: Modifiers) -> bool {
+    let selection_modifiers =
+        Modifiers::SHIFT.0 | Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0;
+    (modifiers.0 & selection_modifiers) == 0
+}
+
+fn should_suppress_untracked_modifier_release(bit: Modifiers, effective_held: Modifiers) -> bool {
+    if bit == Modifiers::SHIFT {
+        let blocking = Modifiers(Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0);
+        effective_held.intersects(blocking)
+    } else {
+        true
+    }
+}
+
 impl KeyboardRouter {
     /// Create a new router for the given TypioInstance.
     ///
@@ -530,7 +552,11 @@ impl KeyboardRouter {
         &mut self,
         key: &DecodedKeyEvent,
         frontend: &mut InputMethodState,
+        xkb_mods_depressed: u32,
     ) -> Option<bool> {
+        if !host_selection_plain_key(self.shortcut_modifiers(xkb_mods_depressed)) {
+            return None;
+        }
         let action = classify_host_selection(
             key.state == WL_KEYBOARD_KEY_STATE_PRESSED,
             key.keysym,
@@ -557,20 +583,32 @@ impl KeyboardRouter {
                 Some(true)
             }
             HostSelectionAction::Commit(idx) => {
+                let had_pending_output = self.pending_output.commit.is_some()
+                    || self.pending_output.composition.is_some();
                 let r = typio::input_context::typio_input_context_commit_candidate(
                     self.ctx, idx as i32,
                 );
-                if r == typio_abi::TypioResult::TypioOk {
+                let produced_engine_output = !had_pending_output
+                    && (self.pending_output.commit.is_some()
+                        || self.pending_output.composition.is_some());
+                if r == typio_abi::TypioResult::TypioOk
+                    || !commit_candidate_should_fallback(r, produced_engine_output)
+                {
                     return Some(true);
                 }
                 tracing::debug!(
                     target: "typio.engine.host_sel",
                     idx,
                     result = ?r,
-                    "commit_candidate declined; falling back to process_key"
+                    "commit_candidate failed without output; falling back to process_key"
                 );
-                // Engine declined (TypioErrorNotFound). Fall back to
-                // process_key so the user's intent isn't lost.
+                // Engine failed without producing any observable output
+                // (typical: no vtable entry). Fall back to process_key so
+                // the user's intent isn't lost. If the engine already emitted
+                // commit/composition output before returning an error, the
+                // selection was consumed (Rime partial selection can do this)
+                // and replaying the same Space/digit would immediately select
+                // the first candidate of the remaining segment.
                 None
             }
             HostSelectionAction::PageUp => Some(self.dispatch_synthetic_page_key(
@@ -695,7 +733,12 @@ impl KeyboardRouter {
                 self.shortcut_fired = true;
             }
             if state == WL_KEYBOARD_KEY_STATE_RELEASED {
-                if (self.engine_tracked_mods.0 & bit.0) == 0 {
+                if (self.engine_tracked_mods.0 & bit.0) == 0
+                    && should_suppress_untracked_modifier_release(
+                        bit,
+                        self.shortcut_modifiers(xkb_mods_depressed),
+                    )
+                {
                     suppress_engine_release = true;
                 }
                 self.engine_tracked_mods = Modifiers(self.engine_tracked_mods.0 & !bit.0);
@@ -1005,7 +1048,7 @@ impl KeyboardRouter {
                 // cycling candidates) take the host path before
                 // re-entering the engine. Falls through when the host
                 // declines — same opt-in gate as the initial press.
-                if let Some(handled) = self.try_host_selection(&key, frontend) {
+                if let Some(handled) = self.try_host_selection(&key, frontend, xkb_mods_depressed) {
                     return if handled {
                         RepeatOutcome::Consumed
                     } else {
@@ -1073,6 +1116,55 @@ mod tests {
         assert_eq!(page_boundary_selected_index(KEY_PAGE_DOWN, 5), Some(0));
         assert_eq!(page_boundary_selected_index(KEY_PAGE_UP, 0), None);
         assert_eq!(page_boundary_selected_index(KEY_V, 5), None);
+    }
+
+    #[test]
+    fn untracked_lone_shift_release_is_not_suppressed() {
+        assert!(!should_suppress_untracked_modifier_release(
+            Modifiers::SHIFT,
+            Modifiers::SHIFT,
+        ));
+        assert!(should_suppress_untracked_modifier_release(
+            Modifiers::SHIFT,
+            Modifiers(Modifiers::SHIFT.0 | Modifiers::CTRL.0),
+        ));
+        assert!(should_suppress_untracked_modifier_release(
+            Modifiers::CTRL,
+            Modifiers::CTRL,
+        ));
+    }
+
+    #[test]
+    fn host_selection_only_intercepts_plain_keys() {
+        assert!(host_selection_plain_key(Modifiers::NONE));
+        assert!(!host_selection_plain_key(Modifiers::SHIFT));
+        assert!(!host_selection_plain_key(Modifiers::CTRL));
+        assert!(!host_selection_plain_key(Modifiers::ALT));
+        assert!(!host_selection_plain_key(Modifiers::SUPER));
+    }
+
+    #[test]
+    fn commit_candidate_falls_back_only_when_no_output_was_produced() {
+        assert!(commit_candidate_should_fallback(
+            typio_abi::TypioResult::TypioErrorNotFound,
+            false,
+        ));
+        assert!(!commit_candidate_should_fallback(
+            typio_abi::TypioResult::TypioErrorNotFound,
+            true,
+        ));
+        assert!(commit_candidate_should_fallback(
+            typio_abi::TypioResult::TypioError,
+            false,
+        ));
+        assert!(!commit_candidate_should_fallback(
+            typio_abi::TypioResult::TypioError,
+            true,
+        ));
+        assert!(!commit_candidate_should_fallback(
+            typio_abi::TypioResult::TypioOk,
+            false,
+        ));
     }
 
     #[test]
