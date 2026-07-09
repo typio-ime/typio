@@ -14,7 +14,7 @@ attaches the result to its
 buffers. There is no Vulkan device, surface, swapchain, dma-buf, or GPU readback
 in the panel path; see [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
-`FluxPanel` (`crates/typio-host/src/panel.rs`) drives the render pipeline:
+`FluxPanel` (`crates/typio-host-platform/src/panel.rs`) drives the render pipeline:
 
 - `FluxPanel::new_from_surface()` creates a flux **CPU canvas**
   (`flux_canvas_create_cpu`), the text rasteriser (`TextRaster`), and the
@@ -64,7 +64,7 @@ on-screen highlight is briefly behind.
 ## Font selection and sizing
 
 The candidate panel renders text on the CPU via `TextRaster`
-(`crates/typio-host/src/text_raster.rs`): a thin FFI wrapper over **flux-text**
+(`crates/typio-host-platform/src/text_raster.rs`): a thin FFI wrapper over **flux-text**
 (`flux-text-sys`: FreeType + HarfBuzz + Fontconfig + FriBidi), exposing
 `flux_text_create` / `flux_text_measure` / `flux_text_draw`. The former
 `ab_glyph`/`rustybuzz`/`fontdb` software rasteriser was retired by

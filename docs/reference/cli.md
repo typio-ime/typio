@@ -58,7 +58,6 @@ target:
 | `typio.wayland.*` | Wayland I/O, grab, keymap, frontend. |
 | `typio.engine.*` | Engine key processing, composition, selection. |
 | `typio.input.*` | Input queue. |
-| `typio.watchdog` | Loop-stall watchdog. |
 
 Examples:
 

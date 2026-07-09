@@ -213,14 +213,14 @@ heavyweight clients like Chrome.
 
 | Protocol object | Source file | Responsibility |
 |---|---|---|
-| `zwp_input_method_v2` | `crates/typio-host/src/input_method.rs` | Event handlers (record facts), serial chokepoint |
+| `zwp_input_method_v2` | `crates/typio-host-platform/src/input_method.rs` | Event handlers (record facts), serial chokepoint |
 | Focus controller (pure) | `crates/typio-host/src/focus_controller.rs` | `reduce` / `diff` / guard predicates — dependency-free, unit-tested |
 | Session effects (effectful) | `crates/typio-host/src/session_glue.rs` | `observe` and `apply`, including hard teardown and effect ordering |
-| `zwp_input_method_keyboard_grab_v2` | `crates/typio-host/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | Grab create/destroy, key/modifiers/repeat listeners, keymap handoff to vk |
+| `zwp_input_method_keyboard_grab_v2` | `crates/typio-host-platform/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | Grab create/destroy, key/modifiers/repeat listeners, keymap handoff to vk |
 | Key generation + tracking | `crates/typio-host/src/keyboard_policy.rs`, `crates/typio-host/src/keyboard/router.rs` | Generation fence and symmetric press/release |
-| `zwp_virtual_keyboard_v1` | `crates/typio-host/src/input_method.rs` (`forward_key`, `forward_modifiers`) | Keymap forward, modifier mirror, unhandled-key forwarding |
-| `zwp_input_popup_surface_v2` | `crates/typio-host/src/input_method.rs`, `crates/typio-host/src/panel.rs` | Panel positioning, frame pacing, SHM commits |
-| Panel rendering | `crates/typio-host/src/panel.rs`, `crates/typio-host/src/panel_shm.rs` | CPU canvas render + `TextRaster` glyph composite, host-managed SHM attach |
+| `zwp_virtual_keyboard_v1` | `crates/typio-host-platform/src/input_method.rs` (`forward_key`, `forward_modifiers`) | Keymap forward, modifier mirror, unhandled-key forwarding |
+| `zwp_input_popup_surface_v2` | `crates/typio-host-platform/src/input_method.rs`, `crates/typio-host-platform/src/panel.rs` | Panel positioning, frame pacing, SHM commits |
+| Panel rendering | `crates/typio-host-platform/src/panel.rs`, `crates/typio-host-platform/src/panel_shm.rs` | CPU canvas render + `TextRaster` glyph composite, host-managed SHM attach |
 | Resume detection | `crates/typio-host/src/resume_signal.rs` | logind + boottime heuristic (records facts) |
 | Protocol XML | `protocols/input-method-unstable-v2.xml` | Wayland protocol definition (upstream) |
 

@@ -29,7 +29,7 @@ Each stage has a distinct failure mode and a distinct probe:
 | Text raster | Working set grows → more glyphs re-raster per frame | Yes (CJK working set) | `typio.panel.probe=debug` `atlas_clears` |
 | Present gate | SHM buffer pool exhausted → frames dropped until compositor releases | Yes (after focus/occlusion) | `typio.panel.shm` exhausted log |
 | Viewport fallback | No `wp_viewporter` → exact-size offscreen resize per page | Constant, not growing | startup `typio.wayland.viewporter` warning |
-| Engine | Rime userdb / state grows | Yes | watchdog stage attribution |
+| Engine | Rime userdb / state grows | Yes | `typio.engine.key` slow `process_key` log |
 
 ## Step 0 — Confirm you are on a fixed build
 
@@ -214,8 +214,9 @@ Use a compositor that advertises `wp_viewporter`.
 
 ### Dimension C — Engine (libtypio / Rime)
 
-**Signature:** probe + timing all flat, but the lag is real; the watchdog
-attributes stalls to a key-dispatch stage rather than `Present`.
+**Signature:** probe + timing all flat, but the lag is real; the
+`typio.engine.key` target logs slow `process_key` calls, attributing stalls
+to key dispatch rather than `Present`.
 
 Candidate paging round-trips through the engine. If Rime's user
 dictionary or per-session state grows, selection/paging slows
@@ -232,7 +233,7 @@ engine. Try `typio rime deploy` and, as a test, a fresh Rime user directory.
 atlas_clears rising?          → Dimension A (glyph atlas)   → ADR-0019/0020
   else "lacks wp_viewporter"? → Dimension B'                → switch compositor
   else present_max_ms rising? → Dimension B (SHM back-pressure)
-  else (all flat, lag real)   → Dimension C (engine)        → watchdog stage attribution
+  else (all flat, lag real)   → Dimension C (engine)        → `typio.engine.key` slow dispatch
 ```
 
 ## What to include in a bug report

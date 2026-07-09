@@ -38,14 +38,14 @@ This layer owns Wayland focus and input-method protocol facts. It does not draw.
 
 ### Render
 
-`crates/typio-host/src/panel.rs` owns the flux CPU canvas and the text
+`crates/typio-host-platform/src/panel.rs` owns the flux CPU canvas and the text
 rasteriser:
 
 - the flux **CPU canvas** (`flux_canvas_create_cpu` + `flux_canvas_cpu_begin`/
   `end` + `flux_canvas_fill_rrect`) — fills the panel background and selection
   highlight into a premultiplied RGBA8 framebuffer on the host;
 - **flux-text** CPU text shaping/rasterisation (`TextRaster`, see
-  [`text_raster.rs`](../../crates/typio-host/src/text_raster.rs), backed by
+  [`text_raster.rs`](../../crates/typio-host-platform/src/text_raster.rs), backed by
   `flux-text-sys` — FreeType/HarfBuzz/Fontconfig) — shapes and rasterises
   glyphs, compositing them directly into that same RGBA8 framebuffer;
 - a grow-only surface cropped to the exact content extent via
@@ -58,7 +58,7 @@ path.
 
 ### Present
 
-`crates/typio-host/src/panel_shm.rs` owns the double-buffered SHM pool. The
+`crates/typio-host-platform/src/panel_shm.rs` owns the double-buffered SHM pool. The
 filled framebuffer is byte-swapped (RGBA8 → Wayland ARGB8888) into a free
 `wl_buffer` and attached to the popup surface via raw `wl_surface.attach` /
 `damage_buffer` / `commit`. If the compositor has not released any buffer, the

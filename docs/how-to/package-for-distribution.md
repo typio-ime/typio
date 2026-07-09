@@ -62,7 +62,7 @@ The daemon requires:
 - `libtypio` from the workspace build
 - `wayland-client` and `xkbcommon`
 - D-Bus runtime support for StatusNotifierItem tray integration
-- `libpipewire-0.3` for voice capture when voice support is used
+- `pw-record` (PipeWire) at runtime for voice capture when voice support is used
 - FreeType, HarfBuzz, and fontconfig support libraries for candidate-panel
   text shaping (consumed by `TextRaster` via `flux-text-sys`)
 - `libflux` from the packaged optics/flux build (CPU canvas only)

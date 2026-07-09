@@ -162,4 +162,3 @@ Subscribes the calling connection to one or more topics. Omitting `topics` (or s
 | `runtime.lifecyclePhase` | string |
 | `runtime.virtualKeyboardState` | string |
 | `runtime.keyboardGrabActive` | bool |
-| `runtime.watchdogArmed` | bool |

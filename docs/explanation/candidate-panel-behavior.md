@@ -196,9 +196,7 @@ font keys (`display.font.*`) affect appearance but not lifecycle; see
 | Panel dirty schedule state | `crates/typio-host/src/panel_scheduler.rs` |
 | Preedit/panel sync plan and positioned-UI timeout | `crates/typio-host/src/text_ui_state.rs` |
 | Focus effects pipeline (clear_preedit, focus_out, reset) | `crates/typio-host/src/session_glue.rs`, `crates/typio-host/src/focus_controller.rs` |
-| Offscreen flux render + SHM attach | `crates/typio-host/src/panel.rs`, `crates/typio-host/src/panel_shm.rs` |
-| Per-stage watchdog thresholds (`PanelUpdate`, `Present`) | `crates/typio-host/src/watchdog.rs` |
-
+| Offscreen flux render + SHM attach | `crates/typio-host-platform/src/panel.rs`, `crates/typio-host-platform/src/panel_shm.rs` |
 ## See also
 
 - [Panel Architecture](panel-architecture.md) — multi-owner arbitration, anchor probe overview

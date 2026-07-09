@@ -121,8 +121,7 @@ Responsibility split:
 - focus-controller effect summaries belong to `event_loop.c`
 - teardown-cause and grab create/destroy logs belong to `focus_effects.c`
 - virtual-keyboard health and fail-safe logs belong to `bridge.c`
-- per-key sequencing and modifier-path traces belong to `keyboard.c`
-- watchdog and dispatch-path logs belong to `event_loop.c`
+- per-key sequencing and modifier-path traces belong to `keyboard.rs`
 
 Do not duplicate one transition across layers at the same log level. Prefer
 `debug` detail in a helper and one `info` summary at the boundary owner.

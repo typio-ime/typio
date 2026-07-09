@@ -58,7 +58,7 @@ or system `libflux.so`. Rebuild `../optics`, then confirm
 | Wayland focus, key policy, repeat, candidate guard | `focus_controller`, `session_glue`, `keyboard_policy`, `keyboard::router`, `candidate_guard` tests |
 | Panel policy and text UI state | `panel_scheduler`, `panel_coordinator`, `text_ui_state`, `preedit` tests |
 | Tray and status state | `tray_menu`, `tray_sni`, `state_controller`, `language_display`, `icon_badge` tests |
-| Runtime support | `config_watcher`, `resume_signal`, `watchdog`, `health`, `pw_capture` tests |
+| Runtime support | `config_watcher`, `resume_signal`, `health` tests |
 
 ## Add or Update Tests
 

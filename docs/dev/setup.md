@@ -43,7 +43,7 @@ Install these from your system package manager:
 - Vulkan headers (flux is Vulkan-rooted; the host uses only its CPU canvas, but
   the headers are required to build libflux)
 - FreeType, HarfBuzz, fontconfig
-- PipeWire development headers for the `voice` feature
+- PipeWire's `pw-record` on the runtime PATH for voice capture
 
 Versions are not capped; the project is tested against current Arch Linux
 and Fedora releases.
@@ -137,9 +137,8 @@ Cargo features:
 
 | Feature | Default | When to use it |
 |---|---:|---|
-| `wayland` | yes | Wayland input-method frontend and flux-backed Panel |
+| `wayland` | yes | Wayland input-method frontend, flux-backed Panel, and voice capture via PipeWire |
 | `systray` | yes | StatusNotifierItem tray over D-Bus via zbus |
-| `voice` | yes | PipeWire capture and the `voice_input` host capability |
 
 Disable default features only when isolating a non-Wayland Rust subsystem:
 

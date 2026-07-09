@@ -57,7 +57,7 @@ Render the panel entirely on the CPU and present over `wl_shm` only:
    `flux_canvas_cpu_begin/end` + `flux_canvas_fill_rrect`. The framebuffer is
    read back from `flux_canvas_cpu_pixels` (no bus, no fence).
 2. **Text** — flux-text's CPU shaping + rasterisation, accessed via
-   `flux-text-sys` (`crates/typio-host/src/text_raster.rs`). Text draws
+   `flux-text-sys` (`crates/typio-host-platform/src/text_raster.rs`). Text draws
    directly into the RGBA8 canvas pass via the host-coverage glyph path
    (ADR-0019) — no GPU image required. The panel shares flux-text's
    FreeType/HarfBuzz/Fontconfig backend with the rest of the host.

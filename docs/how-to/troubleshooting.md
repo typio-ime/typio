@@ -191,9 +191,10 @@ Keyboard trace lines include both raw key data and the resolved text character w
 Current builds expose two complementary diagnostics surfaces:
 
 - continuous logs through stderr (captured by `typio.service` in the user journal for installed builds, or visible in the terminal when running manually with `--verbose`)
-- a structured D-Bus `RuntimeState` property on `org.typio.InputMethod1`
+- a `daemon.status` snapshot over the TIP v1 UDS socket, surfaced via
+  `typioctl daemon status`
 
-Use both. Logs show the event history; `RuntimeState` shows the current frontend health snapshot.
+Use both. Logs show the event history; `daemon.status` shows the current frontend health snapshot.
 
 Read the last fault snapshot from the recent-log dump:
 
@@ -204,23 +205,15 @@ rg -n "Virtual keyboard|fail-safe|keymap timeout|Keyboard grab|Wayland text UI s
 
 Current builds keep a single persisted recent-log snapshot at `~/.local/state/typio/logs/latest.log`, replacing that file each time a new dump is written.
 
-Read the live Wayland runtime state:
+Read the live runtime state from the running daemon:
 
 ```bash
-gdbus call --session \
-  --dest org.typio.InputMethod1 \
-  --object-path /org/typio/InputMethod1 \
-  --method org.freedesktop.DBus.Properties.Get \
-  org.typio.InputMethod1 RuntimeState
+typioctl daemon status
 ```
 
-Watch runtime-state transitions live:
-
-```bash
-gdbus monitor --session \
-  --dest org.typio.InputMethod1 \
-  --object-path /org/typio/InputMethod1
-```
+The `daemon.status` response (TIP v1 over the UDS socket; see
+[IPC Protocol Reference](../reference/ipc-protocol.md)) includes the
+`runtime.*` fields below.
 
 The most useful `RuntimeState` fields for troubleshooting are:
 
@@ -235,7 +228,6 @@ The most useful `RuntimeState` fields for troubleshooting are:
 - `virtual_keyboard_keymap_age_ms`: how long since the last successful keymap
 - `virtual_keyboard_forward_age_ms`: how long since the last successful vk forward
 - `virtual_keyboard_keymap_deadline_remaining_ms`: remaining time before the daemon treats a missing keymap as a fail-safe condition
-- `watchdog_armed`: whether the frontend watchdog is currently protecting an active keyboard-grab path
 
 Interpret the most common bad combinations like this:
 
@@ -266,10 +258,7 @@ The keyboard shortcut emergency exit is an in-band shortcut. It depends on the s
 Preferred out-of-band recovery paths:
 
 ```bash
-gdbus call --session \
-  --dest org.typio.InputMethod1 \
-  --object-path /org/typio/InputMethod1 \
-  --method org.typio.InputMethod1.Stop
+typioctl daemon stop
 ```
 
 ```bash

@@ -30,8 +30,8 @@ The main frontend policy object is the **Panel Coordinator**. It answers:
 
 ### Panel rendering
 
-Rendering belongs in `crates/typio-host/src/panel.rs` and
-`crates/typio-host/src/panel_shm.rs`. It answers:
+Rendering belongs in `crates/typio-host-platform/src/panel.rs` and
+`crates/typio-host-platform/src/panel_shm.rs`. It answers:
 
 - how candidates and status banners become geometry;
 - how geometry becomes flux canvas commands;

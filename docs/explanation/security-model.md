@@ -15,8 +15,8 @@ the daemon.
 
 | Surface | Exposure | Enforcement |
 |---------|----------|-------------|
-| UDS control socket (TIP) | Same-uid processes | Socket mode `0600`; `SO_PEERCRED` uid check on accept (`src/ipc/uds_server.c`) |
-| TIP frames | Arbitrary bytes from same-uid clients | 4-byte length prefix, 1 MiB frame cap, hand-written JSON parser (`src/ipc/tip_json.c`) |
+| UDS control socket (TIP) | Same-uid processes | Socket mode `0600`; `SO_PEERCRED` uid check on accept (`crates/typio-host/src/uds_server.rs`) |
+| TIP frames | Arbitrary bytes from same-uid clients | 4-byte length prefix, 1 MiB frame cap, JSON parsed via `serde_json` (`crates/typio-host/src/ipc/framing.rs`) |
 | Engine worker processes | Full user privileges | None at runtime — trusted by installation (see below) |
 | Wayland protocols | Compositor | Compositor is fully trusted; it grants the input-method role |
 | D-Bus session bus, StatusNotifierItem | Same-session peers | Status output only; no privileged verbs |

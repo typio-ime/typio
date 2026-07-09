@@ -2,18 +2,24 @@
 
 ## Language versions
 
-- C23 for all code (Wayland frontend, protocol glue, Panel rendering)
+- Rust 2021 edition (Rust 1.85+), per the workspace `Cargo.toml`
+- C only for libtypio's framework core and the FFI ABI surface; new host
+  code is Rust (see [ADR-0035](../adr/0035-bilingual-migration-to-rust.md),
+  [ADR-0038](../adr/0038-framework-abi-vet-monorepo.md))
 
 ## Formatting
 
 - 4-space indentation
-- Keep public API names in the `typio_*` / `Typio*` style already used by the repo
+- Keep public API names in the `typio_*` / `Typio*` style on the C/FFI
+  surface; in Rust, follow `cargo fmt` defaults and idiomatic `snake_case`
+  modules / `CamelCase` types
 - Prefer small, direct functions over clever abstractions
 
 ## Documentation
 
-- Document non-obvious behavior in headers or near complex state transitions
-- Keep generated protocol and renderer details behind narrow module boundaries
+- Document non-obvious behavior in module (`//!`) or item doc comments,
+  especially around complex state transitions
+- Keep generated protocols and renderer details behind narrow module boundaries
 
 ## Design preferences
 
@@ -23,6 +29,7 @@
 ## Before submitting
 
 - Build succeeds from a clean tree
-- `ctest --test-dir build --output-on-failure` passes
+- `cargo test -p typio-host -p typio-core -p typio-abi -p typio-vet -p typioctl`
+  passes
 - User-facing behavior is documented
 - Any new engine or runtime assumptions are written down

@@ -51,9 +51,9 @@ See [`docs/dev/setup.md`](docs/dev/setup.md) for the full setup steps and
 additional options.
 
 Cargo features: `--features systray` enables the StatusNotifierItem tray
-(via zbus). `--features voice` enables PipeWire audio capture and the
-`voice_input` host capability; voice engines run as worker processes at
-runtime, this option only enables the host-side capture infrastructure.
+(via zbus). Voice capture ships with the default `wayland` feature and runs
+PipeWire's `pw-record` as a subprocess; voice engines run as worker processes
+at runtime.
 
 ## Running
 
