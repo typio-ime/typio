@@ -389,6 +389,16 @@ impl ShmBufferPool {
     pub fn is_empty(&self) -> bool {
         self.buffers.is_empty()
     }
+
+    /// Drop every cached buffer and start fresh on the next acquire.
+    ///
+    /// Used after system resume: some compositors can lose or indefinitely delay
+    /// `wl_buffer.release` for popup buffers that were in-flight across suspend,
+    /// leaving the tiny non-blocking pool permanently busy. Reallocating fresh
+    /// buffers prevents candidate-highlight frames from being dropped forever.
+    pub fn reset(&mut self) {
+        self.buffers.clear();
+    }
 }
 
 /// Errors from SHM buffer allocation.

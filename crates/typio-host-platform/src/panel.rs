@@ -479,6 +479,26 @@ impl FluxPanel {
         }
     }
 
+    /// Drop compositor-held SHM-buffer state after a hard lifecycle boundary.
+    ///
+    /// In particular, a suspend/resume can strand `wl_buffer.release` events for
+    /// popup buffers that were attached before sleep. If all cached buffers stay
+    /// marked busy, later candidate selection changes are handled logically but
+    /// every repaint is dropped. Resetting the pool makes the next frame allocate
+    /// fresh buffers.
+    pub fn reset_shm_pool(&mut self) {
+        if let Some(pool) = self.shm_pool.as_mut() {
+            if pool.all_busy() {
+                tracing::debug!(
+                    target: "typio.panel.shm",
+                    buffer_count = pool.len(),
+                    "resetting busy SHM buffer pool after lifecycle boundary"
+                );
+            }
+            pool.reset();
+        }
+    }
+
     /// Present the flux CPU framebuffer (premultiplied RGBA8) via a host-managed
     /// SHM buffer, byte-swapping RGBA→ARGB8888 directly into the SHM pixels.
     /// Returns `true` iff a buffer was attached.

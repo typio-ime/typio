@@ -66,6 +66,14 @@ impl ApplyTarget
         self.0.destroy_keyboard_grab();
         let _ = self.2.stop();
         self.1.physical_modifiers = crate::repeat_timer::Modifiers::NONE;
+        if let Some(panel) = self.0.panel_mut() {
+            panel.reset_shm_pool();
+        }
+        let state = self.0.state_mut();
+        state.invalidate_panel_presentation();
+        if !state.composition.candidates.is_empty() {
+            state.mark_panel_dirty();
+        }
     }
 
     fn clear_preedit(&mut self) {
