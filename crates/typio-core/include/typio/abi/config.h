@@ -84,6 +84,8 @@ size_t typio_config_key_count(const TypioConfig *config);
  */
 char *typio_config_key_at(const TypioConfig *config, size_t index);
 bool typio_config_has_key(const TypioConfig *config, const char *key);
+/** Return true when a key came from user config rather than schema defaults. */
+bool typio_config_is_user_value(const TypioConfig *config, const char *key);
 
 /* Remove key */
 TypioResult typio_config_remove(TypioConfig *config, const char *key);

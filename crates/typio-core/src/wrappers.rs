@@ -59,13 +59,6 @@ impl InputContextPtr {
 }
 
 pub(crate) struct VoiceSessionPtr(pub *mut TypioVoiceSession);
-impl Drop for VoiceSessionPtr {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { crate::instance::typio_voice_session_free(self.0) };
-        }
-    }
-}
 #[allow(dead_code)]
 impl VoiceSessionPtr {
     pub fn is_null(&self) -> bool {

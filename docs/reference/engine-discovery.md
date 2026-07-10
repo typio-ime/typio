@@ -49,6 +49,12 @@
 | Protocol | Typio Engine Protocol |
 | Manifest value | `protocol = "typio-engine-protocol"` |
 | Transport | Private fd 3 channel passed to the engine process |
+| Maximum frame payload | 8 MiB |
+| Cold-start handshake timeout | 60 seconds |
+| Key and availability timeout | 100 milliseconds |
+| Init and config-reload timeout | 5 seconds |
+| Voice `process-audio` timeout | 120 seconds |
+| Other request timeout | 500 milliseconds |
 | Standard output | Logs only |
 | Standard error | Logs only |
 | Host registration | `typio_registry_register_engine_process` |

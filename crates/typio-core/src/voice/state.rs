@@ -7,13 +7,14 @@ use crate::voice::session::VoiceSession;
 
 impl VoiceSession {
     pub(crate) fn fire_event(&self, event: TypioVoiceSessionEvent) {
-        if let Some(cb) = *self.callback.lock().unwrap() {
+        let callback = *self.callback.lock().unwrap();
+        if let Some(cb) = callback {
             cb(&event, self.callback_user_data.load(Ordering::SeqCst));
         }
         // For Result events the callback takes ownership of `text` (freed by
         // the host via free()). For all other events text is null, so the
         // free is a no-op — but skip it anyway to keep the contract clear.
-        if event.type_ != TypioVoiceSessionEventType::Result {
+        if event.type_ != TypioVoiceSessionEventType::Result || callback.is_none() {
             crate::string::typio_free_string(event.text);
         }
     }

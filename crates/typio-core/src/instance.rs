@@ -23,11 +23,6 @@ use std::ptr;
 
 const TYPIO_CONFIG_FILE_NAME: &str = "core.toml";
 
-#[allow(improper_ctypes)]
-unsafe extern "C" {
-    pub(crate) fn typio_voice_session_free(session: *mut TypioVoiceSession);
-}
-
 /* -------------------------------------------------------------------------- */
 /* Internal helpers                                                           */
 /* -------------------------------------------------------------------------- */
@@ -319,6 +314,11 @@ impl TypioInstance {
         // that path is guarded by the instance's own interior
         // synchronisation, identical to `typio_instance_init`.
         Some(unsafe { &mut (*self.registry.0).inner })
+    }
+
+    /// Engine-manifest directories configured for this instance.
+    pub fn engine_dirs_rust(&self) -> impl Iterator<Item = &str> {
+        self.engine_dirs.iter().filter_map(|dir| dir.to_str().ok())
     }
 
     /// Typed accessor for the config tree. Returns `None` before
@@ -724,6 +724,46 @@ mod tests {
         // Drop removes nothing on disk; the temp dir will be cleaned by
         // the OS. We don't assert on files because config save is
         // best-effort.
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn reload_rejects_invalid_file_and_keeps_last_good_config() {
+        let temp = std::env::temp_dir().join(format!(
+            "typio-reload-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let config_path = temp.join(TYPIO_CONFIG_FILE_NAME);
+        std::fs::write(&config_path, "[notifications]\nenable = false\n").unwrap();
+
+        let path = temp.to_str().unwrap();
+        let mut instance = TypioInstance::new_rust(Some(path), Some(path), Some(path), Vec::new());
+        instance.init_rust().unwrap();
+        let key = CString::new("notifications.enable").unwrap();
+        assert!(!config::typio_config_get_bool(
+            instance.config.0,
+            key.as_ptr(),
+            true,
+        ));
+
+        std::fs::write(&config_path, "[not valid toml").unwrap();
+        assert_eq!(
+            typio_instance_reload_config(instance.as_mut()),
+            TypioResult::TypioError
+        );
+        assert!(!config::typio_config_get_bool(
+            instance.config.0,
+            key.as_ptr(),
+            true,
+        ));
+
+        instance.shutdown_rust();
+        drop(instance);
         let _ = std::fs::remove_dir_all(&temp);
     }
 

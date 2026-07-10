@@ -4,6 +4,9 @@
 pub const INITIAL_BUFFER_SAMPLES: usize = 16000 * 30; // 30 seconds at 16kHz
 /// Target sample rate in Hz.
 pub const SAMPLE_RATE: usize = 16000;
+/// Hard recording bound. Keeps memory and the v1 hex-encoded worker request
+/// below the engine protocol's 8 MiB payload ceiling.
+pub const MAX_BUFFER_SAMPLES: usize = SAMPLE_RATE * 60;
 /// Amplitude threshold below which audio is considered silence.
 pub const TRIM_THRESHOLD: f32 = 0.003f32;
 /// Padding kept around active audio when trimming silence.

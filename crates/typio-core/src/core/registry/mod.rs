@@ -824,16 +824,13 @@ impl EngineRegistry {
         Ok(())
     }
 
-    /// Reload config on every currently-active engine (keyboard + voice).
+    /// Reload config on the active keyboard engine.
     ///
     /// Called when the user edits `core.toml` or sends a reload signal.
     /// Engine-side failures are logged but do not propagate — a misconfigured
     /// engine should not crash the host.
     pub fn reload_active_config(&mut self) {
-        for idx in [self.active_keyboard, self.active_voice]
-            .into_iter()
-            .flatten()
-        {
+        for idx in [self.active_keyboard].into_iter().flatten() {
             let slot = &mut self.slots[idx];
             let name = slot.name.clone();
             let r = slot.backend.with_engine(|engine| engine.reload_config());
@@ -978,15 +975,53 @@ impl EngineRegistry {
         }
     }
 
-    /// Process audio through the active voice engine.
-    pub fn process_audio_active_voice(&self, samples: &[f32]) -> Option<String> {
-        self.with_active_voice(|v| v.process_audio(samples))
-            .flatten()
+    /// Snapshot the active voice worker for an asynchronous inference job.
+    ///
+    /// The handle owns shared worker state and therefore remains valid if the
+    /// main thread switches or unloads the registry slot while inference is
+    /// running.
+    pub(crate) fn snapshot_active_voice(
+        &mut self,
+    ) -> Option<crate::core::engine::backend::process::VoiceProcessHandle> {
+        let idx = self.active_voice?;
+        self.slots[idx].backend.voice_handle()
+    }
+
+    /// Query keyboard availability after recovering a poisoned worker.
+    pub(crate) fn recovering_active_keyboard_availability(
+        &mut self,
+    ) -> crate::core::engine::EngineAvailability {
+        let Some(idx) = self.active_keyboard else {
+            return crate::core::engine::EngineAvailability::Failed;
+        };
+        self.slots[idx]
+            .backend
+            .with_engine(|engine| engine.availability())
+            .unwrap_or(crate::core::engine::EngineAvailability::Failed)
+    }
+
+    /// Query voice availability after recovering a poisoned worker.
+    pub(crate) fn recovering_active_voice_availability(
+        &mut self,
+    ) -> crate::core::engine::EngineAvailability {
+        let Some(idx) = self.active_voice else {
+            return crate::core::engine::EngineAvailability::Failed;
+        };
+        self.slots[idx]
+            .backend
+            .with_engine(|engine| engine.availability())
+            .unwrap_or(crate::core::engine::EngineAvailability::Failed)
     }
 
     /// Return true if the active voice engine exists and reports ready.
     pub fn active_voice_is_ready(&self) -> bool {
         self.active_voice_availability() == crate::core::engine::EngineAvailability::Ready
+    }
+
+    /// Return true after recovering the active voice worker when necessary.
+    pub(crate) fn recovering_active_voice_is_ready(&mut self) -> bool {
+        self.recovering_active_voice_availability()
+            == crate::core::engine::EngineAvailability::Ready
     }
 
     /* --------------------------------------------------------------------- */

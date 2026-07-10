@@ -59,6 +59,9 @@ pub(super) fn config_to_string_internal(cfg: &Config) -> String {
     let mut sections: BTreeMap<String, Vec<(&str, &ConfigValue)>> = BTreeMap::new();
 
     for (key, value) in cfg.entries.iter() {
+        if !cfg.user_keys.contains(key) {
+            continue;
+        }
         if let Some(dot_pos) = key.rfind('.') {
             let section = key[..dot_pos].to_string();
             let subkey = &key[dot_pos + 1..];

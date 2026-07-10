@@ -39,7 +39,6 @@ use std::io::IsTerminal;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::reload;
 use tracing_subscriber::{EnvFilter, Registry, fmt, prelude::*};
 
@@ -61,8 +60,9 @@ static RAISE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Set by the `SIGUSR2` handler; drained on the main loop.
 static RESET_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Map a level step to the `EnvFilter` directive that sets it as the floor.
-fn level_directive(level: u8) -> &'static str {
+/// Map a level step to its floor name (used both to build the filter and to
+/// render the `level=` field of the level-change confirmation).
+fn level_name(level: u8) -> &'static str {
     match level {
         0 => "info",
         1 => "debug",
@@ -70,18 +70,37 @@ fn level_directive(level: u8) -> &'static str {
     }
 }
 
-/// Build the global filter for `level`: `RUST_LOG` (per-target directives)
-/// underneath a bare-level floor. Re-reads `RUST_LOG` on every rebuild so
-/// per-target overrides survive a runtime level change.
+/// Compose the `EnvFilter` directive string for `level` plus an optional
+/// `RUST_LOG` value.
+///
+/// Separated from [`build_filter`] so the precedence rules are unit-testable
+/// without touching the process environment.
+fn filter_directive(level: u8, rust_log: Option<&str>) -> String {
+    let floor = level_name(level);
+    match rust_log.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(extra) => format!("{floor},{extra}"),
+        None => floor.to_string(),
+    }
+}
+
+/// Build the global `EnvFilter` for `level`.
+///
+/// The string is a single `EnvFilter` directive list with a clear precedence:
+///
+/// 1. A bare level (`info`/`debug`/`trace`) acts as the global floor — the
+///    minimum verbosity for *every* target, set by the CLI `-v`/`-vv` flags.
+/// 2. `RUST_LOG` (if present) is layered on top so individual targets can be
+///    refined *above* the floor (e.g. `RUST_LOG=typio.indicator=debug`), or
+///    raised further still (`RUST_LOG=trace`).
+///
+/// Because both halves live in one directive string, the
+/// [`tracing_subscriber::filter::EnvFilter`] precedence rules are the only
+/// rules in play — there is no second, hidden `default_directive` fighting
+/// the floor. `RUST_LOG` is re-read on every rebuild so per-target overrides
+/// survive a runtime level change (see [`apply_level`]).
 fn build_filter(level: u8) -> EnvFilter {
-    EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy()
-        .add_directive(
-            level_directive(level)
-                .parse()
-                .unwrap_or_else(|_| LevelFilter::INFO.into()),
-        )
+    let rust_log = std::env::var("RUST_LOG").ok();
+    EnvFilter::new(filter_directive(level, rust_log.as_deref()))
 }
 
 /// Initialize structured logging once for the daemon process.
@@ -92,6 +111,16 @@ fn build_filter(level: u8) -> EnvFilter {
 /// (per-event subsystem diagnostics), `-vv` adds `trace` (key routing,
 /// frame timing). This mapping matches `docs/reference/cli.md`. The floor is
 /// reloadable at runtime — see [`apply_pending_level_signals`].
+///
+/// libtypio (`typio-core`) logs through the `log` crate facade
+/// (`log::info!`, `log::warn!`, …) while the host uses `tracing`. The
+/// `tracing-log` compatibility layer (installed automatically by
+/// [`tracing_subscriber`'s `SubscriberInitExt::init`]) re-emits every
+/// `log::*` record as a `tracing` event, preserving its original target
+/// (e.g. `typio::instance`) and routing it through this same filter and
+/// writer. So libtypio lifecycle/engine logs, and C-engine records (which
+/// arrive via `typio_log_emit` → `log::*`), appear alongside host
+/// diagnostics in the daemon's output.
 pub fn init_logging(verbosity: u8) {
     static INIT: OnceLock<()> = OnceLock::new();
     let _ = INIT.get_or_init(|| {
@@ -114,6 +143,11 @@ pub fn init_logging(verbosity: u8) {
             .with_thread_names(false)
             .compact();
 
+        // `.init()` installs the global subscriber *and* (via the
+        // `tracing-log` feature, enabled in this crate) a `LogTracer` that
+        // bridges the `log` crate into tracing. We must not call
+        // `LogTracer::init()` ourselves here — that would race this call for
+        // the single global `log` logger slot and panic with `SetLoggerError`.
         tracing_subscriber::registry()
             .with(filter)
             .with(layer)
@@ -145,7 +179,7 @@ fn apply_level(level: u8) {
         // visible after the reload.
         tracing::info!(
             target: "typio.lifecycle",
-            level = level_directive(level),
+            level = level_name(level),
             "log level changed"
         );
     }
@@ -162,5 +196,65 @@ pub fn apply_pending_level_signals() {
     if RAISE_REQUESTED.swap(false, Ordering::SeqCst) {
         let next = CURRENT_LEVEL.load(Ordering::SeqCst).saturating_add(1);
         apply_level(next);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filter_directive;
+
+    #[test]
+    fn floor_alone_when_no_rust_log() {
+        assert_eq!(filter_directive(0, None), "info");
+        assert_eq!(filter_directive(1, None), "debug");
+        assert_eq!(filter_directive(2, None), "trace");
+        // Out-of-range saturates to trace.
+        assert_eq!(filter_directive(9, None), "trace");
+    }
+
+    #[test]
+    fn rust_log_is_appended_after_floor() {
+        assert_eq!(
+            filter_directive(0, Some("typio.indicator=debug")),
+            "info,typio.indicator=debug"
+        );
+        assert_eq!(filter_directive(1, Some("warn")), "debug,warn");
+    }
+
+    #[test]
+    fn blank_rust_log_is_ignored() {
+        // An empty or whitespace-only RUST_LOG must not produce a trailing
+        // comma, which would be an invalid directive.
+        assert_eq!(filter_directive(0, Some(""),), "info");
+        assert_eq!(filter_directive(0, Some("   "),), "info");
+    }
+
+    #[test]
+    fn rust_log_whitespace_is_trimmed() {
+        assert_eq!(
+            filter_directive(0, Some("  typio.tray=trace  ")),
+            "info,typio.tray=trace"
+        );
+    }
+
+    /// The composed directive must parse into a valid `EnvFilter` and expose
+    /// the expected max-level hint. This guards the integration between
+    /// `filter_directive` and `tracing-subscriber`'s parser.
+    #[test]
+    fn composed_directive_parses_to_expected_floor() {
+        use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+
+        let floor = EnvFilter::new(filter_directive(0, None));
+        assert_eq!(floor.max_level_hint(), Some(LevelFilter::INFO));
+
+        let floor = EnvFilter::new(filter_directive(1, None));
+        assert_eq!(floor.max_level_hint(), Some(LevelFilter::DEBUG));
+
+        let floor = EnvFilter::new(filter_directive(2, None));
+        assert_eq!(floor.max_level_hint(), Some(LevelFilter::TRACE));
+
+        // RUST_LOG=trace raises the global floor above the CLI info floor.
+        let floor = EnvFilter::new(filter_directive(0, Some("trace")));
+        assert_eq!(floor.max_level_hint(), Some(LevelFilter::TRACE));
     }
 }

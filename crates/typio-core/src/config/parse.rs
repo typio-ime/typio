@@ -2,6 +2,7 @@
 
 use super::{Config, ConfigValue};
 use std::ffi::CString;
+use std::ptr;
 
 pub(super) fn toml_to_config_value(v: &toml::Value) -> Option<ConfigValue> {
     match v {
@@ -78,13 +79,22 @@ pub(super) fn parse_ini_like(content: &str) -> *mut Config {
             continue;
         }
 
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        if trimmed.starts_with('[') {
+            if !trimmed.ends_with(']') {
+                return ptr::null_mut();
+            }
             section = trimmed[1..trimmed.len() - 1].trim().to_string();
+            if section.is_empty() {
+                return ptr::null_mut();
+            }
             continue;
         }
 
         if let Some(eq_pos) = trimmed.find('=') {
             let key = trimmed[..eq_pos].trim();
+            if key.is_empty() {
+                return ptr::null_mut();
+            }
             let value = trimmed[eq_pos + 1..].trim();
 
             let full_key = if section.is_empty() {
@@ -94,7 +104,12 @@ pub(super) fn parse_ini_like(content: &str) -> *mut Config {
             };
 
             let cv = parse_ini_value(value);
-            config.entries.insert(full_key, cv);
+            config.set_value(full_key, cv);
+        } else {
+            // The TOML parser has already rejected the content. Do not turn a
+            // malformed non-comment line into a successful empty INI config;
+            // callers rely on NULL to retain the last known-good state.
+            return ptr::null_mut();
         }
     }
 

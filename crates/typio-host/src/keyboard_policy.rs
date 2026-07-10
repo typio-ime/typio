@@ -320,9 +320,52 @@ pub fn tracking_mark_released_pending(states: &mut [KeyTrackState]) -> usize {
     changed
 }
 
+/// True iff a prior press for this tracking state was delivered to the
+/// focused app via the virtual keyboard. A matching physical release must
+/// also be forwarded so the app cannot auto-repeat a stuck key.
+pub fn tracking_press_was_forwarded(state: KeyTrackState) -> bool {
+    matches!(
+        state,
+        KeyTrackState::Forwarded | KeyTrackState::BasicPassthrough | KeyTrackState::AppShortcut
+    )
+}
+
+/// Decide whether a release must be forwarded to the virtual keyboard.
+///
+/// - If the matching press was forwarded, the release is always forwarded
+///   (symmetric press/release), even when the engine "consumes" the release.
+/// - Otherwise the release is forwarded only when the engine declined it.
+pub fn release_must_forward(press_was_forwarded: bool, engine_consumed_release: bool) -> bool {
+    press_was_forwarded || !engine_consumed_release
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_must_forward_pairs_forwarded_presses() {
+        assert!(release_must_forward(true, true));
+        assert!(release_must_forward(true, false));
+        assert!(release_must_forward(false, false));
+        assert!(!release_must_forward(false, true));
+    }
+
+    #[test]
+    fn tracking_press_was_forwarded_covers_app_bound_states() {
+        assert!(tracking_press_was_forwarded(KeyTrackState::Forwarded));
+        assert!(tracking_press_was_forwarded(
+            KeyTrackState::BasicPassthrough
+        ));
+        assert!(tracking_press_was_forwarded(KeyTrackState::AppShortcut));
+        assert!(!tracking_press_was_forwarded(KeyTrackState::Idle));
+        assert!(!tracking_press_was_forwarded(
+            KeyTrackState::ReleasedPending
+        ));
+        assert!(!tracking_press_was_forwarded(
+            KeyTrackState::SuppressedStartup
+        ));
+    }
 
     #[test]
     fn modifier_bit_for_keysym_maps_known_modifiers() {

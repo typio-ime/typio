@@ -100,6 +100,9 @@ pub extern "C" fn typio_config_get_section(
         if key.starts_with(&prefix) {
             let subkey = &key[prefix.len()..];
             sub.entries.insert(subkey.to_string(), value.clone());
+            if cfg.user_keys.contains(key) {
+                sub.user_keys.insert(subkey.to_string());
+            }
         }
     }
 
@@ -204,4 +207,15 @@ pub extern "C" fn typio_config_has_key(config: *const Config, key: *const c_char
     let cfg = unsafe { &*config };
     let key_str = unsafe { CStr::from_ptr(key).to_string_lossy() };
     cfg.entries.contains_key(&*key_str)
+}
+
+/// Return whether a key was loaded from or explicitly written to user config.
+#[unsafe(no_mangle)]
+pub extern "C" fn typio_config_is_user_value(config: *const Config, key: *const c_char) -> bool {
+    if config.is_null() || key.is_null() {
+        return false;
+    }
+    let cfg = unsafe { &*config };
+    let key_str = unsafe { CStr::from_ptr(key).to_string_lossy() };
+    cfg.user_keys.contains(&*key_str)
 }

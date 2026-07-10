@@ -395,17 +395,26 @@ impl App {
                             arm_repeat(timer, compositor_info, mods);
                         }
                     } else {
+                        // Soft-pause already synthesized a virtual-keyboard
+                        // release for this keycode; swallow the physical one.
+                        if router.release_is_pending(key.keycode) {
+                            state.clear_synthetic_release(key.keycode);
+                            router.on_release(&key);
+                            let _ = timer.stop();
+                            continue;
+                        }
                         // Forward release events to the engine so
                         // engines that need them (e.g. Rime schema
                         // switching on a lone Shift release) can
-                        // complete gesture detection. Modifier state
-                        // is mirrored separately via the Modifiers
-                        // grab event, so not forwarding a consumed
-                        // release here does not leave a stuck modifier
-                        // in the focused app. Host-managed selection
-                        // releases are swallowed by `try_host_selection`
-                        // so the engine never sees an unpaired release
-                        // for a press the host intercepted.
+                        // complete gesture detection. Host-managed
+                        // selection releases are swallowed by
+                        // `try_host_selection` so the engine never sees
+                        // an unpaired release for a press the host
+                        // intercepted — unless that press was earlier
+                        // forwarded to the app, in which case the
+                        // release must still pair through the virtual
+                        // keyboard (stuck-Space class of bugs).
+                        let press_was_forwarded = router.press_was_forwarded(key.keycode);
                         let consumed = match router.try_host_selection(&key, state, mods) {
                             Some(handled) => handled,
                             None => router.dispatch_key(&key, mods),
@@ -418,13 +427,20 @@ impl App {
                                 // "transcribing…" banner.
                                 voice.stop();
                             }
-                        } else if consumed {
-                            router.drain_commit(state);
-                            router.drain_composition(state);
-                            router.flush_pending_text_if_commit(state);
                         } else {
-                            state.forward_key(key.time, key.keycode, key.state);
+                            if consumed {
+                                router.drain_commit(state);
+                                router.drain_composition(state);
+                                router.flush_pending_text_if_commit(state);
+                            }
+                            // Symmetric release: a press that went to the
+                            // app must deliver a matching release, even when
+                            // the engine consumes the release event.
+                            if press_was_forwarded || !consumed {
+                                state.forward_key(key.time, key.keycode, key.state);
+                            }
                         }
+                        state.clear_synthetic_release(key.keycode);
                         router.on_release(&key);
                         let _ = timer.stop();
                     }

@@ -17,8 +17,10 @@
 //!   generic dispatch service can drive the live framework state.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::fd::RawFd;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -54,21 +56,12 @@ impl IpcBus {
             move |json: &str, client_id: ClientId| {
                 let mut svc = svc_clone.borrow_mut();
 
-                let req = match Request::parse(json) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        let resp = Response::error(
-                            Id::Null,
-                            StandardError::ParseError.code(),
-                            "Parse error",
-                        );
+                let (req, id) = match parse_tip_request(json) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        let resp = Response::error(Id::Null, error.code(), error.message());
                         return RequestOutcome::respond(resp.to_json().unwrap_or_default());
                     }
-                };
-
-                let id = match &req.id {
-                    Id::Number(n) => *n,
-                    _ => 0,
                 };
                 let params = req.params.as_ref().cloned().unwrap_or(Value::Null);
 
@@ -160,6 +153,10 @@ impl TypioBackend {
         unsafe { self.instance.as_ref() }
     }
 
+    fn instance_mut(&mut self) -> Option<&mut typio::TypioInstance> {
+        unsafe { self.instance.as_mut() }
+    }
+
     fn registry_ptr(&self) -> *mut typio::c_api::registry::TypioRegistry {
         if self.instance.is_null() {
             return ptr::null_mut();
@@ -183,25 +180,24 @@ impl ServiceBackend for TypioBackend {
     // ── config ──
 
     fn config_get(&self, key: &str) -> Option<ConfigGetOutcome> {
-        let cfg = self.config_ptr();
-        if cfg.is_null() {
-            return None;
-        }
-        if !typio::config::typio_config_has_key(cfg, c_str(key).as_ptr()) {
+        let cfg = unsafe { self.config_ptr().as_ref() }?;
+        let schema = schema_field(key);
+        let current = cfg.value(key);
+        if schema.is_none() && current.is_none() {
             return Some(ConfigGetOutcome::Unknown);
         }
-        let value = typio::config::typio_config_get_string(cfg, c_str(key).as_ptr(), ptr::null());
-        let s = if value.is_null() {
-            String::new()
-        } else {
-            unsafe { CStr::from_ptr(value) }
-                .to_string_lossy()
-                .into_owned()
+        let (value, field_type) = match current {
+            Some(value) => (config_value_to_json(value), config_value_type(value)?),
+            None => schema_default(schema.as_ref()?)?,
         };
         Some(ConfigGetOutcome::Found {
-            value: Value::String(s),
-            field_type: FieldType::String,
-            source: ConfigSource::Default,
+            value,
+            field_type,
+            source: if cfg.is_user_value(key) {
+                ConfigSource::User
+            } else {
+                ConfigSource::Default
+            },
         })
     }
 
@@ -210,8 +206,22 @@ impl ServiceBackend for TypioBackend {
         if cfg.is_null() {
             return None;
         }
-        set_config_value(cfg, key, value_str);
-        Some(Ok(()))
+        let schema = schema_field(key);
+        let current_type = unsafe { cfg.as_ref() }
+            .and_then(|cfg| cfg.value(key))
+            .and_then(config_value_type);
+        let field_type = match (schema.as_ref().map(|field| field.field_type), current_type) {
+            // Preserve list-valued user configuration even though old static
+            // schemas represented `languages.enabled` as a string.
+            (_, Some(FieldType::Array)) => FieldType::Array,
+            (Some(field_type), _) => field_type,
+            (None, Some(field_type)) => field_type,
+            (None, None) => return Some(Err(SvcError)),
+        };
+        Some(
+            set_config_value(cfg, key, value_str, field_type, schema.as_ref())
+                .map_err(|_| SvcError),
+        )
     }
 
     fn config_unset(&mut self, key: &str) -> Option<Result<(), SvcError>> {
@@ -219,52 +229,76 @@ impl ServiceBackend for TypioBackend {
         if cfg.is_null() {
             return None;
         }
-        let key_c = c_str(key);
+        let Ok(key_c) = CString::new(key) else {
+            return Some(Err(SvcError));
+        };
+        let has_schema = schema_field(key).is_some();
         match typio::config::typio_config_remove(cfg, key_c.as_ptr()) {
-            typio::TypioResult::TypioOk => Some(Ok(())),
+            typio::TypioResult::TypioOk => {
+                typio::config_schema::typio_config_apply_defaults(cfg);
+                Some(Ok(()))
+            }
+            typio::TypioResult::TypioErrorNotFound if has_schema => Some(Ok(())),
             typio::TypioResult::TypioErrorNotFound => Some(Err(SvcError)),
             _ => Some(Err(SvcError)),
         }
     }
 
     fn config_list(&self, prefix: &str) -> Option<Vec<ConfigEntry>> {
-        let cfg = self.config_ptr();
-        if cfg.is_null() {
-            return None;
-        }
-        let count = typio::config::typio_config_key_count(cfg);
+        let cfg = unsafe { self.config_ptr().as_ref() }?;
         let mut entries = Vec::new();
-        for i in 0..count {
-            let key_ptr = typio::config::typio_config_key_at(cfg, i);
-            if key_ptr.is_null() {
+        let mut seen = HashSet::new();
+        let mut field_count = 0usize;
+        let fields = typio::config_schema::typio_config_schema_fields(&mut field_count);
+        for i in 0..field_count {
+            let Some(raw) = (unsafe { fields.add(i).as_ref() }) else {
                 continue;
-            }
-            let key = unsafe { CStr::from_ptr(key_ptr) }
-                .to_string_lossy()
-                .into_owned();
-            typio::string::typio_free_string(key_ptr);
+            };
+            let Some(field) = config_field_from_raw(raw) else {
+                continue;
+            };
+            let key = field.key.clone();
             if !prefix.is_empty() && !key.starts_with(prefix) {
                 continue;
             }
-            let value =
-                typio::config::typio_config_get_string(cfg, c_str(&key).as_ptr(), ptr::null());
-            let value_str = if value.is_null() {
-                String::new()
+            let (value, field_type) = if let Some(value) = cfg.value(&key) {
+                (
+                    config_value_to_json(value),
+                    config_value_type(value).unwrap_or(field.field_type),
+                )
             } else {
-                unsafe { CStr::from_ptr(value) }
-                    .to_string_lossy()
-                    .into_owned()
+                schema_default(&SchemaField::from_raw(raw)?)?
+            };
+            let mut field = field;
+            field.field_type = field_type;
+            entries.push(ConfigEntry {
+                field,
+                value,
+                source: if cfg.is_user_value(&key) {
+                    ConfigSource::User
+                } else {
+                    ConfigSource::Default
+                },
+            });
+            seen.insert(key);
+        }
+        for (key, value) in cfg.iter() {
+            if seen.contains(key) || (!prefix.is_empty() && !key.starts_with(prefix)) {
+                continue;
+            }
+            let Some(field_type) = config_value_type(value) else {
+                continue;
             };
             entries.push(ConfigEntry {
                 field: ConfigField {
-                    key,
-                    field_type: FieldType::String,
+                    key: key.to_string(),
+                    field_type,
                     label: None,
-                    section: None,
+                    section: key.rsplit_once('.').map(|(section, _)| section.to_string()),
                     choices: None,
                 },
-                value: Value::String(value_str),
-                source: ConfigSource::Default,
+                value: config_value_to_json(value),
+                source: ConfigSource::User,
             });
         }
         Some(entries)
@@ -295,9 +329,13 @@ impl ServiceBackend for TypioBackend {
         }
     }
 
-    fn save_config(&mut self) {
-        if !self.instance.is_null() {
-            typio::instance::typio_instance_save_config(self.instance);
+    fn save_config(&mut self) -> Result<(), SvcError> {
+        if self.instance.is_null() {
+            return Err(SvcError);
+        }
+        match typio::instance::typio_instance_save_config(self.instance) {
+            typio::TypioResult::TypioOk => Ok(()),
+            _ => Err(SvcError),
         }
     }
 
@@ -306,15 +344,23 @@ impl ServiceBackend for TypioBackend {
         if reg.is_null() {
             return;
         }
-        let engine_c = c_str(engine);
-        let key_c = c_str(key);
-        let value_c = c_str(value);
+        let (Ok(engine_c), Ok(key_c), Ok(value_c)) =
+            (c_str(engine), c_str(key), c_str(value))
+        else {
+            return;
+        };
         typio::c_api::registry::typio_registry_notify_config_change(
             reg,
             engine_c.as_ptr(),
             key_c.as_ptr(),
             value_c.as_ptr(),
         );
+        if self.engine_info(engine) == Some(EngineKind::Voice) {
+            let session = typio::instance::typio_instance_get_voice_session(self.instance);
+            if !session.is_null() {
+                typio::voice::session::typio_voice_session_reload_engine(session);
+            }
+        }
     }
 
     // ── registry ──
@@ -387,7 +433,7 @@ impl ServiceBackend for TypioBackend {
         if reg.is_null() {
             return Err(SvcError);
         }
-        let tag_c = c_str(tag);
+        let tag_c = c_str(tag)?;
         match typio::c_api::registry::typio_registry_set_active_language(reg, tag_c.as_ptr()) {
             typio::TypioResult::TypioOk => Ok(()),
             _ => Err(SvcError),
@@ -424,7 +470,9 @@ impl ServiceBackend for TypioBackend {
         if reg.is_null() {
             return Vec::new();
         }
-        let name_c = c_str(name);
+        let Ok(name_c) = c_str(name) else {
+            return Vec::new();
+        };
         let mut count: usize = 0;
         let commands =
             typio::c_api::registry::typio_registry_list_commands(reg, name_c.as_ptr(), &mut count);
@@ -459,8 +507,9 @@ impl ServiceBackend for TypioBackend {
         if reg.is_null() {
             return InvokeOutcome::Failed;
         }
-        let name_c = c_str(name);
-        let cmd_c = c_str(cmd);
+        let (Ok(name_c), Ok(cmd_c)) = (c_str(name), c_str(cmd)) else {
+            return InvokeOutcome::Failed;
+        };
         match typio::c_api::registry::typio_registry_invoke_command(
             reg,
             name_c.as_ptr(),
@@ -475,13 +524,16 @@ impl ServiceBackend for TypioBackend {
 
     // ── engine loader ──
     //
-    // engine.load/reload are not yet wired from the host: the registry inner
-    // is crate-private, so we cannot drive EngineLoader directly. The C ABI
-    // exposes unload; load/reload return "not supported" until a host-side
-    // registration helper is added.
-
-    fn engine_load(&mut self, _path: &str) -> Result<(), SvcError> {
-        Err(SvcError)
+    fn engine_load(&mut self, path: &str) -> Result<(), SvcError> {
+        let path = canonical_manifest_path(Path::new(path), true)?;
+        let registry = self
+            .instance_mut()
+            .and_then(typio::TypioInstance::registry_rust_mut)
+            .ok_or(SvcError)?;
+        crate::engine_loader::EngineLoader::with_voice()
+            .load_single(registry, &path)
+            .map(|_| ())
+            .map_err(|_| SvcError)
     }
 
     fn engine_unload(&mut self, name: &str) -> Result<(), SvcError> {
@@ -489,7 +541,7 @@ impl ServiceBackend for TypioBackend {
         if reg.is_null() {
             return Err(SvcError);
         }
-        let name_c = c_str(name);
+        let name_c = c_str(name)?;
         match typio::c_api::registry::typio_registry_unload(reg, name_c.as_ptr()) {
             typio::TypioResult::TypioOk => Ok(()),
             typio::TypioResult::TypioErrorNotFound => Err(SvcError),
@@ -497,8 +549,56 @@ impl ServiceBackend for TypioBackend {
         }
     }
 
-    fn engine_reload(&mut self, _name: &str, _path: Option<&str>) -> Result<(), SvcError> {
-        Err(SvcError)
+    fn engine_reload(&mut self, name: &str, path: Option<&str>) -> Result<(), SvcError> {
+        let instance = self.instance_mut().ok_or(SvcError)?;
+        let engine_dirs: Vec<PathBuf> = instance.engine_dirs_rust().map(PathBuf::from).collect();
+        let path = match path {
+            Some(path) => canonical_manifest_path(Path::new(path), true)?,
+            None => {
+                let path = crate::engine_loader::find_manifest_for(
+                    engine_dirs.iter().map(PathBuf::as_path),
+                    name,
+                )
+                .ok_or(SvcError)?;
+                canonical_manifest_path(&path, false)?
+            }
+        };
+
+        // Fully parse and negotiate before touching the live registry. Once
+        // this succeeds, registration after the old entry is removed cannot
+        // fail under the single-threaded host unless registry invariants are
+        // broken.
+        let mut validator = crate::engine_loader::EngineLoader::with_voice();
+        let mut scratch = typio::core::registry::EngineRegistry::new();
+        let validated = validator
+            .load_single(&mut scratch, &path)
+            .map_err(|_| SvcError)?;
+        if validated.name != name {
+            return Err(SvcError);
+        }
+
+        let registry = instance.registry_rust_mut().ok_or(SvcError)?;
+        let was_active_keyboard = registry.active_keyboard_name() == Some(name);
+        let was_active_voice = registry.active_voice_name() == Some(name);
+        if registry.engine_info(name).is_none() {
+            return Err(SvcError);
+        }
+
+        registry.unregister(name).map_err(|_| SvcError)?;
+        let loaded = crate::engine_loader::EngineLoader::with_voice()
+            .load_single(registry, &path)
+            .map_err(|_| SvcError)?;
+
+        if was_active_keyboard {
+            registry
+                .activate_keyboard(&loaded.name)
+                .map_err(|_| SvcError)?;
+        } else if was_active_voice {
+            registry
+                .activate_voice(&loaded.name)
+                .map_err(|_| SvcError)?;
+        }
+        Ok(())
     }
 
     // ── daemon ──
@@ -512,13 +612,23 @@ impl ServiceBackend for TypioBackend {
     }
 }
 
+fn canonical_manifest_path(path: &Path, require_absolute: bool) -> Result<PathBuf, SvcError> {
+    if (require_absolute && !path.is_absolute())
+        || path.extension().and_then(|extension| extension.to_str()) != Some("toml")
+    {
+        return Err(SvcError);
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|_| SvcError)?;
+    canonical.is_file().then_some(canonical).ok_or(SvcError)
+}
+
 impl TypioBackend {
     fn set_active_engine(&self, name: &str, voice: bool) -> Result<(), SvcError> {
         let reg = self.registry_ptr();
         if reg.is_null() {
             return Err(SvcError);
         }
-        let name_c = c_str(name);
+        let name_c = c_str(name)?;
         let result = if voice {
             typio::c_api::registry::typio_registry_set_active_voice(reg, name_c.as_ptr())
         } else {
@@ -573,7 +683,7 @@ impl TypioRegistryView {
         if cfg.is_null() {
             return None;
         }
-        let key_c = c_str(key);
+        let key_c = c_str(key).ok()?;
         let value = typio::config::typio_config_get_string(cfg, key_c.as_ptr(), ptr::null());
         if value.is_null() {
             return None;
@@ -617,68 +727,393 @@ impl RegistryView for TypioRegistryView {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn c_str(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| CString::default())
+fn c_str(s: &str) -> Result<CString, SvcError> {
+    CString::new(s).map_err(|_| SvcError)
 }
 
-fn set_config_value(config: *mut typio::config::Config, key: &str, raw: &str) {
-    let key_c = c_str(key);
-    if raw == "true" {
-        typio::config::typio_config_set_bool(config, key_c.as_ptr(), true);
-        return;
+fn parse_tip_request(json: &str) -> Result<(Request, i64), StandardError> {
+    let value: Value = serde_json::from_str(json).map_err(|_| StandardError::ParseError)?;
+    let request: Request =
+        serde_json::from_value(value).map_err(|_| StandardError::InvalidRequest)?;
+    if request.jsonrpc != crate::ipc::protocol::JSONRPC_VERSION {
+        return Err(StandardError::InvalidRequest);
     }
-    if raw == "false" {
-        typio::config::typio_config_set_bool(config, key_c.as_ptr(), false);
-        return;
+    let Id::Number(id) = request.id else {
+        return Err(StandardError::InvalidRequest);
+    };
+    Ok((request, id))
+}
+
+#[derive(Clone)]
+struct SchemaField {
+    field_type: FieldType,
+    default: Value,
+    label: Option<String>,
+    section: Option<String>,
+    choices: Option<Vec<String>>,
+    min: i32,
+    max: i32,
+}
+
+impl SchemaField {
+    fn from_raw(raw: &typio::types::TypioConfigField) -> Option<Self> {
+        use typio::types::TypioFieldType;
+
+        let c_string = |ptr: *const std::ffi::c_char| {
+            (!ptr.is_null()).then(|| {
+                unsafe { CStr::from_ptr(ptr) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        };
+        let (field_type, default) = match raw.type_ {
+            TypioFieldType::TypioFieldString => {
+                let ptr = unsafe { raw.def.s };
+                (
+                    FieldType::String,
+                    Value::String(c_string(ptr).unwrap_or_default()),
+                )
+            }
+            TypioFieldType::TypioFieldInt => {
+                (FieldType::Int, Value::Number(unsafe { raw.def.i }.into()))
+            }
+            TypioFieldType::TypioFieldBool => (FieldType::Bool, Value::Bool(unsafe { raw.def.b })),
+            TypioFieldType::TypioFieldFloat => (
+                FieldType::Float,
+                serde_json::Number::from_f64(unsafe { raw.def.f })
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null),
+            ),
+        };
+        let choices = if raw.ui_options.is_null() {
+            None
+        } else {
+            let mut values = Vec::new();
+            let mut cursor = raw.ui_options;
+            unsafe {
+                while !(*cursor).is_null() {
+                    values.push(CStr::from_ptr(*cursor).to_string_lossy().into_owned());
+                    cursor = cursor.add(1);
+                }
+            }
+            Some(values)
+        };
+        Some(Self {
+            field_type,
+            default,
+            label: c_string(raw.ui_label),
+            section: c_string(raw.ui_section),
+            choices,
+            min: raw.ui_min,
+            max: raw.ui_max,
+        })
     }
-    if let Ok(i) = raw.parse::<i32>() {
-        typio::config::typio_config_set_int(config, key_c.as_ptr(), i);
-        return;
+
+    fn descriptor(&self, key: String) -> ConfigField {
+        ConfigField {
+            key,
+            field_type: self.field_type,
+            label: self.label.clone(),
+            section: self.section.clone(),
+            choices: self.choices.clone(),
+        }
     }
-    if let Ok(f) = raw.parse::<f64>() {
-        typio::config::typio_config_set_float(config, key_c.as_ptr(), f);
-        return;
+}
+
+fn schema_field(key: &str) -> Option<SchemaField> {
+    let key = CString::new(key).ok()?;
+    let raw = typio::config_schema::typio_config_schema_find(key.as_ptr());
+    unsafe { raw.as_ref() }.and_then(SchemaField::from_raw)
+}
+
+fn config_field_from_raw(raw: &typio::types::TypioConfigField) -> Option<ConfigField> {
+    if raw.key.is_null() {
+        return None;
     }
-    let value_c = c_str(raw);
-    typio::config::typio_config_set_string(config, key_c.as_ptr(), value_c.as_ptr());
+    let key = unsafe { CStr::from_ptr(raw.key) }
+        .to_string_lossy()
+        .into_owned();
+    SchemaField::from_raw(raw).map(|field| field.descriptor(key))
+}
+
+fn schema_default(field: &SchemaField) -> Option<(Value, FieldType)> {
+    Some((field.default.clone(), field.field_type))
+}
+
+fn config_value_type(value: &typio::config::ConfigValue) -> Option<FieldType> {
+    use typio::config::ConfigValue;
+    match value {
+        ConfigValue::String(_) => Some(FieldType::String),
+        ConfigValue::Int(_) => Some(FieldType::Int),
+        ConfigValue::Bool(_) => Some(FieldType::Bool),
+        ConfigValue::Float(_) => Some(FieldType::Float),
+        ConfigValue::Array(_) => Some(FieldType::Array),
+        ConfigValue::Object(_) => None,
+    }
+}
+
+fn config_value_to_json(value: &typio::config::ConfigValue) -> Value {
+    use typio::config::ConfigValue;
+    match value {
+        ConfigValue::String(value) => Value::String(value.to_string_lossy().into_owned()),
+        ConfigValue::Int(value) => Value::Number((*value).into()),
+        ConfigValue::Bool(value) => Value::Bool(*value),
+        ConfigValue::Float(value) => serde_json::Number::from_f64(*value)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        ConfigValue::Array(values) => {
+            Value::Array(values.iter().map(config_value_to_json).collect())
+        }
+        ConfigValue::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.to_string(), config_value_to_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn parse_string_list(raw: &str) -> Result<Vec<String>, ()> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('[') {
+        let value: Value = serde_json::from_str(trimmed).map_err(|_| ())?;
+        return value
+            .as_array()
+            .ok_or(())?
+            .iter()
+            .map(|item| item.as_str().map(str::to_string).ok_or(()))
+            .collect();
+    }
+    Ok(trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn set_config_value(
+    config: *mut typio::config::Config,
+    key: &str,
+    raw: &str,
+    field_type: FieldType,
+    schema: Option<&SchemaField>,
+) -> Result<(), ()> {
+    let key = CString::new(key).map_err(|_| ())?;
+    let result = match field_type {
+        FieldType::String => {
+            if let Some(choices) = schema.and_then(|field| field.choices.as_ref())
+                && !choices.iter().any(|choice| choice == raw)
+            {
+                return Err(());
+            }
+            let value = CString::new(raw).map_err(|_| ())?;
+            typio::config::typio_config_set_string(config, key.as_ptr(), value.as_ptr())
+        }
+        FieldType::Int => {
+            let value = raw.trim().parse::<i32>().map_err(|_| ())?;
+            if let Some(field) = schema
+                && field.max > field.min
+                && !(field.min..=field.max).contains(&value)
+            {
+                return Err(());
+            }
+            typio::config::typio_config_set_int(config, key.as_ptr(), value)
+        }
+        FieldType::Bool => {
+            let value = match raw.trim() {
+                "true" | "1" => true,
+                "false" | "0" => false,
+                _ => return Err(()),
+            };
+            typio::config::typio_config_set_bool(config, key.as_ptr(), value)
+        }
+        FieldType::Float => {
+            let value = raw.trim().parse::<f64>().map_err(|_| ())?;
+            if !value.is_finite() {
+                return Err(());
+            }
+            typio::config::typio_config_set_float(config, key.as_ptr(), value)
+        }
+        FieldType::Array => {
+            let values: Vec<CString> = parse_string_list(raw)?
+                .into_iter()
+                .map(CString::new)
+                .collect::<Result<_, _>>()
+                .map_err(|_| ())?;
+            let pointers: Vec<*const std::ffi::c_char> =
+                values.iter().map(|value| value.as_ptr()).collect();
+            typio::config::typio_config_set_string_array(
+                config,
+                key.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len(),
+            )
+        }
+    };
+    (result == typio::TypioResult::TypioOk)
+        .then_some(())
+        .ok_or(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
-    fn c_str_handles_nul() {
-        // A key/value containing an interior NUL falls back to the empty string
-        // rather than panicking; the C ABI would reject it anyway.
-        assert_eq!(c_str("foo\0bar").to_bytes().len(), 0);
+    fn c_str_rejects_nul() {
+        assert!(c_str("foo\0bar").is_err());
     }
 
     #[test]
-    fn config_value_heuristic() {
-        // These match the service FieldType coercion semantics for the common
-        // textual forms.
-        assert!(parse_config_heuristic("true").is_boolean());
-        assert!(parse_config_heuristic("42").is_i64());
-        assert!(parse_config_heuristic("3.14").is_f64());
-        assert!(parse_config_heuristic("hello").is_string());
+    fn string_list_parser_accepts_csv_and_json() {
+        assert_eq!(parse_string_list("zh-Hans, en").unwrap(), ["zh-Hans", "en"]);
+        assert_eq!(
+            parse_string_list(r#"["zh-Hans", "en"]"#).unwrap(),
+            ["zh-Hans", "en"]
+        );
     }
 
-    fn parse_config_heuristic(raw: &str) -> Value {
-        if raw == "true" {
-            return Value::Bool(true);
+    #[test]
+    fn string_list_parser_rejects_non_string_json_items() {
+        assert!(parse_string_list(r#"["en", 2]"#).is_err());
+    }
+
+    #[test]
+    fn tip_request_rejects_valid_json_with_invalid_envelope() {
+        assert_eq!(
+            parse_tip_request("not json").unwrap_err(),
+            StandardError::ParseError
+        );
+        assert_eq!(
+            parse_tip_request(r#"{"jsonrpc":"1.0","id":1,"method":"hello"}"#).unwrap_err(),
+            StandardError::InvalidRequest
+        );
+        assert_eq!(
+            parse_tip_request(r#"{"jsonrpc":"2.0","id":"x","method":"hello"}"#).unwrap_err(),
+            StandardError::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn live_backend_reports_schema_types_and_sources() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().to_str().unwrap();
+        let mut instance =
+            typio::TypioInstance::new_rust(Some(path), Some(path), Some(path), Vec::new());
+        instance.init_rust().unwrap();
+        let mut backend = TypioBackend::new(instance.as_mut());
+
+        match backend.config_get("notifications.enable").unwrap() {
+            ConfigGetOutcome::Found {
+                value,
+                field_type,
+                source,
+            } => {
+                assert_eq!(value, Value::Bool(true));
+                assert_eq!(field_type, FieldType::Bool);
+                assert_eq!(source, ConfigSource::Default);
+            }
+            ConfigGetOutcome::Unknown => panic!("schema field should exist"),
         }
-        if raw == "false" {
-            return Value::Bool(false);
+
+        assert_eq!(
+            backend.config_set("notifications.enable", "false"),
+            Some(Ok(()))
+        );
+        match backend.config_get("notifications.enable").unwrap() {
+            ConfigGetOutcome::Found { value, source, .. } => {
+                assert_eq!(value, Value::Bool(false));
+                assert_eq!(source, ConfigSource::User);
+            }
+            ConfigGetOutcome::Unknown => panic!("written field should exist"),
         }
-        if let Ok(i) = raw.parse::<i64>() {
-            return Value::Number(i.into());
+        assert!(
+            backend
+                .config_set("notifications.enable", "maybe")
+                .unwrap()
+                .is_err()
+        );
+        assert!(backend.save_config().is_ok());
+
+        let saved = std::fs::read_to_string(temp.path().join("core.toml")).unwrap();
+        assert!(saved.contains("enable = false"));
+        assert!(
+            !saved.contains("cooldown_ms"),
+            "defaults must not be persisted"
+        );
+    }
+
+    #[test]
+    fn live_backend_preserves_array_values() {
+        let temp = tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("core.toml"),
+            "[languages]\nenabled = [\"zh-Hans\", \"en\"]\n",
+        )
+        .unwrap();
+        let path = temp.path().to_str().unwrap();
+        let mut instance =
+            typio::TypioInstance::new_rust(Some(path), Some(path), Some(path), Vec::new());
+        instance.init_rust().unwrap();
+        let backend = TypioBackend::new(instance.as_mut());
+
+        match backend.config_get("languages.enabled").unwrap() {
+            ConfigGetOutcome::Found {
+                value,
+                field_type,
+                source,
+            } => {
+                assert_eq!(value, serde_json::json!(["zh-Hans", "en"]));
+                assert_eq!(field_type, FieldType::Array);
+                assert_eq!(source, ConfigSource::User);
+            }
+            ConfigGetOutcome::Unknown => panic!("array field should exist"),
         }
-        if let Ok(f) = raw.parse::<f64>() {
-            return serde_json::Number::from_f64(f)
-                .map(Value::Number)
-                .unwrap_or(Value::Null);
-        }
-        Value::String(raw.to_string())
+    }
+
+    #[test]
+    fn live_backend_loads_and_prevalidates_engine_reloads() {
+        let temp = tempdir().unwrap();
+        let manifest = temp.path().join("typio-engine-fixture.toml");
+        let valid_manifest = |display_name: &str| {
+            format!(
+                r#"
+name = "fixture"
+type = "keyboard"
+protocol = "typio-engine-protocol"
+display_name = "{display_name}"
+command = "/nonexistent/typio-engine-fixture"
+languages = ["und"]
+"#
+            )
+        };
+        std::fs::write(&manifest, valid_manifest("Fixture")).unwrap();
+
+        let path = temp.path().to_str().unwrap();
+        let mut instance = typio::TypioInstance::new_rust(
+            Some(path),
+            Some(path),
+            Some(path),
+            vec![path.to_string()],
+        );
+        instance.init_rust().unwrap();
+        let mut backend = TypioBackend::new(instance.as_mut());
+
+        assert!(backend.engine_load("relative.toml").is_err());
+        assert!(backend.engine_load(manifest.to_str().unwrap()).is_ok());
+        assert_eq!(backend.list_keyboards(), ["fixture"]);
+
+        std::fs::write(&manifest, "not valid toml").unwrap();
+        assert!(backend.engine_reload("fixture", None).is_err());
+        assert_eq!(backend.list_keyboards(), ["fixture"]);
+
+        std::fs::write(&manifest, valid_manifest("Fixture Reloaded")).unwrap();
+        assert!(backend.engine_reload("fixture", None).is_ok());
+        assert_eq!(
+            backend.engine_display_name("fixture").as_deref(),
+            Some("Fixture Reloaded")
+        );
     }
 }

@@ -20,7 +20,7 @@ pub const PROTOCOL_MAJOR: u16 = 1;
 pub const PROTOCOL_MINOR: u16 = 0;
 
 /// Maximum payload accepted from an engine process.
-pub const MAX_PAYLOAD_LEN: usize = 1 << 20;
+pub const MAX_PAYLOAD_LEN: usize = 8 << 20;
 
 const HEADER_LEN: usize = 28;
 

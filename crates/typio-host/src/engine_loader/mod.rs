@@ -228,6 +228,9 @@ impl EngineLoader {
                 // engine is not registered — that should never happen here
                 // because we just successfully registered.
                 if let Err(err) = registry.set_engine_languages(&manifest.name, langs.clone()) {
+                    // Keep load_single atomic: callers must never observe a
+                    // half-registered engine after language propagation fails.
+                    let _ = registry.unregister(&manifest.name);
                     return Err(LoadError::SetLanguagesFailed(err));
                 }
             }

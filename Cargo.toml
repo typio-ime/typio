@@ -48,6 +48,7 @@ flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
 flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
 wayland-sys = "0.31"
 tracing = "0.1"
+tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -121,7 +121,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
             if !px.is_null() && w > 0 && h > 0 {
                 // Convert from RGBA8 (premultiplied) to ARGB32 big-endian
                 let len = (stride * h) as usize;
-                let slice = std::slice::from_raw_parts(px as *const u8, len);
+                let slice = std::slice::from_raw_parts(px, len);
                 let mut argb = vec![0u8; (w * h * 4) as usize];
                 let mut any_coverage = false;
 

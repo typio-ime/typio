@@ -132,6 +132,7 @@ pub extern "C" fn typio_config_remove(config: *mut Config, key: *const c_char) -
     }
     let cfg = unsafe { &mut *config };
     let key_str = unsafe { CStr::from_ptr(key).to_string_lossy().into_owned() };
+    cfg.user_keys.remove(&key_str);
     if cfg.entries.remove(&key_str).is_some() {
         TypioResult::TypioOk
     } else {
@@ -149,7 +150,11 @@ pub extern "C" fn typio_config_merge(dest: *mut Config, src: *const Config) -> T
     let s = unsafe { &*src };
 
     for (key, value) in s.entries.iter() {
-        dst.set_value(key.clone(), value.clone());
+        if s.user_keys.contains(key) {
+            dst.set_value(key.clone(), value.clone());
+        } else {
+            dst.set_default_value(key.clone(), value.clone());
+        }
     }
 
     TypioResult::TypioOk

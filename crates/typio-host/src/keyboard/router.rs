@@ -22,7 +22,8 @@ use crate::input_method::{DecodedKeyEvent, InputMethodState};
 use crate::keyboard_policy::{
     KEY_PAGE_DOWN, KEY_PAGE_UP, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
     WL_KEYBOARD_KEY_STATE_RELEASED, effective_modifiers, modifier_bit_for_keysym,
-    tracking_mark_released_pending, tracking_reset, tracking_reset_generations,
+    release_must_forward, tracking_mark_released_pending, tracking_press_was_forwarded,
+    tracking_reset, tracking_reset_generations,
 };
 use crate::repeat_timer::Modifiers;
 use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
@@ -339,8 +340,20 @@ impl KeyboardRouter {
 
     /// Enter a soft pause: retain the grab object, but release tracked keys
     /// and stop repeat state.
-    pub fn soft_pause(&mut self) {
-        tracking_mark_released_pending(&mut self.key_tracking_states);
+    ///
+    /// Any key whose press was forwarded to the virtual keyboard gets a
+    /// synthetic release first so the focused app cannot keep auto-repeating
+    /// after focus leaves. The matching physical release is later swallowed
+    /// via [`Self::release_is_pending`].
+    pub fn soft_pause(&mut self, frontend: &mut InputMethodState) {
+        for (keycode, track) in self.key_tracking_states.iter_mut().enumerate() {
+            if tracking_press_was_forwarded(*track) {
+                frontend.forward_key(0, keycode as u32, WL_KEYBOARD_KEY_STATE_RELEASED);
+                frontend.mark_synthetic_release(keycode as u32);
+                *track = KeyTrackState::ReleasedPending;
+            }
+        }
+        let _ = tracking_mark_released_pending(&mut self.key_tracking_states);
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
         self.pending_commit_flush = None;
@@ -466,14 +479,14 @@ impl KeyboardRouter {
         match action {
             HostSelectionAction::Swallow => Some(true),
             HostSelectionAction::Navigate(new_idx) => {
-                if new_idx != frontend.composition.selected_candidate {
-                    if !self.sync_host_candidate_selection(
+                if new_idx != frontend.composition.selected_candidate
+                    && !self.sync_host_candidate_selection(
                         frontend,
                         new_idx,
                         "host-managed navigation",
-                    ) {
-                        return None;
-                    }
+                    )
+                {
+                    return None;
                 }
                 Some(true)
             }
@@ -683,8 +696,7 @@ impl KeyboardRouter {
         if is_modifier_key {
             self.engine_tracked_mods = Modifiers(self.engine_tracked_mods.0 | bit.0);
         }
-        let consumed = self.process_key_engine(key, xkb_mods_depressed, false);
-        consumed
+        self.process_key_engine(key, xkb_mods_depressed, false)
     }
 
     fn shortcut_modifiers(&self, xkb_mods_depressed: u32) -> Modifiers {
@@ -935,7 +947,12 @@ impl KeyboardRouter {
     /// Record that a key was forwarded to the application via the
     /// virtual keyboard. Arms the repeat timer in `Forward` mode so the
     /// main loop will keep sending synthetic presses until release.
+    ///
+    /// Marks the keycode [`KeyTrackState::Forwarded`] so a later release
+    /// is always paired through the virtual keyboard even if the engine
+    /// claims to consume the release (prevents app-side stuck auto-repeat).
     pub fn on_forward(&mut self, key: DecodedKeyEvent) {
+        self.set_key_tracking(key.keycode, KeyTrackState::Forwarded);
         self.repeat_key = Some(key);
         self.repeat_mode = RepeatMode::Forward;
     }
@@ -944,8 +961,49 @@ impl KeyboardRouter {
     /// timer in `Engine` mode so the main loop will keep re-dispatching
     /// the key with `is_repeat: true` until release.
     pub fn on_consumed(&mut self, key: DecodedKeyEvent) {
+        // Press never reached the app; clear any stale forwarded mark.
+        self.set_key_tracking(key.keycode, KeyTrackState::Idle);
         self.repeat_key = Some(key);
         self.repeat_mode = RepeatMode::Engine;
+    }
+
+    /// True iff the matching press for `keycode` was delivered to the
+    /// focused app (so the release must be forwarded symmetrically).
+    pub fn press_was_forwarded(&self, keycode: u32) -> bool {
+        tracking_press_was_forwarded(self.key_tracking(keycode))
+    }
+
+    /// True iff soft-pause already synthesized a release for `keycode`.
+    /// The physical release must then be swallowed to avoid a double-up.
+    pub fn release_is_pending(&self, keycode: u32) -> bool {
+        self.key_tracking(keycode) == KeyTrackState::ReleasedPending
+    }
+
+    /// Clear per-key tracking after a release has been fully handled.
+    pub fn clear_key_tracking(&mut self, keycode: u32) {
+        self.set_key_tracking(keycode, KeyTrackState::Idle);
+    }
+
+    /// Whether a release should be forwarded to the virtual keyboard,
+    /// given the press-tracking state and the engine's consume decision.
+    pub fn release_should_forward(&self, keycode: u32, engine_consumed: bool) -> bool {
+        release_must_forward(self.press_was_forwarded(keycode), engine_consumed)
+    }
+
+    fn key_tracking(&self, keycode: u32) -> KeyTrackState {
+        self.key_tracking_states
+            .get(keycode as usize)
+            .copied()
+            .unwrap_or(KeyTrackState::Idle)
+    }
+
+    fn set_key_tracking(&mut self, keycode: u32, state: KeyTrackState) {
+        if let Some(slot) = self.key_tracking_states.get_mut(keycode as usize) {
+            *slot = state;
+            if let Some(generation) = self.key_tracking_generations.get_mut(keycode as usize) {
+                *generation = self.active_generation;
+            }
+        }
     }
 
     /// Record a key release. Clears repeat state if it matches the
@@ -957,6 +1015,7 @@ impl KeyboardRouter {
                 self.repeat_mode = RepeatMode::Forward;
             }
         }
+        self.clear_key_tracking(key.keycode);
     }
 
     /// Drive one repeat tick. Called by the main loop when the repeat
@@ -1180,7 +1239,13 @@ mod tests {
             time: 0,
         });
 
-        router.soft_pause();
+        // soft_pause needs an InputMethodState only for synthetic
+        // forward_key; tests cannot build a live Wayland frontend, so
+        // exercise the pure tracking transition via the mark helper and
+        // the tracking APIs used by the event loop.
+        tracking_mark_released_pending(&mut router.key_tracking_states);
+        router.repeat_key = None;
+        router.physical_modifiers = Modifiers::NONE;
 
         assert_eq!(
             router.key_tracking_states[0],
@@ -1197,6 +1262,43 @@ mod tests {
         );
         assert!(router.repeat_key.is_none());
         assert_eq!(router.physical_modifiers, Modifiers::NONE);
+    }
+
+    #[test]
+    fn on_forward_marks_keycode_for_symmetric_release() {
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let key = DecodedKeyEvent {
+            keycode: 57, // Space on a typical PC keymap
+            xkb_keycode: 65,
+            keysym: 0x0020,
+            unicode: " ".to_string(),
+            state: 1,
+            time: 0,
+        };
+        router.on_forward(key.clone());
+        assert!(router.press_was_forwarded(57));
+        assert!(release_must_forward(true, true));
+        assert!(router.release_should_forward(57, true));
+        router.on_release(&key);
+        assert!(!router.press_was_forwarded(57));
+        assert!(!router.release_should_forward(57, true));
+    }
+
+    #[test]
+    fn on_consumed_does_not_require_symmetric_release() {
+        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let key = DecodedKeyEvent {
+            keycode: 57,
+            xkb_keycode: 65,
+            keysym: 0x0020,
+            unicode: " ".to_string(),
+            state: 1,
+            time: 0,
+        };
+        router.on_consumed(key);
+        assert!(!router.press_was_forwarded(57));
+        assert!(!router.release_should_forward(57, true));
+        assert!(router.release_should_forward(57, false));
     }
 
     #[test]

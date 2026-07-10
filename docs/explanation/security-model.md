@@ -39,7 +39,9 @@ equivalent to installing a keylogger**, and the
 is the entire installation-time control. The daemon never auto-scans
 user-writable locations; engines come from the compile-time system
 directory, an explicit `--engine-dir`, or an explicit
-`$TYPIO_ENGINE_PATH`.
+`$TYPIO_ENGINE_PATH`. A same-uid client may also request an explicit absolute
+manifest path through `engine.load`; this is within the control socket's
+same-user trust boundary.
 
 This is the current assumption, not the end state. The process model was
 chosen partly because it leaves a sandboxing path open

@@ -9,13 +9,14 @@ pub use getters::*;
 pub use setters::*;
 
 use crate::types::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::ptr;
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -26,6 +27,8 @@ use std::time::Duration;
 /// `read_to_string` would block the (single-threaded) host loop indefinitely.
 /// On timeout the load fails and the previous config is retained.
 const CONFIG_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONFIG_READS_IN_FLIGHT: usize = 4;
+static CONFIG_READS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /* -------------------------------------------------------------------------- */
 /* Internal representation                                                    */
@@ -51,12 +54,14 @@ pub enum ConfigValue {
 /// Opaque configuration object.
 pub struct Config {
     pub(crate) entries: HashMap<String, ConfigValue>,
+    pub(crate) user_keys: HashSet<String>,
 }
 
 impl Clone for Config {
     fn clone(&self) -> Self {
         Config {
             entries: self.entries.clone(),
+            user_keys: self.user_keys.clone(),
         }
     }
 }
@@ -65,6 +70,7 @@ impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("entries", &self.entries)
+            .field("user_keys", &self.user_keys)
             .finish()
     }
 }
@@ -73,11 +79,34 @@ impl Config {
     pub(crate) fn new() -> Self {
         Config {
             entries: HashMap::new(),
+            user_keys: HashSet::new(),
         }
     }
 
     pub(crate) fn set_value(&mut self, key: String, value: ConfigValue) {
+        self.user_keys.insert(key.clone());
         self.entries.insert(key, value);
+    }
+
+    pub(crate) fn set_default_value(&mut self, key: String, value: ConfigValue) {
+        self.entries.insert(key, value);
+    }
+
+    /// Borrow the value stored for a dotted configuration key.
+    pub fn value(&self, key: &str) -> Option<&ConfigValue> {
+        self.entries.get(key)
+    }
+
+    /// Iterate over stored dotted keys and their values.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &ConfigValue)> {
+        self.entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+    }
+
+    /// Whether a key came from user input rather than schema defaults.
+    pub fn is_user_value(&self, key: &str) -> bool {
+        self.user_keys.contains(key)
     }
 
     fn from_toml(value: &toml::Value, prefix: &str) -> Self {
@@ -101,7 +130,7 @@ impl Config {
                         }
                         _ => {
                             if let Some(cv) = parse::toml_to_config_value(v) {
-                                self.entries.insert(full_key, cv);
+                                self.set_value(full_key, cv);
                             }
                         }
                     }
@@ -114,7 +143,7 @@ impl Config {
                     } else {
                         prefix.to_string()
                     };
-                    self.entries.insert(key, cv);
+                    self.set_value(key, cv);
                 }
             }
         }
@@ -146,12 +175,30 @@ pub extern "C" fn typio_config_load_file(path: *const c_char) -> *mut Config {
     // raw blocking syscall with no timeout; on a stalled network/edge
     // filesystem it can hang the host for the kernel's full RPC timeout
     // (seconds to unbounded). A short-lived reader thread + channel timeout
-    // bounds it; on timeout the load fails and the previous config survives.
+    // bounds it; the global cap prevents repeated timeouts from accumulating
+    // unbounded stuck threads. On failure the previous config survives.
     let path_buf = Path::new(&*path_str).to_path_buf();
+    if CONFIG_READS_IN_FLIGHT
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_CONFIG_READS_IN_FLIGHT).then_some(count + 1)
+        })
+        .is_err()
+    {
+        return ptr::null_mut();
+    }
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(fs::read_to_string(&path_buf));
-    });
+    if thread::Builder::new()
+        .name("typio-config-read".into())
+        .spawn(move || {
+            let result = fs::read_to_string(&path_buf);
+            CONFIG_READS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+            let _ = tx.send(result);
+        })
+        .is_err()
+    {
+        CONFIG_READS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+        return ptr::null_mut();
+    }
     let content = match rx.recv_timeout(CONFIG_READ_TIMEOUT) {
         Ok(Ok(c)) => c,
         Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Timeout) => return ptr::null_mut(),
@@ -257,6 +304,24 @@ mod tests {
         let cfg = typio_config_new();
         assert!(!cfg.is_null());
         typio_config_free(cfg);
+    }
+
+    #[test]
+    fn config_merge_preserves_user_and_default_sources() {
+        let mut source = Config::new();
+        source.set_default_value("default.only".into(), ConfigValue::Bool(true));
+        source.set_value("user.only".into(), ConfigValue::Int(7));
+        let mut destination = Config::new();
+
+        assert_eq!(
+            typio_config_merge(&mut destination, &source),
+            TypioResult::TypioOk
+        );
+        assert!(!destination.is_user_value("default.only"));
+        assert!(destination.is_user_value("user.only"));
+        let serialized = serialize::config_to_string_internal(&destination);
+        assert!(!serialized.contains("[default]"));
+        assert!(serialized.contains("only = 7"));
     }
 
     #[test]

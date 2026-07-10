@@ -78,13 +78,13 @@ impl TypioLogger {
     }
 
     fn set_callback(&self, cb: Option<TypioLogCallback>, user_data: *mut c_void) {
-        let mut guard = self.callback.lock().unwrap();
+        let mut guard = self.callback.lock().unwrap_or_else(|e| e.into_inner());
         *guard = cb.map(|c| (c, user_data));
     }
 
     fn set_capacity(&self, capacity: usize) {
         self.capacity.store(capacity, Ordering::Relaxed);
-        let mut recent = self.recent.lock().unwrap();
+        let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
         while recent.len() > capacity {
             recent.pop_front();
         }
@@ -94,14 +94,17 @@ impl TypioLogger {
         use std::fs::File;
         use std::io::Write;
 
-        let recent = self.recent.lock().unwrap();
+        let recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
         let mut file = File::create(path)?;
         for entry in recent.iter() {
-            let ts = entry
+            // Millisecond resolution, matching the timestamp forwarded to the
+            // host callback — so a crash dump and the live log are
+            // cross-referenceable.
+            let ts_ms = entry
                 .timestamp
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs();
+                .as_millis() as u64;
             let level_str = match entry.level {
                 TypioLogLevel::TypioLogTrace => "TRACE",
                 TypioLogLevel::TypioLogDebug => "DEBUG",
@@ -112,7 +115,7 @@ impl TypioLogger {
             writeln!(
                 file,
                 "[{}] [{}] [{}] {}:{} {}",
-                ts, level_str, entry.domain, entry.file, entry.line, entry.message
+                ts_ms, level_str, entry.domain, entry.file, entry.line, entry.message
             )?;
         }
         Ok(())
@@ -151,9 +154,11 @@ impl Log for TypioLogger {
         let line = record.line().unwrap_or(0);
         let timestamp = SystemTime::now();
 
-        // Store in ring buffer.
+        // Store in ring buffer. Tolerate a poisoned mutex (a panic on some
+        // other thread while holding this lock): the logger must not cascade
+        // failures into every subsequent log call.
         {
-            let mut recent = self.recent.lock().unwrap();
+            let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
             let cap = self.capacity.load(Ordering::Relaxed);
             if recent.len() >= cap {
                 recent.pop_front();
@@ -168,8 +173,15 @@ impl Log for TypioLogger {
             });
         }
 
-        // Forward to host callback if one is installed.
-        if let Some((cb, user_data)) = *self.callback.lock().unwrap() {
+        // Forward to the host callback. The lock is released *before* the
+        // callback is invoked: a callback that itself logs (directly or via
+        // `typio_log_emit`) must be able to re-enter `log()` without
+        // deadlocking on, or panicking via, a non-reentrant Mutex.
+        let callback = {
+            let guard = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+            *guard
+        };
+        if let Some((cb, user_data)) = callback {
             let c_message = CString::new(message.as_bytes())
                 .unwrap_or_else(|_| CString::new("<invalid>").unwrap());
             let c_domain = CString::new(domain.as_bytes())
@@ -320,7 +332,11 @@ pub extern "C" fn typio_logger_shutdown() {
     if let Some(logger) = LOGGER.get() {
         logger.set_callback(None, std::ptr::null_mut());
         logger.set_level(TypioLogLevel::TypioLogInfo);
-        logger.recent.lock().unwrap().clear();
+        logger
+            .recent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -348,5 +364,37 @@ pub(crate) fn log_msg(level: TypioLogLevel, msg: &str) {
     if let Ok(cmsg) = CString::new(msg) {
         let _ = typio_logger_init();
         typio_log_emit(level, cmsg.as_ptr());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    extern "C" fn count_callback(_event: *const TypioLogEvent, user_data: *mut c_void) {
+        let count = unsafe { &*(user_data as *const AtomicUsize) };
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn callback_remains_installed_after_each_record() {
+        let logger = TypioLogger::new();
+        let count = AtomicUsize::new(0);
+        logger.set_callback(
+            Some(count_callback),
+            (&count as *const AtomicUsize).cast_mut().cast(),
+        );
+
+        for message in ["first", "second"] {
+            logger.log(
+                &Record::builder()
+                    .args(format_args!("{message}"))
+                    .level(Level::Info)
+                    .build(),
+            );
+        }
+
+        assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 }

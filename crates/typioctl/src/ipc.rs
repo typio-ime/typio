@@ -4,10 +4,12 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
 const TIP_MAX_FRAME: usize = 1 << 20; /* 1 MiB */
+const TIP_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Canonical UDS socket path.
 ///
@@ -55,13 +57,18 @@ impl IpcClient {
                 format!("{e}\n\nIs typio running? Start `typio.service` or run `typio --verbose`."),
             )
         })?;
+        stream.set_read_timeout(Some(TIP_IO_TIMEOUT))?;
+        stream.set_write_timeout(Some(TIP_IO_TIMEOUT))?;
         Ok(IpcClient { stream, next_id: 1 })
     }
 
     /// Send a JSON-RPC request and wait for the response.
     pub fn call(&mut self, method: &str, params: Value) -> io::Result<Value> {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("request id exhausted"))?;
 
         let req = json!({
             "jsonrpc": "2.0",
@@ -96,21 +103,33 @@ impl IpcClient {
             io::Error::new(io::ErrorKind::InvalidData, format!("invalid JSON: {e}"))
         })?;
 
-        if let Some(rid) = resp.get("id").and_then(|v| v.as_i64())
-            && rid != id
-        {
+        if resp.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid JSON-RPC version",
+            ));
+        }
+        if resp.get("id").and_then(Value::as_i64) != Some(id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "response id mismatch",
             ));
         }
-        if let Some(err) = resp.get("error") {
+        let result = resp.get("result");
+        let error = resp.get("error");
+        if result.is_some() == error.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "response must contain exactly one of result or error",
+            ));
+        }
+        if let Some(err) = error {
             let msg = err
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             return Err(io::Error::other(msg.to_string()));
         }
-        Ok(resp.get("result").cloned().unwrap_or(Value::Null))
+        Ok(result.cloned().unwrap_or(Value::Null))
     }
 }

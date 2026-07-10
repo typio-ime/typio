@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stuck Space (and other keys) after release during Rime composition.** When a
+  key press was forwarded to the focused app via the virtual keyboard but the
+  engine later "consumed" the matching release, the host skipped
+  `forward_key(release)`. The application then kept auto-repeating the key
+  forever (most visible as continuous spaces after releasing Space mid-spelling).
+  Per-key `KeyTrackState` is now updated on forward/consume, and any release
+  whose press was forwarded is always paired through the virtual keyboard.
+  Soft-pause also synthesizes releases for held forwarded keys so focus loss
+  cannot leave the app with a stuck key.
+
+- **Rime engine intermittent load failures and missing mode on startup.** Three
+  root causes are addressed:
+  1. **IPC timeout was a flat 100 ms for all requests.** `init`/`reload-config`
+     on a cold Rime deploy can take seconds; the 100 ms budget caused a spurious
+     timeout that left the socket mid-frame, cascading into permanent transport
+     errors for every subsequent request (keys leaked, availability reported
+     `Failed`, mode never published). Timeouts are now per-operation: 60 s for
+     the cold-start handshake, 5 s for `init`/`reload-config`, 120 s for voice
+     `process-audio`, 500 ms for focus/reset/mode queries, and 100 ms for
+     `process-key`/`availability`.
+  2. **No transport-error recovery.** A single timeout or response-id mismatch
+     poisoned the socket permanently — every later request on the same worker
+     failed. The `ProcessEngine` now tracks a `poisoned` flag; on transport
+     error the child is killed and the flag set. The next `with_engine` call
+     transparently respawns a fresh worker (spawn + HELLO + init), so the
+     daemon self-heals instead of staying broken for the rest of the session.
+  3. **Empty mode id dropped before first session.** Before the first Rime
+     session was created (deploy still running), `get_active_mode` returned a
+     default mode with `id = ""`. The framework's
+     `dispatch_observed_keyboard_mode` silently drops empty ids, so the host's
+     mode cache stayed empty and the indicator showed no mode until the first
+     successful `process_key` after deploy. The engine now caches a provisional
+     mode built from the configured schema id (`engines.rime.schema`), so the
+     host always receives a non-empty mode id. Additionally, the deploy-success
+     notification now eagerly creates a session for the focused context (if any)
+     and publishes mode, and the `availability` worker reply carries an
+     `ACTIVE_MODE` line so the host detects readiness + mode in one round-trip.
+
+- **Logging robustness and predictable level filtering.** Three issues in the
+  logging path are fixed. (1) The daemon's verbosity filter was built from two
+  competing directives — a hidden `INFO` default plus a bare level floor —
+  whose interaction could silently cap or contradict the `-v`/`-vv` floor and
+  `RUST_LOG` overrides. It is now a single `EnvFilter` directive
+  (`<floor>,<RUST_LOG>`), so the CLI floor and per-target `RUST_LOG` refine
+  each other with no hidden default. (2) The libtypio logger forwarded records
+  to the host callback while still holding the callback's `Mutex`, and used
+  panicking `.lock().unwrap()` everywhere; a callback that itself logged (or a
+  panic on any lock-holding thread) could deadlock or poison the logger and
+  cascade into every subsequent log call. The callback is now invoked outside
+  the lock, and all logger mutexes tolerate poisoning. (3) Crash-dump
+  `typio_logger_dump_recent` wrote second-resolution timestamps while the
+  live callback carried milliseconds; the dump now uses milliseconds too, so
+  dumps and the live log are cross-referenceable.
+
+- **Voice recording and inference reliability.** Voice inference now owns a
+  stable snapshot of its engine process, so switching, reloading, or unloading
+  an engine cannot invalidate an in-flight job. Recording is bounded to 60
+  seconds, the engine-protocol payload limit is 8 MiB, worker cold starts and
+  transcription requests have operation-specific timeouts, and poisoned voice
+  workers recover during availability checks. Full transcription text is no
+  longer written to daemon logs.
+
+- **Configuration control-plane correctness.** `config.get` and `config.list`
+  now return real typed values and accurate `user`/`default` sources across the
+  complete schema. Writes use strict schema validation, array values remain
+  arrays, unset restores defaults, persistence errors reach the client, and an
+  invalid on-disk reload preserves the last known-good config. Engine config
+  changes now reach process engines, including deferred voice reloads.
+
+- **TIP and engine lifecycle robustness.** The Unix socket now fails closed on
+  peer-credential errors, bounds read/write queues, resumes partial nonblocking
+  writes, and supports responses up to the documented 1 MiB frame limit.
+  JSON-RPC envelopes and response ids are validated, and `typioctl` applies
+  read/write timeouts. `engine.load` and prevalidated `engine.reload` now drive
+  the live registry instead of returning a fixed unsupported error.
+
 ### Removed
 
 - **Host watchdog.** The background thread that sampled the main loop's stage

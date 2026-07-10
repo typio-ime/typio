@@ -11,7 +11,7 @@ The Typio daemon exposes a **Unix Domain Socket** carrying length-prefixed JSON-
 
 ## Wire format
 
-```
+```text
 [ 4 bytes: payload length in bytes (big-endian uint32) ]
 [ N bytes: UTF-8 JSON payload                          ]
 ```
@@ -22,7 +22,8 @@ Used identically for requests, responses, and server→client event notification
 
 - Method names: dotted `namespace.action` (e.g. `engine.list`).
 - All object keys and string values: **camelCase**.
-- Numbers are JSON numbers; the `type` field of a config value distinguishes `string` / `int` / `bool` / `float`.
+- Numbers are JSON numbers; the `type` field of a config value distinguishes
+  `string`, `int`, `bool`, `float`, and `array`.
 
 ## Request
 
@@ -79,11 +80,19 @@ Notifications have no `id` and expect no reply. The client must have subscribed 
 | `config.get` | `{ key }` | `{ value, type, source }` (`source` is `"user"` or `"default"`) |
 | `config.set` | `{ key, value }` | `{}` |
 | `config.unset` | `{ key }` | `{}` |
-| `config.list` | `{ prefix? }` | `[{ key, type, value, label, section, choices? }, ...]` |
+| `config.list` | `{ prefix? }` | `[{ key, type, value, source, label, section, choices? }, ...]` |
 | `config.show` | `{}` | `{ text, format: "toml" }` |
 | `config.reload` | `{}` | `{}` |
 
-`key` is a dotted path against the unified config tree. `value` is always a string in `config.set`; the daemon coerces using the schema's typed field. For an engine-namespaced key (`engines.<name>.<key>`) the daemon also delivers `on_config_change` to the owning engine (libtypio ADR-0008).
+`key` is a dotted path against the unified config tree. `value` is always a
+string in `config.set`; the daemon strictly parses it using the schema or the
+existing value's type. Boolean values accept `true`, `false`, `1`, or `0`.
+Array values accept a JSON string array or a comma-separated string list.
+Unknown keys and values outside schema choices or integer ranges are rejected.
+`config.unset` removes the user value and restores the schema default when one
+exists. `source` is `"user"` or `"default"`. For an engine-namespaced key
+(`engines.<name>.<key>`) the daemon also delivers `on_config_change` to the
+owning engine (libtypio ADR-0008).
 
 ### `engine.*` / `keyboard.*` / `voice.*`
 
@@ -106,7 +115,18 @@ The `engine.*` namespace is cross-modality and keyed by engine name (aggregate q
 
 `kind` (in `engine.list` / `engine.describe`) is `"keyboard"` or `"voice"`. `keyboard.use` / `voice.use` reject a `name` whose engine is not of the matching modality. Each property entry in `engine.describe` carries `{ key, type, value, label, choices? }`.
 
-`engine.load` loads a single engine manifest from an absolute `.toml` path. `engine.unload` unregisters an engine by name (deactivating it first if active). `engine.reload` combines unload + load: if `path` is provided, loads from that exact path; if omitted, rescans the configured `engine_dirs` to find the engine by name (`typio-engine-<name>.toml`).
+Engine commands are optional. `commands` is empty when a backend exposes no
+command transport, and `engine.invoke` returns method-not-found (`-32601`) for
+that backend.
+
+`engine.load` loads a single engine manifest from an absolute `.toml` path.
+`engine.unload` unregisters an engine by name, deactivating it first if active.
+`engine.reload` combines unload and load: if `path` is provided, it must be an
+absolute `.toml` path; if omitted, the daemon searches the configured
+`engine_dirs` for `typio-engine-<name>.toml`. Reload fully parses and validates
+the replacement manifest before unregistering the current engine, rejects a
+manifest whose `name` differs, and reactivates an engine that was active before
+the reload.
 
 ### `language.*`
 

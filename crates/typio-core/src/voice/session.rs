@@ -3,9 +3,10 @@
 //! Replaces `voice_session.c`.  All business logic is now Rust-native;
 //! only the backend inference calls cross the FFI boundary.
 
+use crate::core::engine::backend::process::VoiceProcessHandle;
 use crate::instance::TypioInstance;
 use crate::types::TypioVoiceSession;
-use crate::voice::audio::{INITIAL_BUFFER_SAMPLES, prepare_audio};
+use crate::voice::audio::{INITIAL_BUFFER_SAMPLES, MAX_BUFFER_SAMPLES, prepare_audio};
 use crate::voice::types::{
     TypioVoiceSessionEvent, TypioVoiceSessionEventCallback, TypioVoiceSessionEventType, VoiceState,
 };
@@ -22,7 +23,9 @@ pub struct VoiceSession {
     pub(crate) audio_source: AtomicPtr<TypioAudioSource>,
     pub(crate) state: Mutex<VoiceState>,
     pub(crate) reload_pending: AtomicBool,
+    pub(crate) audio_truncated: AtomicBool,
     pub(crate) audio_buffer: Mutex<Vec<f32>>,
+    pub(crate) inference_target: Mutex<Option<VoiceProcessHandle>>,
     pub(crate) infer_handle: Mutex<Option<thread::JoinHandle<Option<String>>>>,
     pub(crate) event_fd: Mutex<Option<nix::sys::eventfd::EventFd>>,
     pub(crate) _result: Mutex<Option<String>>,
@@ -82,7 +85,9 @@ pub extern "C" fn typio_voice_session_new(instance: *mut TypioInstance) -> *mut 
         audio_source: AtomicPtr::new(std::ptr::null_mut()),
         state: Mutex::new(VoiceState::Idle),
         reload_pending: AtomicBool::new(false),
+        audio_truncated: AtomicBool::new(false),
         audio_buffer: Mutex::new(Vec::with_capacity(INITIAL_BUFFER_SAMPLES)),
+        inference_target: Mutex::new(None),
         infer_handle: Mutex::new(None),
         event_fd: Mutex::new(Some(event_fd)),
         _result: Mutex::new(None),
@@ -91,7 +96,11 @@ pub extern "C" fn typio_voice_session_new(instance: *mut TypioInstance) -> *mut 
         auto_start_on_load: AtomicBool::new(false),
     });
 
-    Arc::into_raw(session) as *mut TypioVoiceSession
+    let raw = Arc::into_raw(session) as *mut TypioVoiceSession;
+    unsafe {
+        (*instance).voice_session = crate::wrappers::VoiceSessionPtr(raw);
+    }
+    raw
 }
 
 /// Free a voice session and all associated resources.
@@ -101,6 +110,14 @@ pub extern "C" fn typio_voice_session_free(session: *mut TypioVoiceSession) {
         return;
     }
     let session = unsafe { Arc::from_raw(session as *const VoiceSession) };
+    let instance = session._instance.load(Ordering::SeqCst);
+    if !instance.is_null()
+        && unsafe { (*instance).voice_session.0 } == session.as_ref() as *const _ as *mut _
+    {
+        unsafe {
+            (*instance).voice_session = crate::wrappers::VoiceSessionPtr(std::ptr::null_mut());
+        }
+    }
     // Stop audio source.
     let source = session.audio_source.load(Ordering::SeqCst);
     if !source.is_null() {
@@ -132,7 +149,19 @@ pub extern "C" fn typio_voice_session_set_audio_source(
         return;
     }
     let session = unsafe { &*(session as *const VoiceSession) };
-    session.audio_source.store(source, Ordering::SeqCst);
+    let old = session.audio_source.swap(source, Ordering::SeqCst);
+    if old.is_null() || old == source {
+        return;
+    }
+    unsafe {
+        let ops = &*(*old).ops;
+        if let Some(stop_fn) = ops.stop {
+            stop_fn(old);
+        }
+        if let Some(free_fn) = ops.free {
+            free_fn(old);
+        }
+    }
 }
 
 /// Set the event callback and user data for voice session notifications.
@@ -177,6 +206,10 @@ pub extern "C" fn typio_voice_session_start(session: *mut TypioVoiceSession) -> 
         return false;
     }
 
+    let Some(target) = snapshot_voice_target(session) else {
+        return false;
+    };
+
     let started = unsafe {
         let ops = &*(*source).ops;
         if let Some(start_fn) = ops.start {
@@ -191,6 +224,8 @@ pub extern "C" fn typio_voice_session_start(session: *mut TypioVoiceSession) -> 
     }
 
     session.audio_buffer.lock().unwrap().clear();
+    session.audio_truncated.store(false, Ordering::SeqCst);
+    *session.inference_target.lock().unwrap() = Some(target);
     *state = VoiceState::Recording;
     drop(state);
     session.fire_state_change(VoiceState::Recording);
@@ -222,6 +257,8 @@ pub extern "C" fn typio_voice_session_stop(session: *mut TypioVoiceSession) {
 
     *state = VoiceState::Processing;
     let sample_count = session.audio_buffer.lock().unwrap().len();
+    let target = session.inference_target.lock().unwrap().take();
+    let audio_truncated = session.audio_truncated.swap(false, Ordering::SeqCst);
     drop(state);
 
     let source = session.audio_source.load(Ordering::SeqCst);
@@ -238,6 +275,9 @@ pub extern "C" fn typio_voice_session_stop(session: *mut TypioVoiceSession) {
         "Voice recording stopped, starting inference ({} samples)",
         sample_count
     );
+    if audio_truncated {
+        log::warn!("Voice recording exceeded 60 seconds; trailing audio was discarded");
+    }
     session.fire_state_change(VoiceState::Processing);
 
     // Launch inference thread.
@@ -246,17 +286,16 @@ pub extern "C" fn typio_voice_session_stop(session: *mut TypioVoiceSession) {
     let _ = Arc::into_raw(session_arc.clone());
 
     let handle = thread::spawn(move || {
-        let audio = {
+        let mut audio = {
             let mut buf = session_arc.audio_buffer.lock().unwrap();
             std::mem::take(&mut *buf)
         };
-        let audio = prepare_audio(&mut audio.clone());
+        let audio = prepare_audio(&mut audio);
         let result = if audio.is_empty() {
             log::warn!("Voice inference: no audio captured or usable");
             None
         } else {
-            let instance = session_arc._instance.load(Ordering::SeqCst);
-            run_voice_inference(instance, audio.to_vec())
+            run_voice_inference(target, audio)
         };
 
         // Wake the event loop so dispatch() joins this thread and delivers the
@@ -283,18 +322,22 @@ pub extern "C" fn typio_voice_session_stop(session: *mut TypioVoiceSession) {
 }
 
 /// Inference body extracted so the closure body stays small and readable.
-fn run_voice_inference(instance: *mut TypioInstance, audio: Vec<f32>) -> Option<String> {
+fn snapshot_voice_target(session: &VoiceSession) -> Option<VoiceProcessHandle> {
+    let instance = session._instance.load(Ordering::SeqCst);
     if instance.is_null() {
-        log::warn!("Voice inference: no instance available");
         return None;
     }
     let registry = unsafe { (*instance).registry.0 };
     if registry.is_null() {
-        log::warn!("Voice inference: no registry available");
         return None;
     }
+    unsafe { (*registry).inner.snapshot_active_voice() }
+}
+
+fn run_voice_inference(target: Option<VoiceProcessHandle>, audio: Vec<f32>) -> Option<String> {
+    let target = target?;
     log::info!("Voice inference: processing {} samples", audio.len());
-    unsafe { (*registry).inner.process_audio_active_voice(&audio) }
+    target.process_audio(&audio)
 }
 
 /// Return the eventfd for polling, or -1 if unavailable.
@@ -379,11 +422,10 @@ pub extern "C" fn typio_voice_session_dispatch(session: *mut TypioVoiceSession) 
     }
 
     if let Some(text) = text.filter(|t| !t.is_empty()) {
-        log::info!("Voice raw: \"{}\"", text);
         let filtered = filter_tags(&text);
         let trimmed = filtered.trim().to_string();
         if !trimmed.is_empty() {
-            log::info!("Voice result: \"{}\"", trimmed);
+            log::debug!("Voice inference completed ({} UTF-8 bytes)", trimmed.len());
         }
         let c_text = CString::new(trimmed).unwrap_or_else(|_| CString::new("").unwrap());
         let event = TypioVoiceSessionEvent {
@@ -415,7 +457,7 @@ pub extern "C" fn typio_voice_session_is_available(session: *const TypioVoiceSes
         return false;
     }
     let has_source = !session.audio_source.load(Ordering::SeqCst).is_null();
-    has_source && unsafe { (*registry).inner.active_voice_is_ready() }
+    has_source && unsafe { (*registry).inner.recovering_active_voice_is_ready() }
 }
 
 /// Return a static error message explaining why voice is unavailable.
@@ -441,7 +483,7 @@ pub extern "C" fn typio_voice_session_get_unavail_reason(
     if session.audio_source.load(Ordering::SeqCst).is_null() {
         return c"no audio source".as_ptr();
     }
-    if !unsafe { (*registry).inner.active_voice_is_ready() } {
+    if !unsafe { (*registry).inner.recovering_active_voice_is_ready() } {
         return c"voice engine not ready (model not loaded)".as_ptr();
     }
     c"".as_ptr()
@@ -500,11 +542,20 @@ pub extern "C" fn typio_voice_session_feed_audio(
         drop(state);
         return;
     }
-    let mut buf = session.audio_buffer.lock().unwrap();
     let slice = unsafe { std::slice::from_raw_parts(samples, count) };
-    buf.extend_from_slice(slice);
+    let mut buf = session.audio_buffer.lock().unwrap();
+    if append_audio_bounded(&mut buf, slice) {
+        session.audio_truncated.store(true, Ordering::SeqCst);
+    }
     drop(buf);
     drop(state);
+}
+
+fn append_audio_bounded(buf: &mut Vec<f32>, samples: &[f32]) -> bool {
+    let remaining = MAX_BUFFER_SAMPLES.saturating_sub(buf.len());
+    let accepted = remaining.min(samples.len());
+    buf.extend_from_slice(&samples[..accepted]);
+    accepted < samples.len()
 }
 
 /// Remove bracketed tags (e.g. `[tag]`) from text in place.
@@ -528,14 +579,16 @@ fn filter_tags(text: &str) -> String {
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '[' {
-            let mut tag_end = None;
-            for (i, c) in chars.by_ref().enumerate() {
+            let mut candidate = String::from("[");
+            let mut closed = false;
+            for c in chars.by_ref() {
+                candidate.push(c);
                 if c == ']' {
-                    tag_end = Some(i);
+                    closed = true;
                     break;
                 }
             }
-            if tag_end.is_some() {
+            if closed {
                 // Skip spaces after tag.
                 while chars.peek() == Some(&' ') {
                     chars.next();
@@ -544,11 +597,38 @@ fn filter_tags(text: &str) -> String {
                     result.push(' ');
                 }
             } else {
-                result.push(ch);
+                result.push_str(&candidate);
             }
         } else {
             result.push(ch);
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_tags_preserves_unclosed_bracket_text() {
+        assert_eq!(
+            filter_tags("hello [unfinished text"),
+            "hello [unfinished text"
+        );
+    }
+
+    #[test]
+    fn filter_tags_removes_closed_tags_without_joining_words() {
+        assert_eq!(filter_tags("hello [noise] world"), "hello world");
+        assert_eq!(filter_tags("hello[noise]world"), "hello world");
+    }
+
+    #[test]
+    fn audio_append_is_bounded() {
+        let mut buf = vec![0.0; MAX_BUFFER_SAMPLES - 1];
+        assert!(append_audio_bounded(&mut buf, &[1.0, 2.0]));
+        assert_eq!(buf.len(), MAX_BUFFER_SAMPLES);
+        assert_eq!(buf[MAX_BUFFER_SAMPLES - 1], 1.0);
+    }
 }

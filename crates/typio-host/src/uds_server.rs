@@ -67,8 +67,10 @@ pub const MAX_TOPICS_PER_CLIENT: usize = 16;
 /// Per-client read buffer size (matches `TYPIO_UDS_READBUF`).
 const READ_BUF_BYTES: usize = 8192;
 
-/// Per-client write buffer size (matches `TYPIO_UDS_WRITEBUF`).
-const WRITE_BUF_BYTES: usize = 65536;
+/// Per-client output bound. One maximum-sized frame plus its length prefix.
+const WRITE_BUF_BYTES: usize = MAX_FRAME_BYTES + 4;
+/// A client may buffer at most one complete maximum-sized request.
+const READ_BUFFER_LIMIT: usize = MAX_FRAME_BYTES + 4;
 
 /// Listen backlog (matches `TYPIO_UDS_BACKLOG`). `std::os::unix::net`
 /// does not expose `listen()` backlog size on `UnixListener::bind`; the
@@ -185,6 +187,9 @@ struct Client {
     wbuf: Vec<u8>,
     /// Current subscription state.
     subscription: Subscription,
+    /// The peer has closed its write half. Pending responses may still be
+    /// delivered before the connection is evicted.
+    read_closed: bool,
     /// True after the client has been closed and is awaiting eviction
     /// from the `clients` map.
     closed: bool,
@@ -198,6 +203,7 @@ impl Client {
             rbuf: Vec::with_capacity(READ_BUF_BYTES),
             wbuf: Vec::with_capacity(WRITE_BUF_BYTES),
             subscription: Subscription::None,
+            read_closed: false,
             closed: false,
         }
     }
@@ -233,13 +239,13 @@ impl UdsServer {
         // Ensure parent directory exists.
         if let Some(parent) = socket_path.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent)?;
             }
         }
 
         // Stale-socket probe + cleanup.
         if socket_path.exists() && is_stale_socket(socket_path) {
-            let _ = std::fs::remove_file(socket_path);
+            std::fs::remove_file(socket_path)?;
         }
 
         let listener = UnixListener::bind(socket_path)?;
@@ -247,7 +253,12 @@ impl UdsServer {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+            if let Err(error) =
+                std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+            {
+                let _ = std::fs::remove_file(socket_path);
+                return Err(error);
+            }
         }
         listener.set_nonblocking(true)?;
 
@@ -319,7 +330,7 @@ impl UdsServer {
                     self.close_client(client_id);
                     continue;
                 }
-                if (flags & EpollFlags::EPOLLIN) != EpollFlags::empty() {
+                if (flags & (EpollFlags::EPOLLIN | EpollFlags::EPOLLRDHUP)) != EpollFlags::empty() {
                     let closed = self.process_reads(client_id);
                     if closed {
                         continue;
@@ -390,7 +401,9 @@ impl UdsServer {
                         drop(stream);
                         continue;
                     }
-                    let _ = stream.set_nonblocking(true);
+                    if stream.set_nonblocking(true).is_err() {
+                        continue;
+                    }
 
                     // Peer-credential check: reject any connection whose
                     // uid is not ours. Matches the C `SO_PEERCRED` block.
@@ -403,7 +416,10 @@ impl UdsServer {
                     let fd_owned: OwnedFd = stream.into();
 
                     // Register with epoll.
-                    let event = EpollEvent::new(EpollFlags::EPOLLIN, fd_raw as u64);
+                    let event = EpollEvent::new(
+                        EpollFlags::EPOLLIN | EpollFlags::EPOLLRDHUP,
+                        fd_raw as u64,
+                    );
                     if self
                         .epoll
                         .add(
@@ -459,10 +475,14 @@ impl UdsServer {
                     return true;
                 }
                 if n == 0 {
+                    client.read_closed = true;
+                    break;
+                }
+                client.rbuf.extend_from_slice(&buf[..n as usize]);
+                if client.rbuf.len() > READ_BUFFER_LIMIT {
                     client.closed = true;
                     return true;
                 }
-                client.rbuf.extend_from_slice(&buf[..n as usize]);
             }
 
             // Phase 2: extract as many complete frames as possible.
@@ -532,52 +552,79 @@ impl UdsServer {
     }
 
     fn process_writes(&mut self, client_id: ClientId) {
-        let Some(client) = self.clients.get_mut(&client_id.0) else {
-            return;
-        };
-        if client.wbuf.is_empty() {
-            return;
-        }
-        let fd = client.fd.as_raw_fd();
-        let mut written = 0;
-        while written < client.wbuf.len() {
-            let remaining = &client.wbuf[written..];
-            // SAFETY: &mut Client owns fd; no aliasing.
-            let n = unsafe {
-                libc::send(
-                    fd,
-                    remaining.as_ptr() as *const _,
-                    remaining.len(),
-                    libc::MSG_NOSIGNAL,
-                )
-            };
-            if n < 0 {
-                let e = io::Error::last_os_error();
-                if e.raw_os_error() == Some(libc::EAGAIN)
-                    || e.raw_os_error() == Some(libc::EWOULDBLOCK)
-                {
-                    break;
-                }
-                if e.raw_os_error() == Some(libc::EINTR) {
-                    continue;
-                }
-                client.closed = true;
+        let (fd, wants_write, read_closed, closed) = {
+            let Some(client) = self.clients.get_mut(&client_id.0) else {
                 return;
+            };
+            let fd = client.fd.as_raw_fd();
+            let mut written = 0;
+            while written < client.wbuf.len() {
+                let remaining = &client.wbuf[written..];
+                // SAFETY: &mut Client owns fd; no aliasing.
+                let n = unsafe {
+                    libc::send(
+                        fd,
+                        remaining.as_ptr() as *const _,
+                        remaining.len(),
+                        libc::MSG_NOSIGNAL,
+                    )
+                };
+                if n < 0 {
+                    let e = io::Error::last_os_error();
+                    if e.raw_os_error() == Some(libc::EAGAIN)
+                        || e.raw_os_error() == Some(libc::EWOULDBLOCK)
+                    {
+                        break;
+                    }
+                    if e.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    client.closed = true;
+                    return;
+                }
+                written += n as usize;
             }
-            written += n as usize;
+            if written > 0 {
+                client.wbuf.drain(..written);
+            }
+            if client.wbuf.len() > WRITE_BUF_BYTES {
+                client.closed = true;
+            }
+            if client.read_closed && client.wbuf.is_empty() {
+                client.closed = true;
+            }
+            (
+                fd,
+                !client.wbuf.is_empty() && !client.closed,
+                client.read_closed,
+                client.closed,
+            )
+        };
+
+        if closed {
+            return;
         }
-        // Drop the bytes we successfully wrote.
-        if written > 0 {
-            client.wbuf.drain(..written);
+
+        let mut flags = EpollFlags::empty();
+        if !read_closed {
+            flags |= EpollFlags::EPOLLIN | EpollFlags::EPOLLRDHUP;
         }
-        if client.wbuf.len() > WRITE_BUF_BYTES {
-            // Overflow: client is not draining. Drop it (matches C).
-            client.closed = true;
+        if wants_write {
+            flags |= EpollFlags::EPOLLOUT;
         }
+        let mut event = EpollEvent::new(flags, fd as u64);
+        let _ = self.epoll.modify(
+            unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) },
+            &mut event,
+        );
     }
 
     fn send_frame(&mut self, client_id: ClientId, json: &str) {
         let json_bytes = json.as_bytes();
+        if json_bytes.len() > MAX_FRAME_BYTES {
+            self.close_client(client_id);
+            return;
+        }
         let len_be = (json_bytes.len() as u32).to_be_bytes();
 
         // Enqueue into wbuf (with overflow check). The client borrow is
@@ -655,7 +702,7 @@ fn peer_is_owner(stream: &std::os::unix::net::UnixStream) -> bool {
     use nix::sys::socket::sockopt::PeerCredentials;
     let creds = match getsockopt(stream, PeerCredentials) {
         Ok(c) => c,
-        Err(_) => return true, // couldn't read creds — be permissive
+        Err(_) => return false,
     };
     creds.uid() == getuid().as_raw()
 }
@@ -669,7 +716,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::sync::{Arc, Mutex};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -700,26 +747,34 @@ mod tests {
         Ok(())
     }
 
-    /// Drive `server.dispatch()` in a background thread until `stop`
-    /// becomes true. Returns the join handle.
-    struct ServerWrapper(Arc<Mutex<UdsServer>>);
-    unsafe impl Send for ServerWrapper {}
-    unsafe impl Sync for ServerWrapper {}
+    enum DriverCommand {
+        Emit(&'static str, serde_json::Value),
+        Stop,
+    }
+
+    /// Test handlers capture only owned `Send` values, and ownership of the
+    /// server moves exclusively to the dispatcher thread before it starts.
+    struct TestServer(UdsServer);
+    unsafe impl Send for TestServer {}
 
     fn spawn_dispatcher(
-        server: Arc<Mutex<UdsServer>>,
-        stop: Arc<std::sync::atomic::AtomicBool>,
-    ) -> thread::JoinHandle<()> {
-        let wrapper = ServerWrapper(server);
-        thread::spawn(move || {
-            let wrapper = wrapper;
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                if let Ok(mut s) = wrapper.0.lock() {
-                    s.dispatch();
+        server: UdsServer,
+    ) -> (mpsc::Sender<DriverCommand>, thread::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel();
+        let server = TestServer(server);
+        let driver = thread::spawn(move || {
+            let mut server = server;
+            loop {
+                match rx.try_recv() {
+                    Ok(DriverCommand::Emit(topic, payload)) => server.0.emit(topic, &payload),
+                    Ok(DriverCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::TryRecvError::Empty) => {}
                 }
+                server.0.dispatch();
                 thread::sleep(Duration::from_millis(2));
             }
-        })
+        });
+        (tx, driver)
     }
 
     #[test]
@@ -783,9 +838,7 @@ mod tests {
             // Echo the request back as the result field.
             RequestOutcome::respond(format!(r#"{{"echo":{json}}}"#))
         });
-        let server = Arc::new(Mutex::new(server));
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let driver = spawn_dispatcher(server.clone(), stop.clone());
+        let (driver_tx, driver) = spawn_dispatcher(server);
 
         let mut client = UnixStream::connect(&path).unwrap();
         // Allow the dispatcher to accept.
@@ -818,7 +871,30 @@ mod tests {
         );
         assert!(response.contains("\"echo\":"));
 
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        driver_tx.send(DriverCommand::Stop).unwrap();
+        let _ = driver.join();
+    }
+
+    #[test]
+    fn response_larger_than_legacy_64k_buffer_is_delivered() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("large-response.sock");
+        let payload = "x".repeat(128 * 1024);
+        let expected = payload.clone();
+        let mut server = UdsServer::bind(&path).unwrap();
+        server.set_handler(move |_json, _client| RequestOutcome::respond(payload.clone()));
+        let (driver_tx, driver) = spawn_dispatcher(server);
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        thread::sleep(Duration::from_millis(20));
+        write_frame(&mut client, r#"{"id":1}"#).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(read_frame(&mut client).unwrap(), expected);
+
+        driver_tx.send(DriverCommand::Stop).unwrap();
         let _ = driver.join();
     }
 
@@ -838,9 +914,7 @@ mod tests {
                 RequestOutcome::silent()
             }
         });
-        let server = Arc::new(Mutex::new(server));
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let driver = spawn_dispatcher(server.clone(), stop.clone());
+        let (driver_tx, driver) = spawn_dispatcher(server);
 
         let mut sub_client = UnixStream::connect(&path).unwrap();
         let unsub_client = UnixStream::connect(&path).unwrap();
@@ -857,9 +931,12 @@ mod tests {
         let _hello_resp = read_frame(&mut sub_client).unwrap();
 
         // Emit a notification.
-        if let Ok(mut s) = server.lock() {
-            s.emit("engine.changed", &serde_json::json!({"name": "rime"}));
-        }
+        driver_tx
+            .send(DriverCommand::Emit(
+                "engine.changed",
+                serde_json::json!({"name": "rime"}),
+            ))
+            .unwrap();
 
         // sub_client should receive the notification.
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -895,7 +972,7 @@ mod tests {
             "unsubscribed client should not receive notifications"
         );
 
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        driver_tx.send(DriverCommand::Stop).unwrap();
         let _ = driver.join();
     }
 

@@ -47,7 +47,7 @@ impl ApplyTarget
 
     fn focus_out(&mut self) {
         self.1.focus_out();
-        self.1.soft_pause();
+        self.1.soft_pause(self.0.state_mut());
         let _ = self.2.stop();
         tracing::debug!(
             target: "typio.panel.host",

@@ -18,16 +18,40 @@ use super::super::{
     VoiceEngine,
 };
 use super::engine_protocol::{ENGINE_PROTOCOL_FD, Frame, MessageType, read_frame, write_frame};
+use crate::log::log_msg;
+use crate::types::TypioLogLevel;
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
-const ENGINE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+// Worker startup may include one-time model/schema initialization before the
+// worker emits HELLO. This runs during activation, before the hot input path.
+const ENGINE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const ENGINE_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+const ENGINE_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+const ENGINE_DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
+const ENGINE_VOICE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Pick a timeout appropriate for the request operation.
+///
+/// `init`/`reload-config` get a bounded slow-operation budget. Cold startup
+/// before HELLO is covered separately by [`ENGINE_HANDSHAKE_TIMEOUT`].
+/// `process-key`/`availability` are hot-path and stay tight at 100 ms.
+/// Everything else (focus-in, reset, set-active-mode, commit-candidate,
+/// list-modes, get-active-mode) gets a generous 500 ms.
+fn request_timeout_for(line: &str) -> Duration {
+    let op = line.split('\t').next().unwrap_or("");
+    match op {
+        "init" | "reload-config" => ENGINE_INIT_TIMEOUT,
+        "process-key" | "availability" => ENGINE_REQUEST_TIMEOUT,
+        "process-audio" => ENGINE_VOICE_TIMEOUT,
+        _ => ENGINE_DEFAULT_TIMEOUT,
+    }
+}
 
 /// Out-of-process backend.
 #[derive(Debug)]
@@ -59,6 +83,15 @@ impl ProcessBackend {
 
     /// Start the engine process if needed.
     pub fn instantiate(&mut self) -> Result<()> {
+        // If a previous process was poisoned, drop it before respawning.
+        if self
+            .engine
+            .as_ref()
+            .map(|e| e.is_poisoned())
+            .unwrap_or(false)
+        {
+            self.engine.take();
+        }
         if self.engine.is_some() {
             return Ok(());
         }
@@ -69,17 +102,59 @@ impl ProcessBackend {
         Ok(())
     }
 
-    /// Whether the engine process has been started.
+    /// Whether the engine process has been started and is healthy.
     pub fn is_instantiated(&self) -> bool {
-        self.engine.is_some()
+        self.engine
+            .as_ref()
+            .map(|e| !e.is_poisoned())
+            .unwrap_or(false)
     }
 
     /// Execute a closure with a mutable reference to the engine process.
+    ///
+    /// If the worker was poisoned by a prior transport error, it is respawned
+    /// transparently before the closure runs. The heavy engine `init` runs
+    /// before the worker's HELLO, so the protocol-level `init` request is a
+    /// no-op confirmation for current engines; we send it for correctness.
     pub fn with_engine<F, R>(&mut self, f: F) -> Option<R>
     where
         F: FnOnce(&mut dyn Engine) -> R,
     {
+        self.recover_poisoned();
         self.engine.as_mut().map(|e| f(e))
+    }
+
+    fn recover_poisoned(&mut self) {
+        let needs_respawn = self
+            .engine
+            .as_ref()
+            .map(|e| e.is_poisoned())
+            .unwrap_or(false);
+        if !needs_respawn {
+            return;
+        }
+        self.engine.take();
+        if self.argv.is_empty() || self.argv[0].is_empty() {
+            return;
+        }
+        match ProcessEngine::spawn(self.info.clone(), &self.argv) {
+            Ok(engine) => {
+                if let Err(e) = engine.request("init", None) {
+                    log_msg(
+                        TypioLogLevel::TypioLogError,
+                        &format!("Engine '{}' re-init failed: {:?}", self.info.name, e),
+                    );
+                    return;
+                }
+                self.engine = Some(engine);
+            }
+            Err(e) => {
+                log_msg(
+                    TypioLogLevel::TypioLogError,
+                    &format!("Engine '{}' respawn failed: {:?}", self.info.name, e),
+                );
+            }
+        }
     }
 
     /// Execute a closure with an immutable reference to the engine process.
@@ -94,10 +169,34 @@ impl ProcessBackend {
     pub fn destroy(&mut self) {
         self.engine.take();
     }
+
+    /// Snapshot the active voice worker for an inference job.
+    ///
+    /// The returned handle owns the worker's shared transport state, so the
+    /// registry may switch or unload the slot without invalidating an
+    /// in-flight inference thread.
+    pub(crate) fn voice_handle(&mut self) -> Option<VoiceProcessHandle> {
+        self.recover_poisoned();
+        self.engine.as_ref().cloned().map(VoiceProcessHandle)
+    }
 }
 
+/// Thread-safe, owned handle to one running voice worker.
+pub(crate) struct VoiceProcessHandle(ProcessEngine);
+
+impl VoiceProcessHandle {
+    pub(crate) fn process_audio(&self, samples: &[f32]) -> Option<String> {
+        self.0.process_audio(samples)
+    }
+}
+
+#[derive(Clone)]
 struct ProcessEngine {
-    info: EngineInfo,
+    info: Arc<EngineInfo>,
+    shared: Arc<ProcessEngineShared>,
+}
+
+struct ProcessEngineShared {
     process: Mutex<EngineProcess>,
     /// Latest active mode observed in an engine response, plus whether it has
     /// changed since [`take_changed_mode`](ProcessEngine::take_changed_mode) last
@@ -116,6 +215,10 @@ struct EngineProcess {
     child: Child,
     stream: UnixStream,
     next_request_id: u64,
+    /// Set when a transport error leaves the socket stream potentially
+    /// mid-frame. A poisoned engine must never be reused — the next
+    /// `with_engine` call will respawn a fresh process.
+    poisoned: bool,
 }
 
 impl std::fmt::Debug for ProcessEngine {
@@ -188,47 +291,91 @@ impl ProcessEngine {
         };
         drop(engine_stream);
 
-        let hello = read_frame(&mut host_stream)?;
-        if hello.message_type != MessageType::EngineHello {
-            return Err(EngineError::Transport(format!(
-                "engine-protocol expected hello, got {:?}",
-                hello.message_type
-            )));
-        }
-        let hello_text = String::from_utf8(hello.payload).map_err(|e| {
-            EngineError::Transport(format!("engine-protocol invalid hello utf-8: {e}"))
-        })?;
-        validate_engine_hello(&info, &hello_text)?;
+        let handshake = (|| -> Result<()> {
+            let hello = read_frame(&mut host_stream)?;
+            if hello.message_type != MessageType::EngineHello {
+                return Err(EngineError::Transport(format!(
+                    "engine-protocol expected hello, got {:?}",
+                    hello.message_type
+                )));
+            }
+            let hello_text = String::from_utf8(hello.payload).map_err(|e| {
+                EngineError::Transport(format!("engine-protocol invalid hello utf-8: {e}"))
+            })?;
+            validate_engine_hello(&info, &hello_text)?;
 
-        let host_hello = format!(
-            "protocol\t1.0\nengine\t{}\ntype\t{}",
-            info.name,
-            engine_type_name(info.engine_type)
-        );
-        write_frame(
-            &mut host_stream,
-            &Frame::new(MessageType::HostHello, 0, host_hello.into_bytes()),
-        )?;
-        host_stream
-            .set_read_timeout(Some(ENGINE_REQUEST_TIMEOUT))
-            .map_err(|e| {
-                EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
-            })?;
-        host_stream
-            .set_write_timeout(Some(ENGINE_REQUEST_TIMEOUT))
-            .map_err(|e| {
-                EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
-            })?;
+            let host_hello = format!(
+                "protocol\t1.0\nengine\t{}\ntype\t{}",
+                info.name,
+                engine_type_name(info.engine_type)
+            );
+            write_frame(
+                &mut host_stream,
+                &Frame::new(MessageType::HostHello, 0, host_hello.into_bytes()),
+            )?;
+            host_stream
+                .set_read_timeout(Some(ENGINE_REQUEST_TIMEOUT))
+                .map_err(|e| {
+                    EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
+                })?;
+            host_stream
+                .set_write_timeout(Some(ENGINE_REQUEST_TIMEOUT))
+                .map_err(|e| {
+                    EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
+                })?;
+            Ok(())
+        })();
+        if let Err(error) = handshake {
+            // `std::process::Child` deliberately does not kill or reap on drop.
+            // Clean up every post-spawn failure so a bad/slow HELLO cannot
+            // accumulate live workers or zombies across recovery attempts.
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
 
         Ok(Self {
-            info,
-            process: Mutex::new(EngineProcess {
-                child,
-                stream: host_stream,
-                next_request_id: 1,
+            info: Arc::new(info),
+            shared: Arc::new(ProcessEngineShared {
+                process: Mutex::new(EngineProcess {
+                    child,
+                    stream: host_stream,
+                    next_request_id: 1,
+                    poisoned: false,
+                }),
+                observed: Mutex::new(ModeObservation::default()),
             }),
-            observed: Mutex::new(ModeObservation::default()),
         })
+    }
+
+    /// Mark the engine as poisoned after a transport error and kill the
+    /// child process so it cannot linger. The next `with_engine` call will
+    /// detect the poisoned state and respawn a fresh worker.
+    fn poison(process: &mut EngineProcess, op: &str, error: &EngineError) {
+        if process.poisoned {
+            return;
+        }
+        process.poisoned = true;
+        let _ = process.child.kill();
+        let _ = process.child.wait();
+        log_msg(
+            TypioLogLevel::TypioLogWarning,
+            &format!(
+                "engine-protocol transport error during '{op}': {error:?} — \
+                 worker poisoned, will respawn on next request"
+            ),
+        );
+    }
+
+    /// True iff a previous transport error left the socket potentially
+    /// mid-frame. A poisoned engine must not be reused.
+    fn is_poisoned(&self) -> bool {
+        self.shared
+            .process
+            .lock()
+            .map(|p| p.poisoned)
+            .unwrap_or(true)
     }
 
     /// Fold an `ACTIVE_MODE` line from a reply into the observation cache,
@@ -242,7 +389,7 @@ impl ProcessEngine {
     /// Every other field (badge, icon, salience) is a function of the id, so
     /// the id alone is the canonical change signal.
     fn observe_active_mode(&self, mode: &EngineMode) {
-        if let Ok(mut observed) = self.observed.lock() {
+        if let Ok(mut observed) = self.shared.observed.lock() {
             let differs = observed
                 .last
                 .as_ref()
@@ -256,34 +403,96 @@ impl ProcessEngine {
     }
 
     fn request(&self, line: &str, ctx: Option<&mut InputContext>) -> Result<WorkerReply> {
-        let mut process = self
+        let process = self
+            .shared
             .process
             .lock()
             .map_err(|_| EngineError::Transport("worker lock poisoned".into()))?;
+        self.request_locked(process, line, ctx)
+    }
+
+    /// Send a request only when no other request owns the worker channel.
+    /// Main-loop lifecycle operations use this for voice workers so a long
+    /// inference never stalls keyboard/Wayland dispatch while waiting on the
+    /// transport mutex.
+    fn try_request(
+        &self,
+        line: &str,
+        ctx: Option<&mut InputContext>,
+    ) -> Result<Option<WorkerReply>> {
+        let process = match self.shared.process.try_lock() {
+            Ok(process) => process,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(EngineError::Transport("worker lock poisoned".into()));
+            }
+        };
+        self.request_locked(process, line, ctx).map(Some)
+    }
+
+    fn request_locked(
+        &self,
+        mut process: MutexGuard<'_, EngineProcess>,
+        line: &str,
+        ctx: Option<&mut InputContext>,
+    ) -> Result<WorkerReply> {
+        if process.poisoned {
+            return Err(EngineError::Transport(format!(
+                "engine-protocol worker is poisoned (previous transport error); op='{line}'"
+            )));
+        }
+
+        // Set a per-request timeout so heavy operations (init/deploy) don't
+        // spuriously time out under the 100 ms hot-path budget, while
+        // process-key stays tight for responsiveness.
+        let timeout = request_timeout_for(line);
+        process
+            .stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|e| EngineError::Transport(format!("set_read_timeout failed: {e}")))?;
+        process
+            .stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|e| EngineError::Transport(format!("set_write_timeout failed: {e}")))?;
 
         let request_id = process.next_request_id;
         process.next_request_id = process.next_request_id.wrapping_add(1).max(1);
-        write_frame(
+        let op_label = line.split('\t').next().unwrap_or("?").to_string();
+        let write_result = write_frame(
             &mut process.stream,
             &Frame::new(MessageType::Request, request_id, line.as_bytes().to_vec()),
-        )?;
+        );
+        if let Err(ref e) = write_result {
+            Self::poison(&mut process, &op_label, e);
+            return Err(e.clone());
+        }
 
-        let frame = read_frame(&mut process.stream)?;
+        let frame = match read_frame(&mut process.stream) {
+            Ok(f) => f,
+            Err(e) => {
+                Self::poison(&mut process, &op_label, &e);
+                return Err(e);
+            }
+        };
         if frame.request_id != request_id {
-            return Err(EngineError::Transport(format!(
+            let err = EngineError::Transport(format!(
                 "engine-protocol response id mismatch: expected {request_id}, got {}",
                 frame.request_id
-            )));
+            ));
+            Self::poison(&mut process, &op_label, &err);
+            return Err(err);
         }
         if frame.message_type == MessageType::Error {
             let message = String::from_utf8_lossy(&frame.payload);
             return Err(EngineError::Transport(message.into_owned()));
         }
         if frame.message_type != MessageType::Response {
-            return Err(EngineError::Transport(format!(
+            let err = EngineError::Transport(format!(
                 "engine-protocol expected response, got {:?}",
                 frame.message_type
-            )));
+            ));
+            Self::poison(&mut process, &op_label, &err);
+            return Err(err);
         }
 
         let mut reply = WorkerReply::default();
@@ -356,7 +565,7 @@ impl ProcessEngine {
     }
 }
 
-impl Drop for ProcessEngine {
+impl Drop for ProcessEngineShared {
     fn drop(&mut self) {
         if let Ok(mut process) = self.process.lock() {
             let request_id = process.next_request_id;
@@ -380,7 +589,11 @@ impl Engine for ProcessEngine {
     }
 
     fn deactivate(&mut self) {
-        let _ = self.request("deactivate", None);
+        if self.info.engine_type == super::super::EngineType::Voice {
+            let _ = self.try_request("deactivate", None);
+        } else {
+            let _ = self.request("deactivate", None);
+        }
     }
 
     fn focus_in(&mut self, ctx: &mut InputContext) {
@@ -399,6 +612,14 @@ impl Engine for ProcessEngine {
     }
 
     fn reload_config(&mut self) -> Result<()> {
+        if self.info.engine_type == super::super::EngineType::Voice {
+            return match self.try_request("reload-config", None)? {
+                Some(_) => Ok(()),
+                None => Err(EngineError::Transport(
+                    "voice worker busy; reload deferred".into(),
+                )),
+            };
+        }
         self.request("reload-config", None).map(|_| ())
     }
 
@@ -438,11 +659,29 @@ impl Engine for ProcessEngine {
         vec![]
     }
 
+    fn on_config_change(&mut self, _key: &str, _value: &str) {
+        // Process workers own their configuration files and already expose a
+        // versioned full-reload operation. Until the protocol gains a typed
+        // config-change request, use that compatible path instead of silently
+        // dropping live updates. Voice reload is session-managed so it can be
+        // deferred across recording/inference.
+        if self.info.engine_type == super::super::EngineType::Voice {
+            return;
+        }
+        if let Err(error) = self.request("reload-config", None) {
+            log_msg(
+                TypioLogLevel::TypioLogWarning,
+                &format!("Engine '{}' config reload failed: {error}", self.info.name),
+            );
+        }
+    }
+
     fn availability(&self) -> EngineAvailability {
-        self.request("availability", None)
-            .ok()
-            .and_then(|reply| reply.availability)
-            .unwrap_or(EngineAvailability::Failed)
+        match self.try_request("availability", None) {
+            Ok(Some(reply)) => reply.availability.unwrap_or(EngineAvailability::Failed),
+            Ok(None) => EngineAvailability::Preparing,
+            Err(_) => EngineAvailability::Failed,
+        }
     }
 }
 
@@ -494,7 +733,7 @@ impl KeyboardEngine for ProcessEngine {
     }
 
     fn take_changed_mode(&mut self) -> Option<EngineMode> {
-        let mut observed = self.observed.lock().ok()?;
+        let mut observed = self.shared.observed.lock().ok()?;
         if observed.changed {
             observed.changed = false;
             observed.last.clone()
@@ -506,7 +745,7 @@ impl KeyboardEngine for ProcessEngine {
 
 impl VoiceEngine for ProcessEngine {
     fn process_audio(&self, samples: &[f32]) -> Option<String> {
-        let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<f32>());
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(samples));
         for sample in samples {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
@@ -715,7 +954,7 @@ fn apply_composition(ctx: &InputContext, payload: &str) -> Result<()> {
 
     crate::input_context::typio_input_context_set_composition(
         ctx.as_raw() as *mut crate::input_context::TypioInputContext,
-        &composition as *const _ as *const crate::types::TypioComposition,
+        &composition as *const _,
     );
     Ok(())
 }
@@ -772,7 +1011,7 @@ fn parse_bool(value: &str) -> bool {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(EngineError::Transport("odd-length hex payload".into()));
     }
     let mut out = Vec::with_capacity(value.len() / 2);
@@ -791,5 +1030,20 @@ fn hex_value(b: u8) -> Result<u8> {
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
         _ => Err(EngineError::Transport("invalid hex payload".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_timeouts_match_operation_cost() {
+        assert_eq!(request_timeout_for("process-key\t1"), ENGINE_REQUEST_TIMEOUT);
+        assert_eq!(request_timeout_for("availability"), ENGINE_REQUEST_TIMEOUT);
+        assert_eq!(request_timeout_for("init"), ENGINE_INIT_TIMEOUT);
+        assert_eq!(request_timeout_for("reload-config"), ENGINE_INIT_TIMEOUT);
+        assert_eq!(request_timeout_for("process-audio\t00"), VOICE_INFERENCE_TIMEOUT);
+        assert_eq!(request_timeout_for("focus-in\t1"), ENGINE_DEFAULT_TIMEOUT);
     }
 }

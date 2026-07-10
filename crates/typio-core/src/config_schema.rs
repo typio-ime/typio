@@ -649,19 +649,19 @@ pub extern "C" fn typio_config_apply_defaults(config: *mut Config) {
         }
         match &entry.def {
             SchemaDefault::String(s) if !s.is_empty() => {
-                cfg.set_value(
+                cfg.set_default_value(
                     key.to_string(),
                     crate::config::ConfigValue::String(CString::new(s.to_string()).unwrap()),
                 );
             }
             SchemaDefault::Int(i) => {
-                cfg.set_value(key.to_string(), crate::config::ConfigValue::Int(*i));
+                cfg.set_default_value(key.to_string(), crate::config::ConfigValue::Int(*i));
             }
             SchemaDefault::Bool(b) => {
-                cfg.set_value(key.to_string(), crate::config::ConfigValue::Bool(*b));
+                cfg.set_default_value(key.to_string(), crate::config::ConfigValue::Bool(*b));
             }
             SchemaDefault::Float(f) => {
-                cfg.set_value(key.to_string(), crate::config::ConfigValue::Float(*f));
+                cfg.set_default_value(key.to_string(), crate::config::ConfigValue::Float(*f));
             }
             _ => {}
         }
@@ -682,7 +682,7 @@ pub extern "C" fn typio_config_apply_defaults(config: *mut Config) {
                 if let Some(s) = e.def_string.as_ref() {
                     let bytes = s.as_bytes();
                     if !bytes.is_empty() {
-                        cfg.set_value(
+                        cfg.set_default_value(
                             key.to_string(),
                             crate::config::ConfigValue::String(s.clone()),
                         );
@@ -690,16 +690,16 @@ pub extern "C" fn typio_config_apply_defaults(config: *mut Config) {
                 }
             }
             TypioFieldType::TypioFieldInt => {
-                cfg.set_value(key.to_string(), crate::config::ConfigValue::Int(e.def_int));
+                cfg.set_default_value(key.to_string(), crate::config::ConfigValue::Int(e.def_int));
             }
             TypioFieldType::TypioFieldBool => {
-                cfg.set_value(
+                cfg.set_default_value(
                     key.to_string(),
                     crate::config::ConfigValue::Bool(e.def_bool),
                 );
             }
             TypioFieldType::TypioFieldFloat => {
-                cfg.set_value(
+                cfg.set_default_value(
                     key.to_string(),
                     crate::config::ConfigValue::Float(e.def_float),
                 );

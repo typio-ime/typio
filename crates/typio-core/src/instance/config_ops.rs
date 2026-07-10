@@ -164,23 +164,26 @@ pub extern "C" fn typio_instance_reload_config(instance: *mut TypioInstance) -> 
         None => return TypioResult::TypioErrorInvalidArgument,
     };
     let config_path = build_config_path(&config_dir, super::TYPIO_CONFIG_FILE_NAME);
+    let config_exists = std::path::Path::new(&config_path).exists();
     let path_c = CString::new(config_path).unwrap();
 
-    let new_config = config::typio_config_load_file(path_c.as_ptr());
-    if !new_config.is_null() {
-        config_schema::typio_config_apply_defaults(new_config);
-        if !inst.config.0.is_null() {
-            config::typio_config_free(inst.config.0);
-        }
-        inst.config.0 = new_config;
+    let mut new_config = config::typio_config_load_file(path_c.as_ptr());
+    if new_config.is_null() && config_exists {
+        // Preserve the last known-good in-memory config, but tell the caller
+        // that the requested disk reload did not happen.
+        return TypioResult::TypioError;
     }
-    if inst.config.0.is_null() {
-        inst.config.0 = config::typio_config_new();
-        if inst.config.0.is_null() {
-            return TypioResult::TypioErrorOutOfMemory;
-        }
-        config_schema::typio_config_apply_defaults(inst.config.0);
+    if new_config.is_null() {
+        new_config = config::typio_config_new();
     }
+    if new_config.is_null() {
+        return TypioResult::TypioErrorOutOfMemory;
+    }
+    config_schema::typio_config_apply_defaults(new_config);
+    if !inst.config.0.is_null() {
+        config::typio_config_free(inst.config.0);
+    }
+    inst.config.0 = new_config;
 
     // Engine config reload is now driven by the registry — the engine's
     // reload_config callback is fired transparently through the backend.
@@ -190,6 +193,9 @@ pub extern "C" fn typio_instance_reload_config(instance: *mut TypioInstance) -> 
         if !inst.registry.0.is_null() {
             (*inst.registry.0).inner.reload_active_config();
         }
+    }
+    if !inst.voice_session.0.is_null() {
+        crate::voice::session::typio_voice_session_reload_engine(inst.voice_session.0);
     }
 
     TypioResult::TypioOk
@@ -324,11 +330,18 @@ pub extern "C" fn typio_instance_set_engine_config_key(
     if !registry.is_null() {
         let reg = unsafe { &mut *registry };
         let name_owned = name_str.into_owned();
+        let is_voice = reg
+            .inner
+            .engine_info(&name_owned)
+            .is_some_and(|info| info.engine_type == crate::core::engine::EngineType::Voice);
         let full_key_owned = full_key;
         let val_owned = val_str.into_owned();
         let _ = reg
             .inner
             .notify_config_change(&name_owned, &full_key_owned, &val_owned);
+        if is_voice && !inst.voice_session.0.is_null() {
+            crate::voice::session::typio_voice_session_reload_engine(inst.voice_session.0);
+        }
     }
 
     TypioResult::TypioOk

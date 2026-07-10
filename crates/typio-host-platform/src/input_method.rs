@@ -21,6 +21,7 @@
 //! The serial-commit protocol increments the serial on every `done`; a
 //! commit before the first `done` is silently dropped.
 
+use std::collections::HashSet;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::time::Instant;
@@ -266,6 +267,10 @@ pub struct InputMethodState {
     /// always reach the loop, so `router.on_release` +
     /// `timer.stop()` fire on every release.
     pub pending_keys: Vec<DecodedKeyEvent>,
+    /// Keys for which the host already emitted a synthetic release while
+    /// entering soft-pause. A later physical release is consumed exactly once,
+    /// including while `active == false` where events bypass the host router.
+    synthetic_releases: HashSet<u32>,
     /// Raw input facts recorded this tick for the focus controller.
     pub facts: InputFacts,
     /// Set when the compositor declares the input method unavailable.
@@ -454,6 +459,16 @@ impl InputMethodState {
     /// Used when the engine doesn't consume the key.
     pub fn forward_key(&self, time: u32, key: u32, state: u32) {
         self.virtual_keyboard.key(time, key, state);
+    }
+
+    /// Record that a release was synthesized for `key` during soft-pause.
+    pub fn mark_synthetic_release(&mut self, key: u32) {
+        self.synthetic_releases.insert(key);
+    }
+
+    /// Clear a pending synthetic-release marker. Returns whether it existed.
+    pub fn clear_synthetic_release(&mut self, key: u32) -> bool {
+        self.synthetic_releases.remove(&key)
     }
 
     /// Forward modifier state to the focused app.
@@ -811,6 +826,7 @@ impl InputMethodFrontend {
             mods_latched: 0,
             mods_locked: 0,
             pending_keys: Vec::new(),
+            synthetic_releases: HashSet::new(),
             facts: InputFacts::default(),
             stopped: false,
             pending: SessionState::default(),
@@ -1365,6 +1381,12 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                 // the key directly to the virtual keyboard so shortcuts and
                 // regular keys still reach the focused application instead
                 // of being silently swallowed by the retained grab.
+                if raw_state == 1 {
+                    // A fresh press proves any older unmatched release marker
+                    // for this key is stale (for example after device removal).
+                    state.clear_synthetic_release(key);
+                }
+
                 if state.active {
                     state.pending_keys.push(DecodedKeyEvent {
                         keycode: key,
@@ -1374,7 +1396,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                         state: raw_state,
                         time,
                     });
-                } else {
+                } else if raw_state != 0 || !state.clear_synthetic_release(key) {
                     state.forward_key(time, key, raw_state);
                 }
             }

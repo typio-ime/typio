@@ -221,7 +221,7 @@ fn alloc_c_engine_info(info: &EngineInfo) -> *const TypioEngineInfo {
 }
 
 /// Fire the engine-changed callback registered on the instance, if any.
-unsafe fn notify_keyboard_changed(registry: &TypioRegistry) {
+unsafe fn notify_keyboard_changed(registry: &mut TypioRegistry) {
     if registry.instance.is_null() {
         return;
     }
@@ -237,7 +237,7 @@ unsafe fn notify_keyboard_changed(registry: &TypioRegistry) {
     crate::instance::typio_instance_notify_engine_changed(registry.instance, info_ptr);
     crate::instance::typio_instance_notify_engine_availability(
         registry.instance,
-        map_engine_availability(registry.inner.active_keyboard_availability()),
+        map_engine_availability(registry.inner.recovering_active_keyboard_availability()),
         ptr::null(),
     );
     if !info_ptr.is_null() {
@@ -245,7 +245,7 @@ unsafe fn notify_keyboard_changed(registry: &TypioRegistry) {
     }
 }
 
-unsafe fn notify_voice_changed(registry: &TypioRegistry) {
+unsafe fn notify_voice_changed(registry: &mut TypioRegistry) {
     if registry.instance.is_null() {
         return;
     }
@@ -261,7 +261,7 @@ unsafe fn notify_voice_changed(registry: &TypioRegistry) {
     crate::instance::typio_instance_notify_voice_engine_changed(registry.instance, info_ptr);
     crate::instance::typio_instance_notify_engine_availability(
         registry.instance,
-        map_engine_availability(registry.inner.active_voice_availability()),
+        map_engine_availability(registry.inner.recovering_active_voice_availability()),
         ptr::null(),
     );
     if !info_ptr.is_null() {
@@ -414,7 +414,7 @@ pub extern "C" fn typio_registry_list_keyboards(
     if registry.is_null() || count.is_null() {
         return ptr::null_mut();
     }
-    let reg = unsafe { &(*registry).inner };
+    let reg = unsafe { &mut (*registry).inner };
     names_to_c_array(reg.list_keyboards(), count)
 }
 
@@ -430,7 +430,7 @@ pub extern "C" fn typio_registry_list_voices(
     if registry.is_null() || count.is_null() {
         return ptr::null_mut();
     }
-    let reg = unsafe { &(*registry).inner };
+    let reg = unsafe { &mut (*registry).inner };
     names_to_c_array(reg.list_voices(), count)
 }
 
@@ -676,8 +676,8 @@ pub extern "C" fn typio_registry_get_active_keyboard_availability(
     if registry.is_null() {
         return TypioEngineAvailability::TypioEngineFailed;
     }
-    let reg = unsafe { &(*registry).inner };
-    map_engine_availability(reg.active_keyboard_availability())
+    let reg = unsafe { &mut (*registry).inner };
+    map_engine_availability(reg.recovering_active_keyboard_availability())
 }
 
 /// Return the active voice engine availability.
@@ -688,8 +688,8 @@ pub extern "C" fn typio_registry_get_active_voice_availability(
     if registry.is_null() {
         return TypioEngineAvailability::TypioEngineFailed;
     }
-    let reg = unsafe { &(*registry).inner };
-    map_engine_availability(reg.active_voice_availability())
+    let reg = unsafe { &mut (*registry).inner };
+    map_engine_availability(reg.recovering_active_voice_availability())
 }
 
 /// Switch to the next keyboard engine in the ordered list.

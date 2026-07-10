@@ -37,6 +37,7 @@ pub enum FieldType {
     Int,
     Bool,
     Float,
+    Array,
 }
 
 impl FieldType {
@@ -46,6 +47,7 @@ impl FieldType {
             FieldType::Int => "int",
             FieldType::Bool => "bool",
             FieldType::Float => "float",
+            FieldType::Array => "array",
         }
     }
 
@@ -61,6 +63,17 @@ impl FieldType {
                     .map(Value::Number)
                     .unwrap_or(Value::Null)
             }
+            FieldType::Array => Value::Array(
+                raw.trim()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(str::trim)
+                    .map(|item| item.trim_matches(['"', '\'']))
+                    .filter(|item| !item.is_empty())
+                    .map(|item| Value::String(item.to_string()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -216,7 +229,7 @@ pub trait ServiceBackend {
     /// `Err(SvcError)` if reload failed.
     fn config_reload(&mut self) -> Result<(), SvcError>;
     /// Persist the current config to disk (`typio_instance_save_config`).
-    fn save_config(&mut self);
+    fn save_config(&mut self) -> Result<(), SvcError>;
     /// Notify an engine that one of its config keys changed
     /// (`typio_registry_notify_config_change`). Called only when the changed
     /// key sits under the engine's namespace.
@@ -427,9 +440,15 @@ impl<B: ServiceBackend> StatusService<B> {
         };
         match self.backend.config_set(key, value_str) {
             None => err_msg(id, StandardError::InternalError, "Config unavailable"),
-            Some(Err(SvcError)) => err_msg(id, StandardError::InternalError, "config.set failed"),
+            Some(Err(SvcError)) => err_msg(id, StandardError::InvalidParams, "config.set failed"),
             Some(Ok(())) => {
-                self.backend.save_config();
+                if self.backend.save_config().is_err() {
+                    return err_msg(
+                        id,
+                        StandardError::InternalError,
+                        "config persistence failed",
+                    );
+                }
                 if let Some((engine, _sub)) = parse_engine_namespace(key) {
                     self.backend.notify_engine_config(&engine, key, value_str);
                 }
@@ -446,7 +465,23 @@ impl<B: ServiceBackend> StatusService<B> {
             None => err_msg(id, StandardError::InternalError, "Config unavailable"),
             Some(Err(SvcError)) => err_msg(id, StandardError::InvalidParams, "Unknown key"),
             Some(Ok(())) => {
-                self.backend.save_config();
+                if self.backend.save_config().is_err() {
+                    return err_msg(
+                        id,
+                        StandardError::InternalError,
+                        "config persistence failed",
+                    );
+                }
+                if let Some((engine, _sub)) = parse_engine_namespace(key)
+                    && let Some(ConfigGetOutcome::Found { value, .. }) =
+                        self.backend.config_get(key)
+                {
+                    let value = match value {
+                        Value::String(value) => value,
+                        other => other.to_string(),
+                    };
+                    self.backend.notify_engine_config(&engine, key, &value);
+                }
                 ok(id, json!({}))
             }
         }
@@ -582,7 +617,13 @@ impl<B: ServiceBackend> StatusService<B> {
                 },
             );
         }
-        self.backend.save_config();
+        if self.backend.save_config().is_err() {
+            return err_msg(
+                id,
+                StandardError::InternalError,
+                "config persistence failed",
+            );
+        }
         ok(id, json!({}))
     }
 
@@ -642,7 +683,13 @@ impl<B: ServiceBackend> StatusService<B> {
         if self.backend.set_active_language(tag).is_err() {
             return err_msg(id, StandardError::InternalError, "language.use failed");
         }
-        self.backend.save_config();
+        if self.backend.save_config().is_err() {
+            return err_msg(
+                id,
+                StandardError::InternalError,
+                "config persistence failed",
+            );
+        }
         ok(id, json!({}))
     }
 
@@ -710,7 +757,7 @@ impl<B: ServiceBackend> StatusService<B> {
             return err_msg(id, StandardError::InternalError, "no registry");
         }
         if self.backend.engine_load(path).is_err() {
-            return err_msg(id, StandardError::InternalError, "engine.load failed");
+            return err_msg(id, StandardError::InvalidParams, "engine.load failed");
         }
         ok(id, json!({ "loaded": true, "path": path }))
     }
@@ -739,7 +786,7 @@ impl<B: ServiceBackend> StatusService<B> {
             return err_msg(id, StandardError::InternalError, "no registry");
         }
         if self.backend.engine_reload(name, path).is_err() {
-            return err_msg(id, StandardError::InternalError, "engine.reload failed");
+            return err_msg(id, StandardError::InvalidParams, "engine.reload failed");
         }
         let mut result = json!({ "reloaded": true, "name": name });
         if let Some(p) = path {
@@ -881,6 +928,7 @@ fn entry_to_json(e: ConfigEntry) -> Value {
         "key": e.field.key,
         "type": e.field.field_type.as_str(),
         "value": e.value,
+        "source": e.source.as_str(),
         "label": e.field.label.clone().unwrap_or_default(),
         "section": e.field.section.clone().unwrap_or_default(),
     });
@@ -936,6 +984,7 @@ mod tests {
         config_get_unknown: bool,
         config_set_fail: bool,
         config_unset_fail: bool,
+        save_fail: bool,
         reload_fail: bool,
         load_fail: bool,
         unload_fail: bool,
@@ -1022,8 +1071,13 @@ mod tests {
                 Ok(())
             }
         }
-        fn save_config(&mut self) {
+        fn save_config(&mut self) -> Result<(), SvcError> {
             *self.saves.borrow_mut() += 1;
+            if self.inner.borrow().save_fail {
+                Err(SvcError)
+            } else {
+                Ok(())
+            }
         }
         fn notify_engine_config(&mut self, engine: &str, key: &str, value: &str) {
             self.notifies.borrow_mut().push((
@@ -1229,15 +1283,33 @@ mod tests {
     }
 
     #[test]
-    fn config_set_failure_is_internal_error() {
+    fn config_set_failure_is_invalid_params() {
         let mut b = fixture();
         b.config_set_fail = true;
         let fake = b.build();
         let mut svc = StatusService::new(fake);
         let r = dispatch(&mut svc, "config.set", json!({"key": "k", "value": "v"}));
         let e = r.error.unwrap();
-        assert_eq!(e.code, -32603);
+        assert_eq!(e.code, -32602);
         assert_eq!(e.message, "config.set failed");
+    }
+
+    #[test]
+    fn config_set_reports_persistence_failure_before_engine_notification() {
+        let mut b = fixture();
+        b.save_fail = true;
+        let notifies = b.notifies.clone();
+        let fake = b.build();
+        let mut svc = StatusService::new(fake);
+        let r = dispatch(
+            &mut svc,
+            "config.set",
+            json!({"key": "engines.rime.option", "value": "x"}),
+        );
+        let error = r.error.unwrap();
+        assert_eq!(error.code, -32603);
+        assert_eq!(error.message, "config persistence failed");
+        assert!(notifies.borrow().is_empty());
     }
 
     #[test]
@@ -1271,10 +1343,9 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["choices"].as_array().unwrap().len(), 2);
         assert_eq!(arr[0]["section"], "ui");
-        // config.list emits field/type/value/label/section (+choices); it does
-        // not surface the user-vs-default source the way config.get does.
         assert_eq!(arr[0]["type"], "string");
         assert_eq!(arr[0]["value"], "qWERTY");
+        assert_eq!(arr[0]["source"], "default");
     }
 
     #[test]
@@ -1457,13 +1528,15 @@ mod tests {
     }
 
     #[test]
-    fn engine_load_failure_is_internal_error() {
+    fn engine_load_failure_is_invalid_params() {
         let mut b = fixture();
         b.load_fail = true;
         let fake = b.build();
         let mut svc = StatusService::new(fake);
         let r = dispatch(&mut svc, "engine.load", json!({"path": "/x.so"}));
-        assert_eq!(r.error.unwrap().message, "engine.load failed");
+        let error = r.error.unwrap();
+        assert_eq!(error.code, -32602);
+        assert_eq!(error.message, "engine.load failed");
     }
 
     #[test]
