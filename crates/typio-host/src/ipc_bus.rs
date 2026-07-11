@@ -344,8 +344,7 @@ impl ServiceBackend for TypioBackend {
         if reg.is_null() {
             return;
         }
-        let (Ok(engine_c), Ok(key_c), Ok(value_c)) =
-            (c_str(engine), c_str(key), c_str(value))
+        let (Ok(engine_c), Ok(key_c), Ok(value_c)) = (c_str(engine), c_str(key), c_str(value))
         else {
             return;
         };

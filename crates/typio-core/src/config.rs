@@ -15,8 +15,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::ptr;
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
