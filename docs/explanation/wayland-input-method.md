@@ -43,10 +43,10 @@ Every `zwp_input_method_v2` event does one thing — **record a fact** into
 drift is checked by the focus controller on the event-loop path. This is
 what keeps protocol handlers small and the lifecycle boundaries explicit.
 
-Facts are consumed, not stored, per the focus controller model: each tick
-clears the fact buffer, events refill it during dispatch, and `reduce()`
-derives the desired state atomically at the end of the batch. See
-[Focus Controller](focus-controller.md).
+Facts are consumed, not stored, per the focus controller model: each reactor
+step clears the fact buffer, events refill it during dispatch, and `reduce()`
+derives the desired state atomically at the end of the batch. See [Focus
+Controller](focus-controller.md).
 
 ### `activate` / `deactivate`
 
@@ -95,13 +95,13 @@ InputMethodState::text_transaction_and_flush(
 
 The helper stages `commit_string` and/or `set_preedit_string`, then sends one `commit(serial)`.  It is the only path for text payload commits.  Non-text lifecycle/focus state uses `commit_protocol_state()` so code reviewers can see that no preedit or commit string is being sent.
 
-The keyboard router owns the staging boundary. It updates candidate state immediately, but coalesces composition-only preedit updates to the latest value for the current pending-key drain. If an engine emits real commit text, the router flushes before routing the next key so commit order remains strict. If one key produces both commit text and a replacement preedit, both are sent in the same Wayland transaction.
+The keyboard router owns the staging boundary. It updates candidate state immediately, but stages composition-only preedit in a bounded latest-wins coalescer. The value becomes eligible after a 2 ms quiet period and cannot wait longer than 4 ms from the first update in a burst. If an engine emits real commit text, the router flushes immediately so commit order remains strict. If one key produces both commit text and a replacement preedit, both are sent in the same Wayland transaction.
 
-This is deliberate: two fast key events can be delivered before Typio reads the compositor's next `done`. Submitting every intermediate preedit as its own `commit(serial)` can create same-serial commits where later values become stale. See [ADR-0042](../adr/0042-text-input-transaction-staging.md). The host does not hold preedit for compositor `done`; that event is a compositor state boundary, not a text-commit ack.
+This is deliberate: two fast key events can be delivered in separate reactor steps before Typio reads the compositor's next `done`. Submitting every intermediate preedit as its own `commit(serial)` can create same-serial commits where later values become stale. See [ADR-0042](../adr/0042-text-input-transaction-staging.md) and [ADR-0043](../adr/0043-bounded-preedit-coalescing.md). The host does not hold preedit for compositor `done`; that event is a compositor state boundary, not a text-commit ack.
 
 ## Keyboard Grab Lifecycle
 
-The grab and its keymap handshake are **one resource** (`absent → needs_keymap → ready → broken`) that the focus controller creates and repairs every tick; the rules are in [Input-Method Session](input-method-session.md).
+The grab and its keymap handshake are **one resource** (`absent → needs_keymap → ready → broken`) that the focus controller creates and repairs on each reactor evaluation; the rules are in [Input-Method Session](input-method-session.md).
 
 Briefly:
 - Each grab incarnation has a **generation**. A key press claims the current generation, and the matching release is accepted only when the stored per-key generation still matches the active grab generation.
@@ -164,7 +164,7 @@ System suspend is invisible to the Wayland protocol: no `deactivate` before slee
 
 How much of this the focus controller handles depends on whether `typio_wl_focus_observe()` can *see* it — and observation reads resource *presence*, not *liveness*:
 
-- **Suspend.** A grab dead across suspend leaves a *live proxy*; observation reports it healthy, so the focus controller alone is blind. A resume **detector** (logind `PrepareForSleep` plus a `CLOCK_BOOTTIME` vs `CLOCK_MONOTONIC` gap heuristic) records facts: it invalidates the grab generation and drops the compositor-visible preedit, then lets the next tick rebuild as needed.
+- **Suspend.** A grab dead across suspend leaves a *live proxy*; observation reports it healthy, so the focus controller alone is blind. A resume **detector** (logind `PrepareForSleep` plus a `CLOCK_BOOTTIME` vs `CLOCK_MONOTONIC` gap heuristic) records facts: it invalidates the grab generation and drops the compositor-visible preedit, then lets the next reactor step rebuild as needed.
 - **Grab object gone.** If the grab *object* is actually absent while `desired.grab` is still `YES`, observation reports `ABSENT` and the diff recreates it.
 
 In both cases the input context is never `focus_out`'d, so the engine's in-flight composition survives, and the rebuild is the *same* grab build used on first focus.
@@ -205,7 +205,7 @@ let plan = text_ui_plan_update(last_text, last_cursor, new_text, cursor_pos);
 
 If `plan == TextUiPlan::SyncPanelOnly`, the Panel Scheduler refreshes only the Candidate Panel during the event-loop Panel stage. The expensive `zwp_input_method_v2.set_preedit_string` → `commit(serial)` → `done` round-trip to the application is skipped entirely.
 
-If the preedit did change, the router stages the new preedit rather than committing it immediately. Composition-only bursts coalesce to the latest staged value; commit-producing keys flush immediately after the matching composition is drained so text order stays correct. This avoids both redundant round-trips and stale same-serial commits in heavyweight clients and compositors.
+If the preedit did change, the router stages the new preedit rather than committing it immediately. Composition-only bursts coalesce across adjacent reactor steps to the latest staged value, subject to the 4 ms hard limit; commit-producing keys flush immediately after the matching composition is drained so text order stays correct. This avoids both redundant round-trips and stale same-serial commits in heavyweight clients and compositors.
 
 ## Source Map
 
@@ -216,8 +216,10 @@ If the preedit did change, the router stages the new preedit rather than committ
 | Session effects (effectful) | `crates/typio-host/src/session_glue.rs` | `observe` and `apply`, including hard teardown and effect ordering |
 | `zwp_input_method_keyboard_grab_v2` | `crates/typio-host-platform/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | Grab create/destroy, key/modifiers/repeat listeners, keymap handoff to vk |
 | Key generation + tracking | `crates/typio-host/src/keyboard_policy.rs`, `crates/typio-host/src/keyboard/router.rs` | Generation fence and symmetric press/release |
+| Preedit coalescing | `crates/typio-host/src/keyboard/preedit_coalescer.rs` | Latest-wins 2 ms quiet window with 4 ms hard limit |
+| Reactor coordination | `crates/typio-host/src/app/event_loop.rs`, `crates/typio-host/src/app/reactor.rs`, `crates/typio-host/src/app/input_driver.rs` | Named readiness sources, deadline reduction, ordered keyboard/text phases |
 | `zwp_virtual_keyboard_v1` | `crates/typio-host-platform/src/input_method.rs` (`forward_key`, `forward_modifiers`) | Keymap forward, modifier mirror, unhandled-key forwarding |
-| `zwp_input_popup_surface_v2` | `crates/typio-host-platform/src/input_method.rs`, `crates/typio-host-platform/src/panel.rs` | Panel positioning, frame pacing, SHM commits |
+| `zwp_input_popup_surface_v2` | `crates/typio-host-platform/src/input_method.rs`, `crates/typio-host-platform/src/panel.rs` | Panel positioning and SHM commits |
 | Panel rendering | `crates/typio-host-platform/src/panel.rs`, `crates/typio-host-platform/src/panel_shm.rs` | CPU canvas render + `TextRaster` glyph composite, host-managed SHM attach |
 | Resume detection | `crates/typio-host/src/resume_signal.rs` | logind + boottime heuristic (records facts) |
 | Protocol XML | `protocols/input-method-unstable-v2.xml` | Wayland protocol definition (upstream) |
@@ -227,4 +229,5 @@ If the preedit did change, the router stages the new preedit rather than committ
 - [Input-Method Session](input-method-session.md) — declared lifecycle phase, observed axes, key generation fencing, and daemon resilience (suspend/resume, compositor restart, silent grab loss)
 - [Event Loop Scheduling](event-loop-scheduling.md) — event-loop scheduling, GPU bounds, D-Bus dispatch, and poll deadlines
 - [ADR-0042: Text-input transaction staging](../adr/0042-text-input-transaction-staging.md) — why preedit commits are staged/coalesced at key-drain boundaries
+- [ADR-0043: Bounded preedit coalescing](../adr/0043-bounded-preedit-coalescing.md) — how adjacent cross-step keys coalesce without waiting on `done`
 - [Panel Appearance](../dev/panel-appearance.md) — offscreen Panel rendering pipeline

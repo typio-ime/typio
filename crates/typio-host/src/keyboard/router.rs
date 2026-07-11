@@ -5,6 +5,7 @@
 //! to the focused application via the virtual keyboard.
 
 use std::ffi::c_void;
+use std::time::Instant;
 
 use typio_abi::{TypioEventType, TypioKeyEvent};
 
@@ -15,6 +16,7 @@ use super::helpers::{
     commit_candidate_should_fallback, host_selection_plain_key, is_voice_ptt_key,
     page_boundary_selected_index, should_suppress_untracked_modifier_release,
 };
+use super::preedit_coalescer::{PreeditCoalescer, PreeditUpdate};
 use crate::candidate_guard::{
     HostSelectionAction, HostSelectionPageState, classify_host_selection,
 };
@@ -54,13 +56,6 @@ pub enum RepeatOutcome {
     /// The repeat chain has ended — either no key is pending or the
     /// engine declined the repeat. The caller should stop the timer.
     Stopped,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingPreeditFlush {
-    text: String,
-    cursor: u32,
-    engine_cursor_pos: i32,
 }
 
 /// A keyboard router tied to a libtypio input context.
@@ -127,14 +122,12 @@ pub struct KeyboardRouter {
     preedit_tracking: PreeditTracking,
     /// Commit text waiting to be sent in the next text-input transaction.
     pending_commit_flush: Option<String>,
-    /// Latest preedit update waiting to be committed to Wayland.
-    /// Composition callbacks can fire multiple times while the event loop is
-    /// draining a burst of key events.  Only the last inline preedit is useful
-    /// to the compositor; committing every intermediate value with the same
-    /// input-method serial risks making later values stale.  Candidate state is
-    /// still updated immediately in host memory; this field coalesces only the
-    /// text-input protocol transaction.
-    pending_preedit_flush: Option<PendingPreeditFlush>,
+    /// Latest preedit update waiting to be committed to Wayland. The bounded
+    /// coalescer spans adjacent reactor steps because physically adjacent keys
+    /// are not guaranteed to share one pending-key drain. Candidate state is
+    /// still updated immediately in host memory; only the compositor-facing
+    /// text transaction waits for the quiet/hard deadline.
+    preedit_coalescer: PreeditCoalescer,
     /// Keycode currently held as the voice push-to-talk trigger, if any.
     voice_ptt_keycode: Option<u32>,
     /// Latched when `Super+V` starts voice push-to-talk.
@@ -194,7 +187,7 @@ impl KeyboardRouter {
             engine_tracked_mods: Modifiers::NONE,
             preedit_tracking: PreeditTracking::new(),
             pending_commit_flush: None,
-            pending_preedit_flush: None,
+            preedit_coalescer: PreeditCoalescer::default(),
             voice_ptt_keycode: None,
             voice_ptt_pressed: false,
             voice_ptt_released: false,
@@ -218,12 +211,16 @@ impl KeyboardRouter {
     pub fn preedit_tracking_reset(&mut self) {
         self.preedit_tracking.reset();
         self.pending_commit_flush = None;
-        self.pending_preedit_flush = None;
+        self.preedit_coalescer.clear();
     }
 
     /// True iff the libtypio input context currently reports itself focused.
     pub fn is_focused(&self) -> bool {
         typio::input_context::typio_input_context_is_focused(self.ctx)
+    }
+
+    pub fn has_context(&self) -> bool {
+        !self.ctx.is_null()
     }
 
     /// Reset the engine's in-flight composition and candidate state.
@@ -232,7 +229,7 @@ impl KeyboardRouter {
         self.pending_output.commit = None;
         self.pending_output.composition = None;
         self.pending_commit_flush = None;
-        self.pending_preedit_flush = None;
+        self.preedit_coalescer.clear();
         // Forget any preedit we claimed to have sent — the engine reset
         // may be followed by the compositor clearing the field on its
         // own, and the next composition must not be suppressed as a
@@ -241,7 +238,7 @@ impl KeyboardRouter {
     }
 
     /// Drain any pending composition update and update preedit/candidates.
-    pub fn drain_composition(&mut self, frontend: &mut InputMethodState) {
+    pub fn drain_composition(&mut self, frontend: &mut InputMethodState, now: Instant) {
         if let Some(pending) = self.pending_output.composition.take() {
             let PendingComposition {
                 preedit_text: preedit,
@@ -269,17 +266,20 @@ impl KeyboardRouter {
                 // Both cleared. Only re-clear if we actually had a
                 // preedit outstanding; otherwise this would emit a
                 // `set_preedit_string("") + commit` Wayland round-trip
-                // on every composition tick where the engine reports
+                // on every composition update where the engine reports
                 // "nothing to show" (e.g. after every commit).
                 if self.preedit_tracking.last_text.is_some()
                     || self.preedit_tracking.last_cursor != -1
-                    || self.pending_preedit_flush.is_some()
+                    || self.preedit_coalescer.pending().is_some()
                 {
-                    self.pending_preedit_flush = Some(PendingPreeditFlush {
-                        text: String::new(),
-                        cursor: 0,
-                        engine_cursor_pos: -1,
-                    });
+                    self.preedit_coalescer.stage(
+                        PreeditUpdate {
+                            text: String::new(),
+                            cursor: 0,
+                            engine_cursor_pos: -1,
+                        },
+                        now,
+                    );
                 }
             } else {
                 // Resolve the engine's cursor_pos (non-negative wins,
@@ -295,13 +295,13 @@ impl KeyboardRouter {
                 // waste (a `set_preedit_string` + `commit` Wayland
                 // round-trip per arrow press).
                 let effective_last_text = self
-                    .pending_preedit_flush
-                    .as_ref()
+                    .preedit_coalescer
+                    .pending()
                     .map(|p| p.text.as_str())
                     .or(self.preedit_tracking.last_text.as_deref());
                 let effective_last_cursor = self
-                    .pending_preedit_flush
-                    .as_ref()
+                    .preedit_coalescer
+                    .pending()
                     .map(|p| p.engine_cursor_pos)
                     .unwrap_or(self.preedit_tracking.last_cursor);
                 let plan = text_ui_plan_update(
@@ -311,11 +311,14 @@ impl KeyboardRouter {
                     cursor_pos,
                 );
                 if plan == TextUiPlan::SyncPreeditAndPanel {
-                    self.pending_preedit_flush = Some(PendingPreeditFlush {
-                        text: preedit.clone(),
-                        cursor,
-                        engine_cursor_pos: cursor_pos,
-                    });
+                    self.preedit_coalescer.stage(
+                        PreeditUpdate {
+                            text: preedit.clone(),
+                            cursor,
+                            engine_cursor_pos: cursor_pos,
+                        },
+                        now,
+                    );
                 }
                 // SyncPanelOnly: skip the Wayland round-trip; the
                 // candidate-panel repaint below is driven independently
@@ -357,7 +360,7 @@ impl KeyboardRouter {
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
         self.pending_commit_flush = None;
-        self.pending_preedit_flush = None;
+        self.preedit_coalescer.clear();
         self.physical_modifiers = Modifiers::NONE;
         self.modifiers_acquired = false;
         self.engine_tracked_mods = Modifiers::NONE;
@@ -379,7 +382,7 @@ impl KeyboardRouter {
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
         self.pending_commit_flush = None;
-        self.pending_preedit_flush = None;
+        self.preedit_coalescer.clear();
         // Drop any physical modifier state: a grab handoff crosses a
         // focus boundary where the previously held modifiers are no
         // longer ours to reason about. They get re-seeded from the
@@ -400,7 +403,7 @@ impl KeyboardRouter {
 
     /// True iff the configured engine-switch chord (Ctrl+Shift by
     /// default) completed during the most recent `dispatch_key`. The
-    /// main loop drains this once per tick and cycles the active
+    /// main loop drains this once per reactor step and cycles the active
     /// keyboard. Reading clears the flag.
     pub fn take_switch_chord_fired(&mut self) -> bool {
         std::mem::take(&mut self.shortcut_fired)
@@ -461,6 +464,7 @@ impl KeyboardRouter {
         key: &DecodedKeyEvent,
         frontend: &mut InputMethodState,
         xkb_mods_depressed: u32,
+        now: Instant,
     ) -> Option<bool> {
         if !host_selection_plain_key(self.shortcut_modifiers(xkb_mods_depressed)) {
             return None;
@@ -524,12 +528,14 @@ impl KeyboardRouter {
                 KEY_PAGE_UP,
                 frontend,
                 "host-managed page up",
+                now,
             )),
             HostSelectionAction::PageDown => Some(self.dispatch_synthetic_page_key(
                 key,
                 KEY_PAGE_DOWN,
                 frontend,
                 "host-managed page down",
+                now,
             )),
         }
     }
@@ -570,6 +576,7 @@ impl KeyboardRouter {
         keysym: u32,
         frontend: &mut InputMethodState,
         label: &'static str,
+        now: Instant,
     ) -> bool {
         let page_key = DecodedKeyEvent {
             keycode: source.keycode,
@@ -580,7 +587,7 @@ impl KeyboardRouter {
             time: source.time,
         };
         let consumed = self.process_key_engine(&page_key, 0, false);
-        self.drain_composition(frontend);
+        self.drain_composition(frontend, now);
         if consumed {
             if let Some(selected) =
                 page_boundary_selected_index(keysym, frontend.composition.candidates.len())
@@ -814,7 +821,7 @@ impl KeyboardRouter {
     /// transition, the host's per-key tracking is authoritative for the
     /// blocking modifiers (Shift/Ctrl/Alt/Super). Folding the xkb-derived
     /// blocking bits back in here — as the former
-    /// `sync_physical_modifiers` did — would let a stale per-tick xkb
+    /// `sync_physical_modifiers` did — would let a stale per-step xkb
     /// snapshot erase a still-held sibling modifier. That is the root
     /// cause of Super+Shift being misread as a lone Shift: the Shift
     /// release reached the engine carrying no Super bit, so the engine
@@ -899,25 +906,64 @@ impl KeyboardRouter {
     /// text-input transaction.  The transaction is flushed by
     /// [`Self::flush_pending_text`] after the matching composition has also had
     /// a chance to contribute a replacement preedit.
-    pub fn drain_commit(&mut self, _frontend: &mut InputMethodState) {
+    pub fn drain_commit(&mut self) {
         if let Some(text) = self.pending_output.commit.take() {
             // A commit replaces the existing preedit with the cursor before
             // inserting text.  Any deferred composition-only preedit from an
             // earlier key is now obsolete; a same-response remaining preedit
             // will be staged by drain_composition immediately after this.
-            self.pending_preedit_flush = None;
+            self.preedit_coalescer.clear();
             self.pending_commit_flush = Some(text);
         }
     }
 
     /// Flush the staged text-input transaction, if any.
-    pub fn flush_pending_text(&mut self, frontend: &mut InputMethodState) {
-        if self.pending_commit_flush.is_none() && self.pending_preedit_flush.is_none() {
+    fn flush_pending_text(&mut self, frontend: &mut InputMethodState) {
+        if self.pending_commit_flush.is_none() && self.preedit_coalescer.pending().is_none() {
             return;
         }
 
         let commit = self.pending_commit_flush.take();
-        let preedit = self.pending_preedit_flush.take();
+        let preedit = self.preedit_coalescer.take();
+        self.send_text_transaction(frontend, commit, preedit);
+    }
+
+    /// Commit immediately when the engine produced real commit text; this
+    /// preserves ordering before the next key is routed. Pure preedit updates
+    /// remain staged so adjacent reactor steps can coalesce to one Wayland
+    /// transaction.
+    pub fn flush_pending_text_if_commit(&mut self, frontend: &mut InputMethodState) {
+        if self.pending_commit_flush.is_some() {
+            self.flush_pending_text(frontend);
+        }
+    }
+
+    /// Flush pure preedit only after its bounded coalescing deadline. Commit
+    /// text continues to bypass the deadline through
+    /// [`Self::flush_pending_text_if_commit`].
+    pub fn flush_pending_text_if_due(&mut self, frontend: &mut InputMethodState, now: Instant) {
+        if self.pending_commit_flush.is_some() {
+            self.flush_pending_text(frontend);
+            return;
+        }
+        let Some(preedit) = self.preedit_coalescer.take_if_due(now) else {
+            return;
+        };
+        self.send_text_transaction(frontend, None, Some(preedit));
+    }
+
+    /// Remaining bounded-preedit delay for integration into the main poll
+    /// timeout. `None` means no pure preedit is staged.
+    pub fn preedit_deadline_remaining_ms(&self, now: Instant) -> Option<i32> {
+        self.preedit_coalescer.deadline_remaining_ms(now)
+    }
+
+    fn send_text_transaction(
+        &mut self,
+        frontend: &mut InputMethodState,
+        commit: Option<String>,
+        preedit: Option<PreeditUpdate>,
+    ) {
         frontend.text_transaction_and_flush(
             commit.as_deref(),
             preedit.as_ref().map(|p| (p.text.as_str(), p.cursor)),
@@ -931,16 +977,6 @@ impl KeyboardRouter {
             }
             None if commit.is_some() => self.preedit_tracking.reset(),
             None => {}
-        }
-    }
-
-    /// Commit immediately when the engine produced real commit text; this
-    /// preserves ordering before the next key is routed.  Pure preedit updates
-    /// remain staged so a burst of composition-only keys coalesces to one
-    /// Wayland commit at the drain boundary.
-    pub fn flush_pending_text_if_commit(&mut self, frontend: &mut InputMethodState) {
-        if self.pending_commit_flush.is_some() {
-            self.flush_pending_text(frontend);
         }
     }
 
@@ -1018,7 +1054,7 @@ impl KeyboardRouter {
         self.clear_key_tracking(key.keycode);
     }
 
-    /// Drive one repeat tick. Called by the main loop when the repeat
+    /// Drive one repeat expiration. Called by the main loop when the repeat
     /// timer fires.
     ///
     /// For [`RepeatMode::Forward`] the held key is re-sent to the virtual
@@ -1030,6 +1066,7 @@ impl KeyboardRouter {
         &mut self,
         frontend: &mut InputMethodState,
         xkb_mods_depressed: u32,
+        now: Instant,
     ) -> RepeatOutcome {
         let Some(key) = self.repeat_key.clone() else {
             return RepeatOutcome::Stopped;
@@ -1044,7 +1081,9 @@ impl KeyboardRouter {
                 // cycling candidates) take the host path before
                 // re-entering the engine. Falls through when the host
                 // declines — same opt-in gate as the initial press.
-                if let Some(handled) = self.try_host_selection(&key, frontend, xkb_mods_depressed) {
+                if let Some(handled) =
+                    self.try_host_selection(&key, frontend, xkb_mods_depressed, now)
+                {
                     return if handled {
                         RepeatOutcome::Consumed
                     } else {
@@ -1102,7 +1141,7 @@ mod tests {
                 engine_tracked_mods: Modifiers::NONE,
                 preedit_tracking: PreeditTracking::new(),
                 pending_commit_flush: None,
-                pending_preedit_flush: None,
+                preedit_coalescer: PreeditCoalescer::default(),
                 voice_ptt_keycode: None,
                 voice_ptt_pressed: false,
                 voice_ptt_released: false,
@@ -1489,7 +1528,7 @@ mod tests {
             Modifiers::SUPER.0 | Modifiers::SHIFT.0,
         );
 
-        // Release Shift. Simulate the per-tick xkb snapshot having
+        // Release Shift. Simulate the per-step xkb snapshot having
         // already dropped Shift (Modifiers event racing ahead of the
         // Key event) — mods_depressed = Super only. The engine must
         // STILL see Super on this Shift release.
@@ -1509,7 +1548,7 @@ mod tests {
 
     #[test]
     fn super_shift_release_carries_super_even_when_xkb_snapshot_is_empty() {
-        // Harder variant: the per-tick xkb snapshot reports NO modifiers
+        // Harder variant: the per-step xkb snapshot reports NO modifiers
         // at all at release time (worst-case stale snapshot). Because we
         // seed physical state and track per-key, Super must still be
         // present on the Shift release.

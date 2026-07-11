@@ -20,8 +20,9 @@ workspace or host/framework integration live in this ADR set.
 > Later retry-latch and scheduler regressions in ADR-0015's deferral path are
 > recorded in ADR-0022 and ADR-0023. Do not implement new scheduling from the
 > historical `panel_update_pending` or retry-latch descriptions in ADR-0015 /
-> ADR-0022; the active model is ADR-0023's `IDLE` / `DIRTY` / `RETRY`
-> scheduler, with ADR-0036's soft present gate for `wl_surface.frame` pacing.
+> ADR-0022; the current implementation has an `IDLE` / `DIRTY` scheduler and
+> SHM-buffer back-pressure. ADR-0040 superseded ADR-0036's
+> `wl_surface.frame` soft gate.
 
 | ADR | Title | Status |
 |-----|-------|--------|
@@ -67,6 +68,7 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dmabuf/flux-text from the panel) |
 | [ADR-0041](0041-remove-watchdog.md) | Remove the host watchdog | Accepted (supersedes ADR-0004/0024/0037; bounds config-read instead) |
 | [ADR-0042](0042-text-input-transaction-staging.md) | Text-input transaction staging at key-batch boundaries | Accepted |
+| [ADR-0043](0043-bounded-preedit-coalescing.md) | Bounded preedit coalescing across reactor steps | Accepted (amends ADR-0042) |
 
 ## Looking for something else?
 

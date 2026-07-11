@@ -8,6 +8,11 @@ mod cli;
 mod event_loop;
 pub(crate) mod font_config;
 mod indicator;
+mod input_driver;
+#[cfg(feature = "wayland")]
+mod one_shot_timer;
+mod panel_driver;
+mod reactor;
 mod signals;
 mod tray;
 
@@ -18,7 +23,6 @@ use std::cell::RefCell;
 use std::ffi::{CString, c_char};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
 
 use clap::Parser;
 use typio::c_api::registry as c_registry;
@@ -41,14 +45,13 @@ use crate::tray_sni::Tray;
 use crate::uds_server::UdsServer;
 
 #[cfg(feature = "wayland")]
-use nix::sys::timerfd::{ClockId, TimerFd as NixTimerFd, TimerFlags};
-
-#[cfg(feature = "wayland")]
 use crate::input_method::InputMethodFrontend;
 #[cfg(feature = "wayland")]
 use crate::keyboard::router::KeyboardRouter;
 #[cfg(feature = "wayland")]
 use crate::repeat_timer::{self, RepeatTimer};
+#[cfg(feature = "wayland")]
+use one_shot_timer::OneShotTimer;
 
 /// Cross-thread events delivered to the main loop.
 ///
@@ -56,7 +59,7 @@ use crate::repeat_timer::{self, RepeatTimer};
 /// - the IPC stop callback (UDS `daemon.stop` method),
 /// - the StatusNotifierItem tray action callback (zbus internal thread).
 ///
-/// The receiver is owned by [`App`] and drained once per tick by the
+/// The receiver is owned by [`App`] and drained once per reactor step by the
 /// main loop. This keeps every mutation of `App` state on the
 /// event-loop thread — the alternative (`AtomicBool` flags for each
 /// cause) loses type information and forces the loop to do untyped
@@ -115,20 +118,12 @@ pub struct App {
     /// on hide, focus-loss, or shutdown. Polled as part of the main poll
     /// set; expiry drives `indicator.hide()` + panel detach.
     #[cfg(feature = "wayland")]
-    indicator_timer: Option<NixTimerFd>,
-    /// Absolute time when the indicator should auto-hide, mirroring the
-    /// kernel timerfd state. Tracked in user space so the poll timeout
-    /// can be lowered without a `timerfd_gettime` syscall on every tick.
-    #[cfg(feature = "wayland")]
-    indicator_hide_deadline: Option<Instant>,
+    indicator_timer: Option<OneShotTimer>,
     /// Auto-hide timerfd for the voice status banner. Separate from the
     /// keyboard/language indicator so voice status does not affect indicator
     /// recency gates or get hidden by the indicator timer.
     #[cfg(feature = "wayland")]
-    voice_status_timer: Option<NixTimerFd>,
-    /// Absolute time when the voice status banner should auto-hide.
-    #[cfg(feature = "wayland")]
-    voice_status_hide_deadline: Option<Instant>,
+    voice_status_timer: Option<OneShotTimer>,
     /// Last voice session state observed by the banner driver. Used to tell
     /// a productive `Processing → Idle` (a result follows) from a barren one
     /// (nothing recognised → show no-speech feedback).
@@ -143,7 +138,7 @@ pub struct App {
     /// Sender half of the daemon event channel. Cloned into the IPC
     /// stop callback and the tray action handler.
     event_tx: std::sync::mpsc::Sender<DaemonEvent>,
-    /// Receiver half of the daemon event channel. Drained once per tick
+    /// Receiver half of the daemon event channel. Drained once per reactor step
     /// by the main loop; never shared with another thread (`Receiver` is
     /// `!Sync`).
     event_rx: Option<std::sync::mpsc::Receiver<DaemonEvent>>,
@@ -216,11 +211,7 @@ impl App {
             #[cfg(feature = "wayland")]
             indicator_timer: None,
             #[cfg(feature = "wayland")]
-            indicator_hide_deadline: None,
-            #[cfg(feature = "wayland")]
             voice_status_timer: None,
-            #[cfg(feature = "wayland")]
-            voice_status_hide_deadline: None,
             #[cfg(feature = "wayland")]
             voice_last_state: typio::voice::types::VoiceState::Idle,
             #[cfg(feature = "wayland")]
@@ -488,13 +479,13 @@ impl App {
                 // The timer is created disarmed and only armed when a show
                 // actually lands on screen (see `arm_indicator_timer`).
                 self.indicator = Some(Indicator::new());
-                match NixTimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::TFD_NONBLOCK) {
+                match OneShotTimer::new() {
                     Ok(tf) => self.indicator_timer = Some(tf),
                     Err(e) => {
                         tracing::warn!(target: "typio.startup", error = %e, "failed to create indicator timer")
                     }
                 }
-                match NixTimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::TFD_NONBLOCK) {
+                match OneShotTimer::new() {
                     Ok(tf) => self.voice_status_timer = Some(tf),
                     Err(e) => {
                         tracing::warn!(target: "typio.startup", error = %e, "failed to create voice status timer")
@@ -901,11 +892,7 @@ mod tests {
             #[cfg(feature = "wayland")]
             indicator_timer: None,
             #[cfg(feature = "wayland")]
-            indicator_hide_deadline: None,
-            #[cfg(feature = "wayland")]
             voice_status_timer: None,
-            #[cfg(feature = "wayland")]
-            voice_status_hide_deadline: None,
             #[cfg(feature = "wayland")]
             voice_last_state: typio::voice::types::VoiceState::Idle,
             #[cfg(feature = "wayland")]

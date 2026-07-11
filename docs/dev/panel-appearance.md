@@ -49,11 +49,10 @@ keep the loop responsive when a compositor stops releasing buffers, the host
 owns the SHM pool and never waits for compositor release.
 
 - `ShmBufferPool::acquire()` returns `None` if every SHM buffer is busy. The
-  panel drops that frame and lets the next dirty tick render the newest
+  panel drops that frame and lets the next dirty reactor step render the newest
   candidate state.
-- `wl_surface.frame` callbacks pace healthy compositors. If a callback goes
-  missing, `panel_present_gate` waits only for the soft limit and then allows a
-  timer-paced submit. An extended missing-callback episode logs a warning.
+- There is no `wl_surface.frame` pacing gate. SHM buffer release is the only
+  compositor back-pressure signal on the candidate path.
 
 A skipped frame never freezes key handling: input events queue on the Wayland
 fd while the compositor catches up, so navigation stays correct even while the

@@ -8,10 +8,10 @@ in depth.
 
 | Term | Definition | Primary source |
 |------|-----------|----------------|
-| **Panel** | The single floating IME UI surface. Aggregates candidates, preedit decoration, status banners, and future toolbar/waveform zones. | [Panel Architecture](../explanation/panel-architecture.md) |
-| **Panel Surface** | The Wayland presentation object behind the Panel. Owns the `zwp_input_popup_surface_v2`, offscreen flux image, SHM buffer attach path, scale, and output tracking. | [Panel Architecture](../explanation/panel-architecture.md) |
+| **Panel** | The single floating IME UI surface. Aggregates candidates, status banners, and future toolbar/waveform zones; inline preedit is rendered by the focused application. | [Panel Architecture](../explanation/panel-architecture.md) |
+| **Panel Surface** | The Wayland presentation object behind the Panel. Owns the `zwp_input_popup_surface_v2`, CPU canvas framebuffer, SHM buffer attach path, scale, and output tracking. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Panel Content** | Display-agnostic data describing what the Panel should show. Contains no Wayland or GPU types. | [Panel Architecture](../explanation/panel-architecture.md) |
-| **Zone** | A bounded area inside Panel Content (Candidate, Preedit, Status, future Toolbar). A zone is a concrete triple: a content fragment, its geometry fragment, and the painter that draws it. | [Panel Architecture](../explanation/panel-architecture.md) |
+| **Zone** | A bounded area inside Panel Content (Candidate, Status, future Toolbar). A zone is a concrete triple: a content fragment, its geometry fragment, and the painter that draws it. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Panel Geometry** | The immutable positioned snapshot produced by the Layout step from Panel Content + Theme + Scale. | [ADR-0014](../adr/0014-canonical-panel-vocabulary.md) |
 
 ## Frontend policy
@@ -23,6 +23,7 @@ in depth.
 | **Panel Coordinator** | Frontend policy layer that arbitrates owners, pending positioned UI, and anchor readiness. Not renderer code. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Position Anchor** | The current activation's trusted placement state for the input-popup surface. | [Panel Architecture](../explanation/panel-architecture.md) |
 | **Anchor Probe** | A one-shot no-op input-method commit (`set_preedit_string("", -1, -1); commit`) used to ask clients for a fresh caret rectangle. | [Panel Architecture](../explanation/panel-architecture.md) |
+| **Reactor Step** | One execution of the daemon's main `poll(2)` loop after an fd becomes ready or a deadline expires. It is not a fixed-rate frame or a Wayland protocol boundary. | [Event Loop Scheduling](../explanation/event-loop-scheduling.md) |
 | **Anchor Readiness** | Whether the current activation's position anchor can be trusted (compositor sent `text_input_rectangle`, or candidates successfully presented). | [Panel Architecture](../explanation/panel-architecture.md) |
 
 ## Rendering pipeline

@@ -6,4 +6,5 @@
 
 mod ffi_callbacks;
 mod helpers;
+mod preedit_coalescer;
 pub mod router;

@@ -96,9 +96,7 @@ pub fn resolve_repeat_params(compositor_info: Option<(i32, i32)>) -> Option<(Dur
 /// Exposes the timer fd for integration with any external event loop.
 pub struct RepeatTimer {
     timer: TimerFd,
-    /// True iff the timer is currently armed. Tracked separately from
-    /// the timerfd's kernel state so we can short-circuit
-    /// [`Self::dispatch`] without a syscall.
+    /// Last successfully requested kernel state, exposed for diagnostics.
     armed: bool,
 }
 
@@ -122,6 +120,14 @@ impl RepeatTimer {
     /// subsequently stopped.
     pub fn is_armed(&self) -> bool {
         self.armed
+    }
+
+    /// Consume one readable timerfd expiration count.
+    ///
+    /// The reactor calls this only after `POLLIN`. Keeping the read beside the
+    /// owned descriptor prevents input policy from handling raw timerfd bytes.
+    pub fn consume_expiration(&self) -> io::Result<u64> {
+        consume_timerfd(&self.timer)
     }
 
     /// Arm the timer with the given initial delay followed by a recurring
@@ -166,6 +172,19 @@ impl RepeatTimer {
         let ms = 1000 / repeat_rate;
         Duration::from_millis(ms.max(1) as u64)
     }
+}
+
+/// Consume the native `u64` expiration counter from any readable timerfd.
+pub fn consume_timerfd(timer: &impl AsFd) -> io::Result<u64> {
+    let mut bytes = [0u8; std::mem::size_of::<u64>()];
+    let read = nix::unistd::read(timer, &mut bytes).map_err(nix_to_io)?;
+    if read != bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "short timerfd read",
+        ));
+    }
+    Ok(u64::from_ne_bytes(bytes))
 }
 
 impl Default for RepeatTimer {

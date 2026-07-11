@@ -65,9 +65,9 @@ filled framebuffer is byte-swapped (RGBA8 → Wayland ARGB8888) into a free
 frame is dropped; the event loop remains free to process input and later render
 the newest coalesced state.
 
-`wl_surface.frame` callbacks are retained only as pacing hints. A missing
-callback no longer freezes rendering indefinitely; the soft gate wakes on a
-deadline and allows a timer-paced submit.
+No `wl_surface.frame` pacing gate sits in this path. If every SHM buffer is
+busy, the current frame is dropped and the latest dirty candidate snapshot is
+retried after a later input or buffer-release event.
 
 ## Flux Dependency Boundary
 

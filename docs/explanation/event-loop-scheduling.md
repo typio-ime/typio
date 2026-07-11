@@ -26,6 +26,24 @@ work can delay the focus controller's `reduce`/`diff`/`apply` pipeline.
 After the session pipeline completes, auxiliary work runs in a bounded
 fashion so no single source can starve the others.
 
+## Reactor Steps and Drivers
+
+One **reactor step** is one execution of the main `while` loop. It is an
+implementation scheduling boundary, not a Wayland protocol concept and not a
+fixed-rate frame. `poll(2)` may block indefinitely while idle; a readable fd or
+an explicit deadline starts the next step.
+
+The loop keeps I/O preparation and phase ordering in
+`crates/typio-host/src/app/event_loop.rs`. Cohesive drivers own policy inside
+those phases:
+
+| Driver | Responsibility |
+|--------|----------------|
+| `app/reactor.rs` | Named fd sources, readiness snapshots, earliest-deadline timeout reduction |
+| `app/input_driver.rs` | Ordered key batches, engine output, virtual-keyboard forwarding, repeat |
+| `keyboard/preedit_coalescer.rs` | Bounded latest-wins pure-preedit staging |
+| `app/panel_driver.rs` | Panel scheduler convergence, ownership, anchor, presentation retry |
+
 ## Key Drain and Text Transactions
 
 Wayland keyboard-grab events are appended to `InputMethodState::pending_keys`
@@ -37,25 +55,27 @@ commits are not blindly flushed after every composition:
 
 - commit text is staged and flushed before the next key is routed, preserving
   strict text order;
-- composition-only preedit updates are staged and coalesced to the latest value
-  for the current pending-key drain;
+- composition-only preedit updates are staged in a latest-wins coalescer that
+  spans adjacent pending-key drains;
 - candidate state and panel dirtiness are updated immediately in host memory, so
   panel rendering still sees the latest candidates in the same loop iteration.
 
-At the end of the pending-key drain the router flushes any remaining staged
-preedit through `InputMethodState::text_transaction_and_flush`.  This prevents
-fast key bursts from producing multiple same-serial `zwp_input_method_v2.commit`
-requests while still keeping commit-producing keys ordered.  Preedit is not
-held for compositor `done` — that event is a compositor state boundary, not a
-text-commit ack.  See [ADR-0042](../adr/0042-text-input-transaction-staging.md).
+Pure preedit becomes eligible after 2 ms without another update and has a fixed
+4 ms maximum delay from the first update in a burst. A later update replaces
+the payload and renews only the quiet deadline. This catches physically
+adjacent keys even when Wayland delivers them in different reactor steps,
+without holding text for compositor `done`. Commit-producing keys bypass the
+deadline and flush immediately to preserve order. See
+[ADR-0042](../adr/0042-text-input-transaction-staging.md) and
+[ADR-0043](../adr/0043-bounded-preedit-coalescing.md).
 
 ## Panel Render Bounds
 
 ### Panel render cycle
 
-The candidate Panel is rendered once per loop iteration from the Panel
-Scheduler's `DIRTY` / `RETRY` state, never inline in the composition callback
-or key routing path.
+The candidate Panel is rendered at most once per reactor step from the Panel
+Scheduler's `IDLE` / `DIRTY` state, never inline in the composition callback or
+key routing path.
 
 ### CPU frame
 
@@ -67,14 +87,8 @@ GPU frame to acquire (ADR-0040), so frame setup cannot block the loop.
 
 The framebuffer is byte-swapped into a double-buffered `wl_shm` pool and
 attached to the popup surface. If every SHM buffer is still busy, the panel
-drops the frame and waits for the next dirty tick instead of blocking on
+drops the frame and waits for the next dirty reactor step instead of blocking on
 compositor buffer release (ADR-0040).
-
-### Frame callback pacing
-
-`wl_surface.frame` callbacks pace healthy compositors at refresh rate. Missing
-callbacks are treated as a soft gate: the event loop wakes on a deadline and
-submits the latest coalesced candidate state rather than freezing.
 
 ### Text rasterisation
 
@@ -88,10 +102,10 @@ glyph texture and no per-text-run upload in the CPU-canvas path.
 The poll timeout defaults to **`-1` (block until an fd is ready)** so an idle
 daemon causes zero wakeups. Sources backed by a `timerfd` — key repeat, the
 indicator timer, the config-reload debounce — wake the loop themselves and need
-no timeout. Only deadlines *not* backed by an fd shorten the timeout, each via a
-`-1`-aware minimum (`poll_timeout_min`):
+no timeout. Only deadlines *not* backed by an fd shorten the timeout through
+the `PollTimeout` earliest-deadline reducer:
 
-- the panel frame-callback soft gate while a deferred flush is pending,
+- the bounded pure-preedit coalescing deadline,
 - the positioned-UI anchor-probe deadline while a popup awaits its caret anchor
   (ADR-0017) — previously covered only implicitly by a fixed baseline tick,
 - the virtual-keyboard keymap deadline while the grab is `needs_keymap`.
@@ -105,8 +119,9 @@ Wayland I/O non-blocking, config-read at 2 s). See
 
 ### D-Bus dispatch
 
-Status and tray D-Bus dispatch are bounded per tick so a busy bus cannot
-starve Wayland dispatch, voice completion, repeat, or config reload.
+Tray D-Bus callbacks do not mutate `App` directly. They enqueue typed daemon
+events, and the loop drains the channel once per reactor step, keeping D-Bus
+threads outside Wayland's thread-affine state.
 
 ### Config reload
 

@@ -15,7 +15,7 @@ use super::DaemonEvent;
 /// Async-signal-safe shutdown flag.
 ///
 /// Only the SIGINT/SIGTERM handler writes this. The main loop translates
-/// it into a daemon exit on the next tick. Non-signal paths
+/// it into a daemon exit on the next reactor step. Non-signal paths
 /// (`DaemonEvent::Shutdown` via the event channel) must NOT touch this
 /// flag — keeping it signal-only preserves async-signal-safety.
 pub(super) static SHUTDOWN_FROM_SIGNAL: AtomicBool = AtomicBool::new(false);
@@ -38,7 +38,7 @@ pub(super) fn set_mode_callback_tx(tx: std::sync::mpsc::Sender<DaemonEvent>) {
 }
 
 /// Swap the shutdown flag and return the previous value. Used by the
-/// main loop's per-tick drain to translate a signal into the same exit
+/// main loop's per-step drain to translate a signal into the same exit
 /// path as `DaemonEvent::Shutdown`.
 pub(super) fn take_shutdown_requested() -> bool {
     SHUTDOWN_FROM_SIGNAL.swap(false, Ordering::Relaxed)

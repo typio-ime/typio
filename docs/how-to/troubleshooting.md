@@ -118,11 +118,11 @@ typio &
 
 The underlying leak is patched in the current source. Rebuilding and reinstalling eliminates it permanently.
 
-If candidate switching is still sluggish on a current build, the cause is
-one of the glyph-atlas, present-throttle, viewport fallback, or engine paths.
-Work through [How to Diagnose Candidate-Switching
-Lag](diagnose-candidate-lag.md), which uses the `typio.panel.probe=debug`
-tracing target and a decision tree for telling those four apart.
+If candidate switching is still sluggish on a current build, separate engine
+latency, CPU rendering, SHM back-pressure, and viewporter fallback with [How to
+Diagnose Candidate-Switching Lag](diagnose-candidate-lag.md). The guide uses
+the current `typio.engine.key`, `typio.panel.perf`, and `typio.panel.shm`
+tracing targets.
 
 ## Indicator Lingers After Switching tmux Panes or Windows
 

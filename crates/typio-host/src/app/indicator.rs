@@ -7,13 +7,11 @@
 //! / [`App::trigger_indicator_reactivate`] / [`App::trigger_indicator_state_change`]
 //! / [`App::request_indicator_show`] / [`App::render_indicator_banner`] /
 //! [`App::hide_indicator`] / [`App::request_voice_status_show`] /
-//! [`App::hide_voice_status`] / [`App::indicator_hide_remaining_ms`].
+//! [`App::hide_voice_status`].
 
 use std::ffi::CStr;
 use std::time::Instant;
 
-use nix::sys::time::TimeSpec;
-use nix::sys::timerfd::{Expiration, TimerSetTimeFlags};
 use typio_abi::TypioStatusSalience;
 
 use crate::indicator::{EngineModeSnapshot, IndicatorConfig, LabelSources, Salience};
@@ -242,7 +240,7 @@ impl App {
     /// Feed an indicator show request through the `PanelCoordinator`.
     /// If the anchor is ready the banner renders immediately and the
     /// auto-hide timer is armed; otherwise the coordinator queues the
-    /// request and it flushes on a later tick through
+    /// request and it flushes on a later reactor step through
     /// `flush_pending_with_timeout`.
     #[cfg(feature = "wayland")]
     pub(super) fn request_indicator_show(&mut self, label: String, now: Instant) {
@@ -283,12 +281,7 @@ impl App {
     /// surface as the indicator, but claims it under the Voice owner so the
     /// candidate panel will not hide it while no candidates are visible.
     #[cfg(feature = "wayland")]
-    pub(super) fn request_voice_status_show(
-        &mut self,
-        label: String,
-        now: Instant,
-        kind: VoiceBanner,
-    ) {
+    pub(super) fn request_voice_status_show(&mut self, label: String, kind: VoiceBanner) {
         let decision = {
             let Some(frontend) = self.frontend.as_mut() else {
                 tracing::debug!(target: "typio.voice", "no frontend, skipping status banner");
@@ -307,7 +300,7 @@ impl App {
             decision
         };
         match decision {
-            FlushDecision::Show => self.render_voice_status_banner(&label, now, kind),
+            FlushDecision::Show => self.render_voice_status_banner(&label, kind),
             FlushDecision::Pending => {
                 // The anchor is not ready yet; the coordinator holds the
                 // label and re-emits it via `flush_pending_with_timeout`.
@@ -328,15 +321,15 @@ impl App {
     /// Show a sticky voice banner (no auto-hide): the in-progress states
     /// that must persist until the session advances.
     #[cfg(feature = "wayland")]
-    pub(super) fn show_voice_sticky(&mut self, label: impl Into<String>, now: Instant) {
-        self.request_voice_status_show(label.into(), now, VoiceBanner::Sticky);
+    pub(super) fn show_voice_sticky(&mut self, label: impl Into<String>) {
+        self.request_voice_status_show(label.into(), VoiceBanner::Sticky);
     }
 
     /// Show a transient voice banner that fades after the configured
     /// duration: terminal feedback (result / error / no-speech).
     #[cfg(feature = "wayland")]
-    pub(super) fn show_voice_transient(&mut self, label: impl Into<String>, now: Instant) {
-        self.request_voice_status_show(label.into(), now, VoiceBanner::Transient);
+    pub(super) fn show_voice_transient(&mut self, label: impl Into<String>) {
+        self.request_voice_status_show(label.into(), VoiceBanner::Transient);
     }
 
     /// Render the indicator banner onto the candidate Panel's surface,
@@ -351,25 +344,20 @@ impl App {
         if let Some(indicator) = self.indicator.as_mut() {
             indicator.note_shown(now);
         }
-        self.arm_indicator_timer(now);
+        self.arm_indicator_timer();
     }
 
     /// Render a voice-input status banner onto the shared positioned popup
     /// surface and arm the voice status auto-hide timer. This deliberately
     /// bypasses the keyboard indicator state machine and recency gate.
     #[cfg(feature = "wayland")]
-    pub(super) fn render_voice_status_banner(
-        &mut self,
-        label: &str,
-        now: Instant,
-        kind: VoiceBanner,
-    ) {
+    pub(super) fn render_voice_status_banner(&mut self, label: &str, kind: VoiceBanner) {
         self.draw_status_banner_now(label);
         match kind {
             // Sticky banners must not auto-hide. Disarm any timer left over
             // from a previous transient banner so it cannot clear us.
             VoiceBanner::Sticky => self.disarm_voice_status_timer(),
-            VoiceBanner::Transient => self.arm_voice_status_timer(now),
+            VoiceBanner::Transient => self.arm_voice_status_timer(),
         }
     }
 
@@ -464,13 +452,13 @@ impl App {
     /// their full, unbounded duration; only the terminal `Result`/`Error`
     /// feedback uses the auto-hide timer.
     #[cfg(feature = "wayland")]
-    pub(super) fn handle_voice_outcome(&mut self, outcome: VoiceOutcome, now: Instant) {
+    pub(super) fn handle_voice_outcome(&mut self, outcome: VoiceOutcome) {
         match outcome {
-            VoiceOutcome::State(state) => self.on_voice_state(state, now),
+            VoiceOutcome::State(state) => self.on_voice_state(state),
             VoiceOutcome::Result(text) => {
                 if text.is_empty() {
                     // Recognised audio that filtered down to nothing.
-                    self.show_voice_transient("Voice: no speech detected", now);
+                    self.show_voice_transient("Voice: no speech detected");
                 } else {
                     tracing::debug!(target: "typio.voice", text = %text, "transcription result");
                     if let Some(frontend) = self.frontend.as_mut() {
@@ -478,12 +466,12 @@ impl App {
                             .state_mut()
                             .text_transaction_and_flush(Some(&text), None);
                     }
-                    self.show_voice_transient(format!("Voice: {text}"), now);
+                    self.show_voice_transient(format!("Voice: {text}"));
                 }
             }
             VoiceOutcome::Error(msg) => {
                 tracing::warn!(target: "typio.voice", message = %msg, "transcription error");
-                self.show_voice_transient(format!("Voice: {msg}"), now);
+                self.show_voice_transient(format!("Voice: {msg}"));
             }
         }
     }
@@ -496,21 +484,25 @@ impl App {
     /// fade), or the session went idle straight out of `Processing` with no
     /// result — i.e. nothing was recognised.
     #[cfg(feature = "wayland")]
-    fn on_voice_state(&mut self, state: VoiceState, now: Instant) {
+    fn on_voice_state(&mut self, state: VoiceState) {
         let prev = self.voice_last_state;
         self.voice_last_state = state;
         match state {
-            VoiceState::Loading => self.show_voice_sticky("Voice: loading model…", now),
-            VoiceState::Recording => self.show_voice_sticky("Voice: listening…", now),
-            VoiceState::Processing => self.show_voice_sticky("Voice: transcribing…", now),
+            VoiceState::Loading => self.show_voice_sticky("Voice: loading model…"),
+            VoiceState::Recording => self.show_voice_sticky("Voice: listening…"),
+            VoiceState::Processing => self.show_voice_sticky("Voice: transcribing…"),
             VoiceState::Idle => {
-                if self.voice_status_hide_deadline.is_some() {
+                if self
+                    .voice_status_timer
+                    .as_ref()
+                    .is_some_and(|timer| timer.is_armed())
+                {
                     // A transient result/error banner is already on screen
                     // (it precedes the Idle transition in the same drain);
                     // leave it to fade on its own timer.
                 } else if prev == VoiceState::Processing {
                     // Transcription finished without producing any text.
-                    self.show_voice_transient("Voice: no speech detected", now);
+                    self.show_voice_transient("Voice: no speech detected");
                 } else {
                     self.hide_voice_status();
                 }
@@ -522,68 +514,46 @@ impl App {
     /// (clamped to 100–10000 ms in [`IndicatorConfig`]). Idempotent —
     /// re-arming replaces any prior deadline.
     #[cfg(feature = "wayland")]
-    pub(super) fn arm_indicator_timer(&mut self, now: Instant) {
+    pub(super) fn arm_indicator_timer(&mut self) {
         let duration = self.indicator_config.duration;
-        if let Some(tf) = self.indicator_timer.as_ref() {
-            let expiration = Expiration::OneShot(TimeSpec::from_duration(duration));
-            let _ = tf.set(expiration, TimerSetTimeFlags::empty());
+        if let Some(timer) = self.indicator_timer.as_mut()
+            && let Err(error) = timer.arm(duration)
+        {
+            tracing::warn!(target: "typio.indicator", %error, "failed to arm indicator timer");
         }
-        self.indicator_hide_deadline = Some(now + duration);
     }
 
     /// Disarm the auto-hide timer. Safe to call on an already-disarmed
     /// timer; arming with a zero `it_value` is the kernel-defined disarm.
     #[cfg(feature = "wayland")]
     pub(super) fn disarm_indicator_timer(&mut self) {
-        if let Some(tf) = self.indicator_timer.as_ref() {
-            let expiration =
-                Expiration::OneShot(TimeSpec::from_duration(std::time::Duration::ZERO));
-            let _ = tf.set(expiration, TimerSetTimeFlags::empty());
+        if let Some(timer) = self.indicator_timer.as_mut()
+            && let Err(error) = timer.disarm()
+        {
+            tracing::warn!(target: "typio.indicator", %error, "failed to disarm indicator timer");
         }
-        self.indicator_hide_deadline = None;
     }
 
     /// Arm the auto-hide timer for the voice status banner. It uses the same
     /// display duration setting as the keyboard indicator, but a separate
-    /// timer/deadline so the two overlays do not clear each other.
+    /// timer so the two overlays do not clear each other.
     #[cfg(feature = "wayland")]
-    pub(super) fn arm_voice_status_timer(&mut self, now: Instant) {
+    pub(super) fn arm_voice_status_timer(&mut self) {
         let duration = self.indicator_config.duration;
-        if let Some(tf) = self.voice_status_timer.as_ref() {
-            let expiration = Expiration::OneShot(TimeSpec::from_duration(duration));
-            let _ = tf.set(expiration, TimerSetTimeFlags::empty());
+        if let Some(timer) = self.voice_status_timer.as_mut()
+            && let Err(error) = timer.arm(duration)
+        {
+            tracing::warn!(target: "typio.voice", %error, "failed to arm voice status timer");
         }
-        self.voice_status_hide_deadline = Some(now + duration);
     }
 
     /// Disarm the voice status auto-hide timer.
     #[cfg(feature = "wayland")]
     pub(super) fn disarm_voice_status_timer(&mut self) {
-        if let Some(tf) = self.voice_status_timer.as_ref() {
-            let expiration =
-                Expiration::OneShot(TimeSpec::from_duration(std::time::Duration::ZERO));
-            let _ = tf.set(expiration, TimerSetTimeFlags::empty());
+        if let Some(timer) = self.voice_status_timer.as_mut()
+            && let Err(error) = timer.disarm()
+        {
+            tracing::warn!(target: "typio.voice", %error, "failed to disarm voice status timer");
         }
-        self.voice_status_hide_deadline = None;
-    }
-
-    /// Remaining milliseconds until the indicator auto-hide deadline, or
-    /// `None` when the timer is not armed.
-    #[cfg(feature = "wayland")]
-    pub(super) fn indicator_hide_remaining_ms(&self, now: Instant) -> Option<i32> {
-        self.indicator_hide_deadline
-            .and_then(|d| d.checked_duration_since(now))
-            .map(|rem| rem.as_millis() as i32)
-            .map(|ms| ms.max(0))
-    }
-
-    /// Remaining milliseconds until the voice status auto-hide deadline, or
-    /// `None` when the timer is not armed.
-    #[cfg(feature = "wayland")]
-    pub(super) fn voice_status_hide_remaining_ms(&self, now: Instant) -> Option<i32> {
-        self.voice_status_hide_deadline
-            .and_then(|d| d.checked_duration_since(now))
-            .map(|rem| rem.as_millis() as i32)
-            .map(|ms| ms.max(0))
     }
 }

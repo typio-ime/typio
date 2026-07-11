@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fast adjacent keys no longer leave inline preedit one letter behind.** Pure
+  preedit now uses a latest-wins 2 ms quiet window with a fixed 4 ms maximum,
+  so two keys split across adjacent reactor steps submit only the newest
+  value without waiting indefinitely for compositor `done`. Candidate state
+  remains immediate, real commit text still bypasses the delay, and the
+  deadline participates in `poll(2)` so idle operation gains no periodic wakeup
+  (ADR-0043).
+
 - **Stuck Space (and other keys) after release during Rime composition.** When a
   key press was forwarded to the focused app via the virtual keyboard but the
   engine later "consumed" the matching release, the host skipped
@@ -102,6 +110,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ADR-0024, ADR-0037.
 
 ### Changed
+
+- **Wayland runtime loop split into cohesive reactor drivers.** Named poll
+  sources and deadline reduction, ordered keyboard/text processing, and
+  candidate Panel convergence now live in separate modules. The main loop keeps
+  only I/O preparation and explicit phase ordering; UDS readiness is dispatched
+  in the same reactor step instead of the following iteration. One-shot status
+  timers now keep their timerfd and armed state in one object without redundant
+  poll deadlines, and Panel scheduling uses only the states the SHM presentation
+  path can actually reach.
 
 - **Dropped the `lazy_static` dependency in favor of `std::sync::LazyLock`.**
   `typio-core` and `typio-vet` no longer depend on the `lazy_static` crate;

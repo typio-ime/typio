@@ -36,7 +36,7 @@ use crate::InputFacts;
 use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
 use crate::panel_present_gate::PresentationRecord;
-use crate::panel_scheduler::{self, PanelScheduleState};
+use crate::panel_scheduler::PanelScheduleState;
 use crate::protocols::input_method_v2::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
 };
@@ -271,7 +271,7 @@ pub struct InputMethodState {
     /// entering soft-pause. A later physical release is consumed exactly once,
     /// including while `active == false` where events bypass the host router.
     synthetic_releases: HashSet<u32>,
-    /// Raw input facts recorded this tick for the focus controller.
+    /// Raw input facts recorded during this reactor step for the focus controller.
     pub facts: InputFacts,
     /// Set when the compositor declares the input method unavailable.
     stopped: bool,
@@ -311,7 +311,7 @@ impl InputMethodState {
         self.active
     }
 
-    /// Mutable access to the raw input facts for this tick.
+    /// Mutable access to the raw input facts for this reactor step.
     pub fn facts_mut(&mut self) -> &mut InputFacts {
         &mut self.facts
     }
@@ -338,7 +338,7 @@ impl InputMethodState {
 
     /// Mark the candidate panel dirty so the event loop flushes it.
     pub fn mark_panel_dirty(&mut self) {
-        self.panel_schedule_state = panel_scheduler::mark_dirty();
+        self.panel_schedule_state.mark_dirty();
     }
 
     /// Whether `composition_seq` is already visible for the current panel
@@ -356,11 +356,6 @@ impl InputMethodState {
     /// that still requires repainting the current candidates.
     pub fn invalidate_panel_presentation(&mut self) {
         self.panel_presentation.invalidate();
-    }
-
-    /// Current panel schedule state.
-    pub fn panel_schedule_state(&self) -> PanelScheduleState {
-        self.panel_schedule_state
     }
 
     /// The bound `wl_shm` global, if the compositor advertises it.
@@ -404,14 +399,9 @@ impl InputMethodState {
         &self.panel_coord
     }
 
-    /// Set the panel schedule state.
-    pub fn set_panel_schedule_state(&mut self, state: PanelScheduleState) {
-        self.panel_schedule_state = state;
-    }
-
     pub fn clear_panel_state(&mut self) {
         self.composition.clear();
-        self.panel_schedule_state = panel_scheduler::complete();
+        self.panel_schedule_state.complete();
         self.invalidate_panel_presentation();
     }
 
@@ -1173,7 +1163,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 state.facts.im_done_serial = state.serial;
                 state.apply_pending_to_current();
                 // Clear per-event facts; the batch facts survive until the
-                // focus controller consumes them at the end of the tick.
+                // focus controller consumes them later in the reactor step.
                 state.facts.im_activate_seen = false;
                 state.facts.im_deactivate_seen = false;
                 state.fire(LifecycleEvent::Done {

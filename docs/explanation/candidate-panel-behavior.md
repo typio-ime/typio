@@ -15,17 +15,18 @@ is a user-facing prose synonym, not a code identifier.
 
 ## What the user sees
 
-When the Panel is owned by composition, it shows up to three regions:
+When the Panel is owned by composition, it shows the Candidate Zone:
 
 | Region | Contents | Driven by |
 |---|---|---|
-| **Preedit Zone** | The in-flight composition string, rendered inline with a thin caret at the engine-reported byte offset. | `TypioComposition.segments` + `TypioComposition.cursor_pos` |
 | **Candidate Zone** | A vertical list of candidates with a muted index label (`1`…`9`, `0`) before each entry. The selected candidate is highlighted. | `TypioComposition.candidates` + `TypioComposition.selected` |
-| **Mode divider** | An optional accent-coloured line marking the engine's active mode (e.g. latin / cjk). | Engine-declared mode label |
 
-The Preedit Zone and the Candidate Zone can update independently: a
-pinyin engine after one keystroke shows preedit with no candidates; a
-completion engine may show candidates with empty preedit.
+Inline preedit is not rasterized into the Panel. The daemon sends it through
+`zwp_input_method_v2.set_preedit_string`, and the focused application renders
+it at the insertion point. Preedit and candidates therefore update through
+independent presentation paths: a pinyin engine after one keystroke can show
+inline preedit with no Panel, while a completion engine can show candidates
+with empty preedit.
 
 ## Lifecycle states
 
@@ -70,9 +71,10 @@ update is discarded and the state returns to `Hidden`.
 
 The Panel surface is mapped near the caret. Each new composition
 callback repaints the Candidate Zone without re-arming the anchor
-probe: paging, selection movement, and preedit edits all flow through
-the same paint path. The host marks the Panel dirty and the event
-loop flushes the redraw on the next tick.
+probe when candidate content or selection changes. Preedit-only edits use the
+separate Wayland text path and do not require a Panel repaint. The host marks
+the Panel dirty and the event loop flushes candidate redraws in the current or
+next reactor step.
 
 ### Hidden again
 
@@ -83,8 +85,8 @@ The Candidate Zone is torn down when any of these happens:
 - The input context loses focus (`focus_out` is applied).
 - The engine resets (`typio_input_context_reset`) — e.g. on a soft
   pause or resume-from-suspend hard boundary.
-- A composition callback arrives with empty preedit **and** empty
-  candidates.
+- A composition callback arrives with no candidates. Inline preedit may remain
+  visible in the focused application.
 
 Tearing the Panel down detaches the wl_buffer so no stale popup shadow
 remains beside the caret.
@@ -154,14 +156,8 @@ The current panel path renders entirely on the CPU (flux software canvas +
 `TextRaster`) and presents over host-managed `wl_shm` only — no Vulkan device,
 no GPU readback, no dma-buf (ADR-0040). If the compositor is slow to release
 buffers, the SHM pool reports no free slot and the daemon drops that frame
-instead of blocking the input loop. The next dirty tick renders the newest
-coalesced candidate state.
-
-`wl_surface.frame` callbacks are still used as a soft pacing hint. A healthy
-callback wakes the panel at compositor refresh. If a callback goes missing, the
-soft gate waits only for its deadline and then submits the latest candidate
-state anyway; an extended missing-callback episode logs a warning for
-diagnosis.
+instead of blocking the input loop. The next dirty reactor step renders the
+newest coalesced candidate state.
 
 The visible effect to the user is that the highlight briefly freezes
 during the stall and then jumps to the correct candidate when the

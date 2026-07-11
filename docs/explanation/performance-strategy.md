@@ -34,14 +34,14 @@ fire and cost nothing until then — no poll timeout is needed for them.
 ### Timeout-driven deadlines (fold into the poll timeout)
 
 Three deadlines are not backed by an fd and so must bound the poll timeout.
-Each lowers it through a `-1`-aware minimum, `poll_timeout_min()`, leaving the
+Each lowers it through the `PollTimeout` earliest-deadline reducer, leaving the
 timeout infinite when none is pending:
 
 | Deadline | When active | Source |
 |----------|-------------|--------|
-| Panel frame-callback soft gate | a deferred panel flush is waiting for pacing | [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md) |
+| Bounded preedit coalescing | pure preedit is waiting for its 2 ms quiet or 4 ms hard deadline | [ADR-0043](../adr/0043-bounded-preedit-coalescing.md) |
 | Positioned-UI anchor probe | a popup waits for a caret anchor that may never re-arrive | [ADR-0017](../adr/0017-positioned-ui-arbitration.md) |
-| Virtual-keyboard keymap | the grab is `needs_keymap` | grab → keymap → vk chain |
+| Wayland response diagnostics | commit, keymap, or probe response tracking is active | grab/text/popup protocol chains |
 
 The anchor-probe deadline previously relied on a 100 ms baseline tick to be
 re-evaluated; it is now folded in explicitly, so removing the tick does not
@@ -70,13 +70,13 @@ nil — the kernel pushes events.
 Idle power is the headline, but the same "do work once, lazily" instinct runs
 through the hot paths, documented elsewhere:
 
-- Candidate-popup rendering is **flushed once per loop iteration**, so a burst
+- Candidate-popup rendering is **flushed once per reactor step**, so a burst
   of keystrokes collapses to one render
   ([ADR-0004](../adr/0004-event-loop-scheduling-and-watchdog.md),
   [ADR-0023](../adr/0023-panel-scheduler-state-machine.md)).
-- Glyphs are rasterised once into a shared atlas and referenced by sub-rect
-  ([ADR-0012](../adr/0012-glyph-atlas-shared-texture.md),
-  [ADR-0020](../adr/0020-atlas-reclamation-and-glyph-layer-modularization.md)).
+- Text measurement is cached by content, font, and scale; rasterisation writes
+  directly into the CPU canvas only when the candidate snapshot needs a new
+  frame.
 - The composition pipeline short-circuits and fast-paths unchanged snapshots
   ([ADR-0009](../adr/0009-long-term-performance-optimizations.md)).
 

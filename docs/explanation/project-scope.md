@@ -124,8 +124,8 @@ structural:
   [Event Loop Scheduling](event-loop-scheduling.md) and
   [Frontend Graphics](frontend-graphics.md).
 
-- **Visual consistency.** The candidate panel, preedit decoration, tray icon,
-  and mode indicator must all reflect the same state at the same time. The
+- **Visual consistency.** The candidate Panel, application-rendered inline
+  preedit, tray icon, and mode indicator must reflect the same engine state. The
   `TypioStateController` observer pattern ensures every surface reads from one
   source of truth. See [Control Surfaces](control-surfaces.md).
 

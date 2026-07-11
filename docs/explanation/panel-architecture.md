@@ -36,7 +36,7 @@ Rendering belongs in `crates/typio-host-platform/src/panel.rs` and
 - how candidates and status banners become geometry;
 - how geometry becomes flux canvas commands;
 - how glyphs are shaped and cached;
-- how the offscreen image is read back and attached through SHM buffers.
+- how the CPU canvas framebuffer is attached through SHM buffers.
 
 Rendering does not know whether content came from voice, indicator, or
 candidate composition. Ownership policy runs before the renderer is called.
@@ -47,7 +47,7 @@ The Panel has exactly one visible owner at a time:
 
 | Owner | Producer | Typical content |
 |---|---|---|
-| `CANDIDATE` | keyboard composition | candidates, preedit, optional mode label |
+| `CANDIDATE` | keyboard composition | candidate list and selection highlight |
 | `INDICATOR` | engine/profile changes | active engine and profile label |
 | `VOICE` | voice session | loading, recording, processing, unavailable, error |
 
