@@ -1039,11 +1039,17 @@ mod tests {
 
     #[test]
     fn request_timeouts_match_operation_cost() {
-        assert_eq!(request_timeout_for("process-key\t1"), ENGINE_REQUEST_TIMEOUT);
+        assert_eq!(
+            request_timeout_for("process-key\t1"),
+            ENGINE_REQUEST_TIMEOUT
+        );
         assert_eq!(request_timeout_for("availability"), ENGINE_REQUEST_TIMEOUT);
         assert_eq!(request_timeout_for("init"), ENGINE_INIT_TIMEOUT);
         assert_eq!(request_timeout_for("reload-config"), ENGINE_INIT_TIMEOUT);
-        assert_eq!(request_timeout_for("process-audio\t00"), VOICE_INFERENCE_TIMEOUT);
+        assert_eq!(
+            request_timeout_for("process-audio\t00"),
+            ENGINE_VOICE_TIMEOUT
+        );
         assert_eq!(request_timeout_for("focus-in\t1"), ENGINE_DEFAULT_TIMEOUT);
     }
 }
