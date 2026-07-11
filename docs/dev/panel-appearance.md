@@ -16,21 +16,22 @@ in the panel path; see [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
 `FluxPanel` (`crates/typio-host-platform/src/panel.rs`) drives the render pipeline:
 
-- `FluxPanel::new_from_surface()` creates a flux **CPU canvas**
-  (`flux_canvas_create_cpu`), the text rasteriser (`TextRaster`), and the
-  grow-only scratch framebuffer.
-- `ensure_candidate_size()` / `ensure_banner_size()` grow the framebuffer in
-  quantised physical pixels. When `wp_viewporter` is available,
-  `wp_viewport.set_source` / `set_destination` crop the oversized image to the
-  exact logical panel size ([ADR-0013](../adr/0013-grow-only-popup-swapchain.md),
-  adapted by ADR-0040).
-- `draw_candidates()` and `draw_status_banner()` record one frame:
+- `FluxPanel::new_from_surface()` creates the text rasteriser and records the
+  Wayland/SHM resources; the **CPU canvas** and buffers are allocated lazily
+  from real content.
+- `draw_candidates()` / `draw_status_banner()` size the framebuffer in
+  quantized physical pixels with shrink hysteresis. When `wp_viewporter` is
+  available, `wp_viewport.set_source` / `set_destination` crop the oversized
+  image to the exact logical Panel size
+  ([ADR-0044](../adr/0044-bounded-panel-rendering.md)).
+- After reserving a free SHM buffer, the draw methods record one frame:
   `flux_canvas_cpu_begin` → `flux_canvas_fill_rrect` (background + highlight)
   → `TextRaster::draw` composites glyphs into the framebuffer →
   `flux_canvas_cpu_end`.
-- `present_shm()` byte-swaps the framebuffer (RGBA8 → ARGB8888) into a free SHM
-  buffer, sets `wl_surface.set_buffer_scale`, attaches the `wl_buffer`, damages
-  the full buffer, and commits the popup surface.
+- `present_shm()` resolves supersampling, byte-swaps the framebuffer (RGBA8 →
+  ARGB8888) into the reserved SHM buffer, sets
+  `wl_surface.set_buffer_scale`, attaches the `wl_buffer`, damages the full
+  buffer, and commits the popup surface.
 
 Text is shaped and rasterised by flux-text (via `flux-text-sys`:
 FreeType/HarfBuzz/fontconfig) directly into the premultiplied RGBA8 framebuffer.
@@ -48,9 +49,9 @@ The panel render path runs synchronously on the single-threaded event loop. To
 keep the loop responsive when a compositor stops releasing buffers, the host
 owns the SHM pool and never waits for compositor release.
 
-- `ShmBufferPool::acquire()` returns `None` if every SHM buffer is busy. The
-  panel drops that frame and lets the next dirty reactor step render the newest
-  candidate state.
+- `ShmBufferPool::acquire()` returns `ShmAcquireError::Busy` if every SHM
+  buffer is busy. The Panel checks this before CPU drawing and lets the next
+  dirty reactor step render the newest candidate state.
 - There is no `wl_surface.frame` pacing gate. SHM buffer release is the only
   compositor back-pressure signal on the candidate path.
 

@@ -215,17 +215,16 @@ pub struct InputMethodState {
     #[allow(dead_code)]
     popup_surface: ZwpInputPopupSurfaceV2,
     /// `wp_viewporter` global. Bound when the compositor advertises it;
-    /// `None` falls back to exact-size resize (the legacy path described
-    /// by ADR-0013).
+    /// `None` falls back to exact-size framebuffer and SHM resizing.
     #[allow(dead_code)]
     viewporter: Option<WpViewporter>,
     /// `wp_viewport` attached to `popup_surface_obj`. Used by the panel
-    /// to crop an oversized, grow-only offscreen image to the exact content
-    /// rect (ADR-0013, adapted by ADR-0040).
+    /// to crop a quantized CPU framebuffer to the exact content rect while
+    /// bounded shrink hysteresis avoids both resize churn and permanent peaks.
     #[allow(dead_code)]
     panel_viewport: Option<WpViewport>,
     /// `wl_shm` global — the shared-memory buffer factory. Used by the
-    /// offscreen-render panel path to create host-managed `wl_buffer`s
+    /// CPU-rendered Panel path to create host-managed `wl_buffer`s
     /// (replaces the Vulkan WSI swapchain; see `panel_shm`).
     shm: Option<wl_shm::WlShm>,
     /// Shared registry mapping wl_buffer proxy pointers to their busy flags,
@@ -599,7 +598,7 @@ pub struct InputMethodFrontend {
 
 impl InputMethodFrontend {
     /// Connect to the Wayland display, bind globals, create the
-    /// input-method object, and attempt to create the GPU panel.
+    /// input-method object, and create the lazily allocated CPU Panel.
     pub fn connect(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
         let mut frontend = Self::connect_internal(callback)?;
 
@@ -608,29 +607,10 @@ impl InputMethodFrontend {
         let shm = frontend.state.shm.clone();
         let qh = frontend.queue.handle();
         let registry = frontend.state.shm_release_registry().clone();
-        // Allocate the initial CPU canvas at `PANEL_PREALLOC_WIDTH ×
-        // PANEL_PREALLOC_HEIGHT` (512×128). This covers the first automatic
-        // indicator banner at scales 1, 1.5, 2 and 3 without a resize. The
-        // canvas is reallocated on resize, which is still best avoided on
-        // the very first frame. See the audit table on `PANEL_PREALLOC_WIDTH`
-        // in panel.rs: at scale 3 the longest observed default label
-        // ("中 · Rime · 懿拼音") quantises to 448×128, fitting inside 512×128
-        // with one width-quantum of headroom.
-        //
-        // Larger labels or scales ≥ 4 still fall through to the grow-only
-        // path in `FluxPanel::apply_grow_only_size`; that resize then
-        // happens during real user interaction.
-        match unsafe {
-            FluxPanel::new_from_surface(
-                surface_ptr,
-                viewport,
-                shm,
-                qh,
-                registry,
-                crate::panel::PANEL_PREALLOC_WIDTH,
-                crate::panel::PANEL_PREALLOC_HEIGHT,
-            )
-        } {
+        // Canvas and SHM buffers are allocated lazily from the first real
+        // content extent. This avoids clearing and downsampling a speculative
+        // 512×128 surface for every small indicator or candidate frame.
+        match unsafe { FluxPanel::new_from_surface(surface_ptr, viewport, shm, qh, registry) } {
             Ok(panel) => frontend.panel = Some(panel),
             Err(e) => tracing::warn!(target: "typio.panel.host", "FluxPanel creation failed: {e}"),
         }
@@ -638,7 +618,7 @@ impl InputMethodFrontend {
         Ok(frontend)
     }
 
-    /// Shared connection setup. The GPU panel is created by [`Self::connect`]
+    /// Shared connection setup. The CPU Panel is created by [`Self::connect`]
     /// after the protocol state is ready; tests use this helper directly to
     /// exercise the state machine without creating flux resources.
     fn connect_internal(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
@@ -733,20 +713,18 @@ impl InputMethodFrontend {
             "bound wl_compositor"
         );
 
-        // Bind wp_viewporter if the compositor advertises it. ADR-0013's
-        // grow-only sizing is retained for the offscreen image: without a
-        // viewport the SHM buffer must equal the content exactly, so content
-        // size changes resize the offscreen image instead of just updating a
-        // crop.
+        // Bind wp_viewporter if the compositor advertises it. Quantized sizing
+        // with shrink hysteresis uses the viewport to avoid small resize churn.
+        // Without it, content changes require exact framebuffer/SHM dimensions.
         let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
         match &viewporter {
             Some(_) => tracing::info!(
                 target: "typio.wayland.viewporter",
-                "compositor advertises wp_viewporter (grow-only offscreen image active)"
+                "compositor advertises wp_viewporter (bounded quantized Panel sizing active)"
             ),
             None => tracing::warn!(
                 target: "typio.wayland.viewporter",
-                "compositor lacks wp_viewporter — candidate-page size changes resize the offscreen image; see ADR-0013/ADR-0040"
+                "compositor lacks wp_viewporter — candidate-page size changes resize the CPU framebuffer; see ADR-0044"
             ),
         }
 

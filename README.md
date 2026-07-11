@@ -33,10 +33,11 @@ build.
 
 ```bash
 # Build the native dependencies first (from the Typio repo root).
-meson setup ../optics/build ../optics -Dtext=true    # one-time per optics checkout
-meson compile -C ../optics/build
+meson setup ../optics/build-release ../optics \
+  -Dtext=true --buildtype=release    # one-time per optics checkout
+meson compile -C ../optics/build-release
 
-export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host
 cargo build --release -p typioctl

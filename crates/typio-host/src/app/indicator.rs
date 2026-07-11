@@ -372,7 +372,6 @@ impl App {
             .unwrap_or(1.0);
         if let Some(panel) = self.frontend.as_mut().and_then(|f| f.panel_mut()) {
             panel.set_scale(scale);
-            panel.ensure_banner_size(label);
             panel.draw_status_banner(label);
         }
         if let Some(frontend) = self.frontend.as_mut() {

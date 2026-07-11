@@ -251,12 +251,12 @@ of silent compositor-side grab death:
 
 - **Internal divergence** — the grab object is missing while `desired.grab` is
   still `YES`. `observe()` reports `ABSENT`, so the diff recreates the grab on
-  the next tick.
+  the next reactor step.
 - **Suspend/resume** — a grab dead across suspend can leave a live proxy, which
   observation cannot distinguish from a healthy one. A resume detector records
-  the gap fact and invalidates the grab generation; the next tick rebuilds. The
-  input context is never `focus_out`'d, so the engine's in-flight composition
-  survives.
+  the gap fact and invalidates the grab generation; the next reactor step
+  rebuilds. The input context is never `focus_out`'d, so the engine's in-flight
+  composition survives.
 - **Compositor reconnect** — connection death surfaces as `POLLHUP`; the lost
   connection forces `desired.grab = NONE` and a full teardown, and the fresh
   `activate` on reconnect drives the rebuild. Engine/session state, aux

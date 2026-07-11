@@ -23,7 +23,16 @@ back-pressure mechanism.
 
 ## Capture a focused trace
 
-Use a release build so timing reflects normal operation:
+First confirm that the native CPU renderer is optimized. A Cargo release binary
+can still link an unoptimized Meson library through `FLUX_BUILD_DIR`:
+
+```bash
+meson configure "$FLUX_BUILD_DIR" | rg "buildtype|optimization"
+```
+
+Use `buildtype=release` for the trace. [How to Package for
+Distribution](package-for-distribution.md#build-a-release-binary) shows the
+separate native release build tree. Then capture:
 
 ```bash
 cargo build --release -p typio-host --bin typio
@@ -61,21 +70,23 @@ composition delivery or logging configuration.
 
 ### 3. CPU render and SHM attach
 
-`typio.panel.perf` splits a candidate frame into `layout_us`, `draw_us`, and
-`present_us`. The nested `present_shm` event further reports `acquire_us`,
-`copy_us`, and `attach_us`.
+`typio.panel.perf` splits a candidate frame into `layout_us`, `acquire_us`,
+`draw_us`, and `present_us`. The nested `present_shm` event
+further reports `read_pixels_us`, `swap_us`, and `attach_us`.
 
 - High `layout_us` or `draw_us` points at text measurement/rasterisation.
-- High `copy_us` points at the RGBA-to-ARGB framebuffer copy.
+- High `read_pixels_us` points at the 2×2 supersample resolve.
+- High `swap_us` points at the RGBA-to-ARGB framebuffer copy.
 - High `attach_us` points at the Wayland attach/commit call.
-- `attached=false` with `shm buffer pool exhausted` means the compositor still
-  owns every buffer. The driver deliberately drops that frame and retains only
-  the latest dirty snapshot; it never blocks key processing for a release.
+- `reason=shm_unavailable` with `shm buffer pool exhausted` means the compositor
+  still owns every buffer. The driver skips CPU drawing and retains only the
+  latest dirty snapshot; it never blocks key processing for a release.
 
 ### 4. Viewporter fallback
 
 Without `wp_viewporter`, every content-size change requires an exact-size CPU
-canvas and SHM buffer instead of reusing a grow-only backing surface. Check:
+canvas and SHM buffer instead of reusing a quantized, hysteretically sized
+backing surface. Check:
 
 ```bash
 wayland-info | rg -i viewporter
@@ -93,7 +104,8 @@ time.
 | scheduler sees no new composition sequence | engine/composition callback |
 | high `layout_us` or `draw_us` | text layout/rasterisation |
 | repeated SHM exhaustion | compositor buffer-release scheduling |
-| high `copy_us` | CPU framebuffer conversion |
+| high `read_pixels_us` | CPU supersample resolve |
+| high `swap_us` | CPU framebuffer conversion |
 | constant resize cost and no `wp_viewporter` | compositor capability fallback |
 
 ## Bug report checklist

@@ -40,11 +40,13 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../../optics/build \
-            --prefix="$HOME/.local"
+            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../../optics/build
 
       - name: Cargo fmt
-        run: cargo fmt --all -- --check
+        # At a virtual workspace root, cargo fmt already checks every member.
+        # --all also traverses local path dependencies such as sibling optics.
+        run: cargo fmt -- --check
 
       - name: Cargo clippy
         env:
@@ -77,7 +79,7 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../../optics/build \
-            --prefix="$HOME/.local"
+            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../../optics/build
 
       - name: Cargo test

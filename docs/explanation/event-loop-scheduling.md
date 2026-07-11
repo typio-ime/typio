@@ -85,10 +85,11 @@ GPU frame to acquire (ADR-0040), so frame setup cannot block the loop.
 
 ### SHM attach
 
-The framebuffer is byte-swapped into a double-buffered `wl_shm` pool and
-attached to the popup surface. If every SHM buffer is still busy, the panel
-drops the frame and waits for the next dirty reactor step instead of blocking on
-compositor buffer release (ADR-0040).
+The Panel reserves one slot from a triple-buffered `wl_shm` pool before CPU
+rendering, byte-swaps the completed framebuffer into it, and attaches it to the
+popup surface. If every buffer is busy, the Panel skips rendering and waits for
+the next dirty reactor step instead of blocking on compositor release
+(ADR-0040, ADR-0044).
 
 ### Text rasterisation
 

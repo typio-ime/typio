@@ -8,13 +8,14 @@ Build the native renderer dependency first. These commands run from the
 Typio repository root:
 
 ```bash
-meson compile -C ../optics/build    # first time: meson setup ../optics/build ../optics -Dtext=true
+meson setup ../optics/build-release ../optics -Dtext=true --buildtype=release
+meson compile -C ../optics/build-release
 ```
 
 Build the host daemon:
 
 ```bash
-export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
 cargo build --release -p typioctl

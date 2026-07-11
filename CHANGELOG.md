@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Candidate Panel navigation no longer performs avoidable full-frame work.**
+  The Panel reserves a free SHM buffer before CPU drawing, lazily allocates its
+  first real content extent, and shrinks quantized framebuffer capacity after
+  unusually wide pages. Contributor/CI native builds now use
+  `debugoptimized`, while release instructions use a Meson release tree, so a
+  Cargo release daemon cannot silently run the CPU renderer at optimization
+  level zero (ADR-0044).
+
 - **Fast adjacent keys no longer leave inline preedit one letter behind.** Pure
   preedit now uses a latest-wins 2 ms quiet window with a fixed 4 ms maximum,
   so two keys split across adjacent reactor steps submit only the newest
@@ -168,12 +176,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   push-to-talk shortcut and shows a separate voice status banner. Until an
   audio source is wired, the shortcut reports `Voice: no audio source`
   instead of silently doing nothing.
-- **Candidate-panel probe tracing target.** Enable
-  `RUST_LOG=typio.panel.probe=debug` to get compact per-window events
-  (present timing, glyph-cache churn, atlas clears) plus an immediate event on
-  every atlas exhaustion — the signals for diagnosing candidate-switching lag
-  without a separate environment-variable switch. See [How to Diagnose
-  Candidate-Switching Lag](docs/how-to/diagnose-candidate-lag.md).
+- **Candidate-panel performance tracing.** The `typio.panel.perf`,
+  `typio.panel.shm`, and `typio.panel.scheduler` targets expose layout, SHM
+  reservation, CPU draw, supersample resolve, byte-swap, attach, and dirty-state
+  convergence timing. See [How to Diagnose Candidate-Switching
+  Lag](docs/how-to/diagnose-candidate-lag.md).
 
 ### Fixed
 
@@ -206,41 +213,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status now uses its own popup owner and auto-hide timer, so language-switch
   feedback and voice-state feedback do not clear each other or affect each
   other's recency gates.
-- **Candidate panel renders offscreen and presents via host-managed SHM
-  buffers, eliminating `vkQueuePresentKHR` from the panel path.** The panel
-  previously rendered to a Vulkan WSI swapchain and called
-  `vkQueuePresentKHR` synchronously on the main thread. Mesa's Wayland WSI
-  dispatches `wl_display` inside that call, waiting for the compositor to
-  recycle swapchain images; under rapid candidate paging (e.g. holding
-  page-down in a Rime engine, where each page is a fresh set of CJK glyphs)
-  the compositor could stop recycling the input-method popup's buffers and
-  the present call would block for 16 s, tripping the watchdog's `Present`
-  stage and `SIGKILL`ing the daemon. No host-side present-rate gating could
-  prevent this — the block lived inside a single driver call on the main
-  thread. The panel now creates a flux **offscreen** surface (`vk_surface_khr
-  = NULL`, no swapchain, no WSI extensions), renders the same GPU content
-  (liquid glass, gradients, flux text) to an RGBA8 image, reads it back via
-  `flux_surface_read_pixels` (bounded by a GPU fence timeout, never by the
-  compositor), and attaches it to the `wl_surface` through a host-owned
-  double-buffered `wl_shm` pool. `wl_buffer.release` is a normal event on
-  the host's own queue; when all buffers are busy the panel drops the frame
-  and retries with the latest coalesced state next tick — never blocking.
-  Frame-callback pacing was removed entirely: candidate updates are now
-  zero-delay, with back-pressure handled solely by the SHM buffer pool and
-  presentation-record deduplication. `vkQueuePresentKHR` is no longer invoked
-  anywhere in the panel path. Panel state also records which candidate snapshot
-  was actually submitted, so repeated dirty ticks do not repaint an
-  already-current snapshot while scale, hide, and status-overlay ownership
-  changes still force a redraw.
+- **Candidate Panel presentation no longer blocks on compositor recycling.**
+  The Panel renders through flux's CPU canvas and flux-text host coverage,
+  reserves from a host-owned triple-buffered `wl_shm` pool, and attaches with a
+  non-blocking Wayland commit. Busy buffers skip CPU drawing and retain only the
+  newest dirty candidate snapshot. There is no Vulkan WSI, dma-buf, GPU
+  readback, or frame-callback pacing in the Panel path.
 
 ### Removed
 
-- **Candidate panel no longer uses a Vulkan/dma-buf present path.** It renders
-  to flux's CPU canvas (`flux_canvas_cpu_*`) and attaches host-owned SHM
-  buffers; `panel_dmabuf.rs`, the `linux-dmabuf-unstable-v1` protocol XML, the
-  `flux-text-sys` dependency, and ADR-0040/0041 were deleted, and ADR-0040 was
-  rewritten as "CPU-canvas render + SHM buffers". Text shaping/rasterisation
-  moved to a host-owned `text_raster` (ab_glyph + fontconfig fallback).
+- **Candidate Panel no longer uses a Vulkan/dma-buf present path.** It renders
+  to flux's CPU canvas (`flux_canvas_cpu_*`), shapes text through flux-text's
+  host-resident coverage atlas, and attaches host-owned SHM buffers;
+  `panel_dmabuf.rs` and the `linux-dmabuf-unstable-v1` protocol XML are gone.
 - **Watchdog `Present`-stage elevated threshold dropped.** `flux_surface_read_pixels`
   is no longer in the panel path, so the 15 s `PRESENT_STUCK_MS` that guarded a
   GPU-fence/readback stall is gone; every non-restful stage uses the single

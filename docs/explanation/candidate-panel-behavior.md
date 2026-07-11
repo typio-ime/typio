@@ -156,8 +156,8 @@ The current panel path renders entirely on the CPU (flux software canvas +
 `TextRaster`) and presents over host-managed `wl_shm` only — no Vulkan device,
 no GPU readback, no dma-buf (ADR-0040). If the compositor is slow to release
 buffers, the SHM pool reports no free slot and the daemon drops that frame
-instead of blocking the input loop. The next dirty reactor step renders the
-newest coalesced candidate state.
+before doing CPU rendering instead of blocking the input loop. The next dirty
+reactor step renders the newest coalesced candidate state.
 
 The visible effect to the user is that the highlight briefly freezes
 during the stall and then jumps to the correct candidate when the

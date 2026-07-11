@@ -77,6 +77,13 @@ through the hot paths, documented elsewhere:
 - Text measurement is cached by content, font, and scale; rasterisation writes
   directly into the CPU canvas only when the candidate snapshot needs a new
   frame.
+- The Panel reserves SHM before CPU drawing and uses bounded, quantized
+  framebuffer retention, so back-pressure does no discarded render work and a
+  historical maximum candidate width does not become a permanent per-frame
+  cost ([ADR-0044](../adr/0044-bounded-panel-rendering.md)).
+- Native contributor builds use Meson's `debugoptimized` profile and shipping
+  builds use `release`; the CPU renderer is never intentionally run at
+  optimization level zero.
 - The composition pipeline short-circuits and fast-paths unchanged snapshots
   ([ADR-0009](../adr/0009-long-term-performance-optimizations.md)).
 

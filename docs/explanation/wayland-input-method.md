@@ -21,7 +21,7 @@ The daemon binds five Wayland protocol layers. The input-method layer is the one
 | `wl_compositor` | `create_surface()` → creates the Panel `wl_surface` used for SHM buffer attaches |
 | `wl_surface` preferred scale | Tracks compositor scale hints so the Panel renders at the correct DPI for each monitor |
 | `wl_shm` | Creates host-managed buffers for the offscreen-rendered Panel |
-| `wp_viewporter` | Crops a grow-only offscreen image to the exact logical Panel size |
+| `wp_viewporter` | Crops a quantized, hysteretically sized CPU framebuffer to the exact logical Panel size |
 
 ### Client-provided interfaces (daemon depends on their presence)
 

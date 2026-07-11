@@ -75,7 +75,6 @@ pub(super) fn flush_candidate_panel(frontend: &mut InputMethodFrontend, router: 
         .panel_mut()
         .expect("candidate panel existence checked above");
     panel.set_scale(scale);
-    panel.ensure_candidate_size(&candidates);
     if panel.draw_candidates(&candidates, selected, composition_seq) {
         let state = frontend.state_mut();
         state.mark_panel_presented(composition_seq);

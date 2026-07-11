@@ -36,14 +36,10 @@ use crate::PanelFontConfig;
 use crate::protocols::viewporter::wp_viewport::WpViewport;
 use crate::text_raster::{TextMetrics, TextRaster};
 
-/// Offscreen width quantum (grow-only; cropped to exact content via wp_viewport).
+/// Framebuffer width quantum when exact cropping is available through viewporter.
 const SURFACE_WIDTH_QUANTUM: u32 = 64;
-/// Height quantum (same grow-only logic).
+/// Framebuffer height quantum under the same bounded-retention policy.
 const SURFACE_HEIGHT_QUANTUM: u32 = 32;
-/// Initial framebuffer size, sized to skip the first banner's resize.
-pub const PANEL_PREALLOC_WIDTH: u32 = 512;
-pub const PANEL_PREALLOC_HEIGHT: u32 = 128;
-
 const PANEL_PADDING: f32 = 8.0;
 const PANEL_ROW_HEIGHT: f32 = 24.0;
 /// Lower bound for the candidate-row height fold when no text is measured.
@@ -111,34 +107,25 @@ impl FluxPanel {
     ///
     /// # Safety
     /// `wl_surface_ptr` must be a valid `*mut wl_surface` for the panel's lifetime.
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn new_from_surface(
         wl_surface_ptr: *mut c_void,
         viewport: Option<WpViewport>,
         shm: Option<wl_shm::WlShm>,
         qh: QueueHandle<crate::input_method::InputMethodState>,
         registry: crate::panel_shm::ShmReleaseRegistry,
-        width: u32,
-        height: u32,
     ) -> Result<Self, String> {
         if wl_surface_ptr.is_null() {
             return Err("wl_surface is null".into());
         }
 
-        let mut canvas: *mut flux_canvas = ptr::null_mut();
-        let r = flux_canvas_create_cpu(width.max(1), height.max(1), 1.0, &mut canvas);
-        if !flux_result_is_ok(r) || canvas.is_null() {
-            return Err(flux_last_error_string("flux_canvas_create_cpu"));
-        }
-
         Ok(Self {
-            canvas,
-            canvas_w: width,
-            canvas_h: height,
+            canvas: ptr::null_mut(),
+            canvas_w: 0,
+            canvas_h: 0,
             canvas_scale: 1.0,
             text: TextRaster::default(),
-            width,
-            height,
+            width: 0,
+            height: 0,
             scale: 1.0,
             font: PanelFontConfig::default(),
             viewport,
@@ -210,6 +197,7 @@ impl FluxPanel {
             if !flux_result_is_ok(r) || canvas.is_null() {
                 tracing::warn!(
                     target: "typio.panel.cpu",
+                    error = %flux_last_error_string("flux_canvas_create_cpu"),
                     "flux_canvas_create_cpu failed on resize"
                 );
                 return false;
@@ -251,8 +239,24 @@ impl FluxPanel {
         let frame_start = trace_perf.then(Instant::now);
 
         let layout_start = trace_perf.then(Instant::now);
-        self.ensure_candidate_layout(candidates);
+        self.ensure_candidate_size(candidates);
         let layout_us = layout_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+
+        let acquire_start = trace_perf.then(Instant::now);
+        let Some(buffer_index) = self.acquire_shm_buffer() else {
+            if trace_perf {
+                tracing::trace!(
+                    target: "typio.panel.perf",
+                    composition_seq,
+                    candidate_count = candidates.len(),
+                    selected,
+                    reason = "shm_unavailable",
+                    "candidate panel frame skipped before draw"
+                );
+            }
+            return false;
+        };
+        let acquire_us = acquire_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
         if !self.ensure_canvas() {
             if trace_perf {
@@ -343,7 +347,7 @@ impl FluxPanel {
         // Background + text are both baked into the canvas framebuffer now;
         // present_shm reads it straight out and byte-swaps into the SHM buffer.
         let present_start = trace_perf.then(Instant::now);
-        let attached = self.present_shm();
+        let attached = self.present_shm(buffer_index);
         let present_us = present_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
         if trace_perf {
@@ -354,8 +358,11 @@ impl FluxPanel {
                 selected,
                 width = self.width,
                 height = self.height,
+                content_width_logical = self.content_w_logical,
+                content_height_logical = self.content_h_logical,
                 scale = self.scale,
                 layout_us,
+                acquire_us,
                 draw_us,
                 present_us,
                 total_us = frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0),
@@ -365,15 +372,6 @@ impl FluxPanel {
         }
 
         attached
-    }
-
-    /// Resize the framebuffer. The CPU canvas is recreated lazily on next draw.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.width = width;
-        self.height = height;
     }
 
     /// Cached `(number_metrics, text_metrics)` per candidate (logical px),
@@ -397,7 +395,7 @@ impl FluxPanel {
     }
 
     /// Ensure the framebuffer is big enough for the candidate row.
-    pub fn ensure_candidate_size(&mut self, candidates: &[String]) {
+    fn ensure_candidate_size(&mut self, candidates: &[String]) {
         self.ensure_candidate_layout(candidates);
         let layout = &self.last_layout;
         let mut total_width: f32 = PANEL_PADDING;
@@ -412,10 +410,10 @@ impl FluxPanel {
         }
 
         let desired_width = (total_width as u32).max(10);
-        let desired_height = (PANEL_PADDING * 2.0 + candidate_row_height(&layout)).ceil() as u32;
+        let desired_height = (PANEL_PADDING * 2.0 + candidate_row_height(layout)).ceil() as u32;
         let phys_width = (desired_width as f32 * self.scale).ceil() as u32;
         let phys_height = (desired_height as f32 * self.scale).ceil() as u32;
-        self.apply_grow_only_size(
+        self.apply_surface_size(
             phys_width,
             phys_height,
             desired_width as i32,
@@ -423,27 +421,22 @@ impl FluxPanel {
         );
     }
 
-    /// Grow-only framebuffer sizing shared by candidate and banner paths.
-    fn apply_grow_only_size(
+    /// Quantized framebuffer sizing shared by candidate and banner paths.
+    ///
+    /// With `wp_viewporter`, retain capacity across small content changes but
+    /// shrink after a page needs no more than half of the current extent. This
+    /// avoids resize churn without making one unusually wide candidate page
+    /// determine every later CPU clear, downsample, and copy cost.
+    fn apply_surface_size(
         &mut self,
         phys_width: u32,
         phys_height: u32,
         content_w_logical: i32,
         content_h_logical: i32,
-    ) -> bool {
+    ) {
         if let Some(viewport) = self.viewport.as_ref() {
-            let mut resized = false;
-            let quantised_phys_w =
-                phys_width.div_ceil(SURFACE_WIDTH_QUANTUM) * SURFACE_WIDTH_QUANTUM;
-            let quantised_phys_h =
-                phys_height.div_ceil(SURFACE_HEIGHT_QUANTUM) * SURFACE_HEIGHT_QUANTUM;
-            let target_phys_w = self.width.max(quantised_phys_w);
-            let target_phys_h = self.height.max(quantised_phys_h);
-            if target_phys_w != self.width || target_phys_h != self.height {
-                resized = true;
-                self.width = target_phys_w;
-                self.height = target_phys_h;
-            }
+            self.width = retained_extent(self.width, phys_width, SURFACE_WIDTH_QUANTUM);
+            self.height = retained_extent(self.height, phys_height, SURFACE_HEIGHT_QUANTUM);
             if viewport_mapping_changed(
                 self.viewport_source_w_physical,
                 self.viewport_source_h_physical,
@@ -461,14 +454,11 @@ impl FluxPanel {
                 self.content_w_logical = content_w_logical;
                 self.content_h_logical = content_h_logical;
             }
-            resized
         } else {
-            let resized = self.width != phys_width || self.height != phys_height;
             self.width = phys_width;
             self.height = phys_height;
             self.content_w_logical = content_w_logical;
             self.content_h_logical = content_h_logical;
-            resized
         }
     }
 
@@ -499,10 +489,41 @@ impl FluxPanel {
         }
     }
 
-    /// Present the flux CPU framebuffer (premultiplied RGBA8) via a host-managed
-    /// SHM buffer, byte-swapping RGBA→ARGB8888 directly into the SHM pixels.
-    /// Returns `true` iff a buffer was attached.
-    fn present_shm(&mut self) -> bool {
+    /// Select a free, correctly sized SHM buffer before doing CPU render work.
+    ///
+    /// Selection and presentation run synchronously on the single reactor
+    /// thread, so no second acquisition can interleave before `present_shm`.
+    fn acquire_shm_buffer(&mut self) -> Option<usize> {
+        let Some(pool) = self.shm_pool.as_mut() else {
+            tracing::debug!(target: "typio.panel.shm", "wl_shm is unavailable");
+            return None;
+        };
+        match pool.acquire(self.width, self.height) {
+            Ok(index) => Some(index),
+            Err(crate::panel_shm::ShmAcquireError::Busy) => {
+                tracing::debug!(
+                    target: "typio.panel.shm",
+                    width = self.width,
+                    height = self.height,
+                    buffer_count = pool.len(),
+                    "shm buffer pool exhausted — skipping draw and retaining latest frame"
+                );
+                None
+            }
+            Err(crate::panel_shm::ShmAcquireError::Allocation(error)) => {
+                tracing::warn!(
+                    target: "typio.panel.shm",
+                    width = self.width,
+                    height = self.height,
+                    %error,
+                    "shm buffer allocation failed"
+                );
+                None
+            }
+        }
+    }
+
+    fn present_shm(&mut self, buffer_index: usize) -> bool {
         let trace_perf = tracing::enabled!(target: "typio.panel.perf", tracing::Level::TRACE);
         let present_start = trace_perf.then(Instant::now);
         let (width, height) = (self.width, self.height);
@@ -514,29 +535,30 @@ impl FluxPanel {
         let Some(pool) = self.shm_pool.as_mut() else {
             return false;
         };
-        let acquire_start = trace_perf.then(Instant::now);
-        let Some(idx) = pool.acquire(width, height) else {
-            tracing::debug!(
+        let Some(buf) = pool.get(buffer_index) else {
+            tracing::error!(
                 target: "typio.panel.shm",
-                "shm buffer pool exhausted — dropping frame (will retry)"
+                buffer_index,
+                "reserved SHM buffer disappeared before present"
             );
             return false;
         };
-        let acquire_us = acquire_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
-        let buf = pool.get(idx).expect("acquire returned a valid index");
         let dst = buf.pixels();
         let dst_len = buf.pixel_len();
 
-        let copy_start = trace_perf.then(Instant::now);
+        let read_start = trace_perf.then(Instant::now);
+        let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
+        let px = unsafe { flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride) };
+        if px.is_null() {
+            return false;
+        }
+        let read_pixels_us = read_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+
+        let swap_start = trace_perf.then(Instant::now);
         unsafe {
             // Read the flux canvas framebuffer straight off the canvas and
             // byte-swap premultiplied RGBA8 → Wayland ARGB8888 (LE B,G,R,A)
             // in a single pass into the SHM backing store — no intermediate copy.
-            let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
-            let px = flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride);
-            if px.is_null() {
-                return false;
-            }
             let src_len = (h as usize) * (stride as usize);
             let src = std::slice::from_raw_parts(px, src_len);
             let dstm = std::slice::from_raw_parts_mut(dst, dst_len);
@@ -550,7 +572,7 @@ impl FluxPanel {
                 i += 4;
             }
         }
-        let copy_us = copy_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+        let swap_us = swap_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
         buf.mark_busy();
 
         let attach_start = trace_perf.then(Instant::now);
@@ -572,12 +594,12 @@ impl FluxPanel {
                 width,
                 height,
                 scale,
-                buffer_index = idx,
-                acquire_us,
-                copy_us,
+                buffer_index,
+                read_pixels_us,
+                swap_us,
                 attach_us,
                 total_us = present_start.map(|t| t.elapsed().as_micros()).unwrap_or(0),
-                "candidate panel present_shm"
+                "Panel present_shm"
             );
         }
 
@@ -590,7 +612,10 @@ impl FluxPanel {
         if label.is_empty() {
             return false;
         }
-        let m = self.text.measure(label, self.font.banner_size_px());
+        let m = self.prepare_banner(label);
+        let Some(buffer_index) = self.acquire_shm_buffer() else {
+            return false;
+        };
         if !self.ensure_canvas() {
             return false;
         }
@@ -615,23 +640,34 @@ impl FluxPanel {
             flux_canvas_cpu_end(self.canvas);
         }
 
-        self.present_shm()
+        self.present_shm(buffer_index)
     }
 
-    /// Ensure the framebuffer fits a single-row banner of `label`.
-    pub fn ensure_banner_size(&mut self, label: &str) {
+    /// Measure a banner and ensure its framebuffer extent.
+    fn prepare_banner(&mut self, label: &str) -> TextMetrics {
         let m = self.text.measure(label, self.font.banner_size_px());
         let desired_width = (BANNER_PADDING * 2.0 + m.width).max(10.0).ceil() as u32;
         let banner_row_height = BANNER_PADDING * 2.0 + self.font.banner_size_px() * 1.3;
         let desired_height = banner_row_height.ceil() as u32;
         let phys_width = (desired_width as f32 * self.scale).ceil() as u32;
         let phys_height = (desired_height as f32 * self.scale).ceil() as u32;
-        self.apply_grow_only_size(
+        self.apply_surface_size(
             phys_width,
             phys_height,
             desired_width as i32,
             desired_height as i32,
         );
+        m
+    }
+}
+
+fn retained_extent(current: u32, required: u32, quantum: u32) -> u32 {
+    let required = required.max(1);
+    let quantized = required.div_ceil(quantum).saturating_mul(quantum);
+    if current == 0 || required > current || required.saturating_mul(2) <= current {
+        quantized
+    } else {
+        current
     }
 }
 
@@ -814,6 +850,48 @@ mod tests {
         assert!(!viewport_mapping_changed(
             200, 80, 100, 40, 200, 80, 100, 40
         ));
+    }
+
+    #[test]
+    fn retained_extent_grows_quantized_and_shrinks_with_hysteresis() {
+        assert_eq!(retained_extent(0, 500, 64), 512);
+        assert_eq!(retained_extent(512, 530, 64), 576);
+        assert_eq!(retained_extent(1024, 600, 64), 1024);
+        assert_eq!(retained_extent(1024, 512, 64), 512);
+        assert_eq!(retained_extent(2048, 700, 64), 704);
+    }
+
+    #[test]
+    fn retained_extent_never_returns_zero() {
+        assert_eq!(retained_extent(0, 0, 64), 64);
+        assert_eq!(retained_extent(0, u32::MAX, 64), u32::MAX);
+    }
+
+    #[test]
+    fn unavailable_shm_skips_canvas_allocation_and_draw() {
+        let mut panel = FluxPanel {
+            canvas: ptr::null_mut(),
+            canvas_w: 0,
+            canvas_h: 0,
+            canvas_scale: 1.0,
+            text: TextRaster::default(),
+            width: 0,
+            height: 0,
+            scale: 1.0,
+            font: PanelFontConfig::default(),
+            viewport: None,
+            viewport_source_w_physical: 0,
+            viewport_source_h_physical: 0,
+            content_w_logical: 0,
+            content_h_logical: 0,
+            wl_surface: ptr::null_mut(),
+            shm_pool: None,
+            last_layout_key: None,
+            last_layout: Vec::new(),
+        };
+
+        assert!(!panel.draw_candidates(&["candidate".to_string()], 0, 1));
+        assert!(panel.canvas.is_null());
     }
 
     #[test]

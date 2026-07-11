@@ -9,7 +9,7 @@ unless a block says otherwise.
 
 ```bash
 # one-time per optics checkout:
-meson setup ../optics/build ../optics -Dtext=true
+meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 # point flux-sys at the freshly built libflux (every shell that runs
@@ -85,7 +85,7 @@ build tree. `meson setup` is one-time per checkout; `meson compile` rebuilds
 on demand:
 
 ```bash
-meson setup ../optics/build ../optics -Dtext=true
+meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 export FLUX_BUILD_DIR="$PWD/../optics/build"
@@ -99,6 +99,16 @@ Keep the two exports set in any shell that runs `cargo build` / `test` /
 the daemon; `FLUX_BUILD_DIR` is what selects the in-tree library. If Cargo
 reports an undefined `flux_*` symbol, rebuild optics (`meson compile -C
 ../optics/build`) and re-run.
+
+The contributor build uses Meson's `debugoptimized` profile. The Panel is a
+CPU renderer, so an unoptimized (`buildtype=debug`) `libflux` can make normal
+candidate navigation exceed a display-frame budget even when the Rust daemon
+uses Cargo's release profile. To upgrade an existing build tree, run:
+
+```bash
+meson configure ../optics/build --buildtype=debugoptimized
+meson compile -C ../optics/build
+```
 
 **Installed (optional).** If you prefer a system-wide flux, `meson install`
 into a prefix on `PKG_CONFIG_PATH` and unset `FLUX_BUILD_DIR` (or set
@@ -116,6 +126,9 @@ cargo build -p typio-host --bin typio
 Build the release daemon:
 
 ```bash
+meson setup ../optics/build-release ../optics -Dtext=true --buildtype=release
+meson compile -C ../optics/build-release
+export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 cargo build --release -p typio-host --bin typio
 ```
 

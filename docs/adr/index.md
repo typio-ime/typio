@@ -38,7 +38,7 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0010](0010-non-blocking-candidate-popup-present.md) | Non-blocking present mode for the candidate popup | Superseded by ADR-0040 (WSI present removed) |
 | [ADR-0011](0011-colour-independent-coverage-glyphs.md) | Colour-independent coverage glyph textures (draw-time tint) | Accepted (texture model superseded by ADR-0012; lag-cause attribution corrected by ADR-0013) |
 | [ADR-0012](0012-glyph-atlas-shared-texture.md) | Shared glyph atlas (rasterise once, reference sub-rects) | Accepted (lag-cause attribution corrected by ADR-0013; reclamation reworked by ADR-0020) |
-| [ADR-0013](0013-grow-only-popup-swapchain.md) | Grow-only popup swapchain (stop rebuilding per candidate page) | Superseded by ADR-0040 (WSI present removed; grow-only sizing retained for offscreen image) |
+| [ADR-0013](0013-grow-only-popup-swapchain.md) | Grow-only popup swapchain (stop rebuilding per candidate page) | Superseded by ADR-0044 (bounded CPU-framebuffer retention replaces indefinite growth) |
 | [ADR-0014](0014-canonical-panel-vocabulary.md) | Canonical panel vocabulary and module ontology | Accepted (refines ADR-0005) |
 | [ADR-0015](0015-candidate-popup-lag-final-fixes.md) | Candidate popup lag — final fixes (acquire timeout, retry deferral, persistent upload context) | Accepted |
 | [ADR-0016](0016-per-glyph-font-fallback.md) | Per-glyph font fallback with format-12 charmap selection | Accepted |
@@ -65,10 +65,11 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Superseded by ADR-0041 (watchdog removed) |
 | [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Accepted (supersedes ADR-0035 decision D1) |
 | [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038) |
-| [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dmabuf/flux-text from the panel) |
+| [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dma-buf presentation) |
 | [ADR-0041](0041-remove-watchdog.md) | Remove the host watchdog | Accepted (supersedes ADR-0004/0024/0037; bounds config-read instead) |
 | [ADR-0042](0042-text-input-transaction-staging.md) | Text-input transaction staging at key-batch boundaries | Accepted |
 | [ADR-0043](0043-bounded-preedit-coalescing.md) | Bounded preedit coalescing across reactor steps | Accepted (amends ADR-0042) |
+| [ADR-0044](0044-bounded-panel-rendering.md) | Bounded Panel rendering before SHM presentation | Accepted (supersedes ADR-0013's indefinitely grow-only sizing) |
 
 ## Looking for something else?
 

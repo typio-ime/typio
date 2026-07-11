@@ -241,9 +241,8 @@ impl ShmBuffer {
         self.mapping.len
     }
 
-    /// The `wl_buffer` to attach to the surface. Marks the buffer busy; the
-    /// `release` event clears it. Caller is responsible for the
-    /// `attach`/`damage`/`commit` sequence after.
+    /// The `wl_buffer` to attach to the surface. The caller marks it busy and
+    /// performs the `attach`/`damage`/`commit` sequence immediately after.
     pub fn wl_buffer(&self) -> &wl_buffer::WlBuffer {
         &self.buffer
     }
@@ -280,10 +279,9 @@ impl Drop for ShmBuffer {
 /// A fixed-capacity pool of `ShmBuffer`s for the panel.
 ///
 /// `acquire()` returns a free buffer (one whose `busy` flag is false, and
-/// whose size matches the current surface). If all are busy or the wrong
-/// size, it returns `None` — the caller drops the frame and tries again next
-/// tick. This is the non-blocking heart of the design: the panel can never
-/// be held hostage by a compositor that doesn't recycle buffers.
+/// whose size matches the current surface). If all are busy, the caller drops
+/// the frame and tries again after a later release event. This is the
+/// non-blocking heart of the design: the Panel never waits for the compositor.
 pub struct ShmBufferPool {
     buffers: Vec<ShmBuffer>,
     cap: usize,
@@ -296,7 +294,8 @@ impl ShmBufferPool {
     // Triple buffering absorbs one compositor-release delay during rapid
     // candidate-highlight repeats without blocking the input path. The pool is
     // still tiny and non-blocking: if the compositor falls further behind,
-    // frames are dropped and the latest dirty state is retried next tick.
+    // drawing is skipped and the latest dirty state is retried on a later
+    // reactor step.
     pub const DEFAULT_CAP: usize = 3;
 
     pub fn new(
@@ -314,15 +313,12 @@ impl ShmBufferPool {
     }
 
     /// Find a free buffer matching `(width, height)`. Allocates a new one if
-    /// under the cap and none is reusable. Returns `None` if all matching
-    /// buffers are busy (drop this frame) or the cap is reached and a
-    /// differently-sized buffer is the only one free (it gets reallocated
-    /// in place).
-    pub fn acquire(&mut self, width: u32, height: u32) -> Option<usize> {
+    /// under the cap and none is reusable.
+    pub fn acquire(&mut self, width: u32, height: u32) -> Result<usize, ShmAcquireError> {
         // 1. Try a free, correctly-sized buffer.
         for (i, b) in self.buffers.iter().enumerate() {
             if !b.busy() && b.width() == width && b.height() == height {
-                return Some(i);
+                return Ok(i);
             }
         }
         // 2. Replace a free, wrong-sized buffer (in-place realloc).
@@ -331,16 +327,9 @@ impl ShmBufferPool {
                 match ShmBuffer::new(&self.shm, &self.qh, &self.registry, width, height) {
                     Ok(new) => {
                         self.buffers[i] = new;
-                        return Some(i);
+                        return Ok(i);
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "typio.panel.shm",
-                            width, height, error = %e,
-                            "shm buffer realloc failed"
-                        );
-                        return None;
-                    }
+                    Err(error) => return Err(ShmAcquireError::Allocation(error)),
                 }
             }
         }
@@ -349,30 +338,18 @@ impl ShmBufferPool {
             match ShmBuffer::new(&self.shm, &self.qh, &self.registry, width, height) {
                 Ok(new) => {
                     self.buffers.push(new);
-                    return Some(self.buffers.len() - 1);
+                    return Ok(self.buffers.len() - 1);
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "typio.panel.shm",
-                        width, height, error = %e,
-                        "shm buffer alloc failed"
-                    );
-                    return None;
-                }
+                Err(error) => return Err(ShmAcquireError::Allocation(error)),
             }
         }
         // 4. All buffers busy — drop this frame.
-        None
+        Err(ShmAcquireError::Busy)
     }
 
     /// Borrow a buffer by index (from `acquire`).
     pub fn get(&self, idx: usize) -> Option<&ShmBuffer> {
         self.buffers.get(idx)
-    }
-
-    /// Borrow a buffer mutably by index.
-    pub fn get_mut(&mut self, idx: usize) -> Option<&mut ShmBuffer> {
-        self.buffers.get_mut(idx)
     }
 
     /// True iff every buffer is busy (compositor holds them all).
@@ -381,13 +358,8 @@ impl ShmBufferPool {
     }
 
     /// Current number of buffers.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.buffers.len()
-    }
-
-    /// Whether the pool has no buffers yet.
-    pub fn is_empty(&self) -> bool {
-        self.buffers.is_empty()
     }
 
     /// Drop every cached buffer and start fresh on the next acquire.
@@ -399,6 +371,15 @@ impl ShmBufferPool {
     pub fn reset(&mut self) {
         self.buffers.clear();
     }
+}
+
+/// Why a non-blocking SHM buffer reservation failed.
+#[derive(Debug)]
+pub enum ShmAcquireError {
+    /// The compositor still owns every buffer in the fixed-capacity pool.
+    Busy,
+    /// Allocating or resizing a free buffer failed.
+    Allocation(ShmError),
 }
 
 /// Errors from SHM buffer allocation.

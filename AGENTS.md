@@ -129,10 +129,11 @@ Date format is `YYYY-MM-DD`. Get it from `date -I` or `date +%F`.
 Before committing non-trivial host changes:
 
 ```bash
-meson setup ../optics/build ../optics -Dtext=true   # first time only
-meson compile -C ../optics/build
+meson setup ../optics/build-release ../optics \
+  -Dtext=true --buildtype=release   # first time only
+meson compile -C ../optics/build-release
 
-export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
 cargo build --release -p typioctl

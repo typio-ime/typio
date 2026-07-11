@@ -18,7 +18,7 @@ Build or refresh the native renderer dependency first. These commands run from
 the Typio repository root:
 
 ```bash
-meson compile -C ../optics/build    # first time: meson setup ../optics/build ../optics -Dtext=true
+meson compile -C ../optics/build    # first setup uses --buildtype=debugoptimized
 ```
 
 Run the full Rust suite:
@@ -45,7 +45,7 @@ cargo test -p typio-host -- --nocapture
 
 If `cargo test` reports an undefined `flux_*` symbol, Cargo loaded a stale
 or system `libflux.so`. Rebuild `../optics`, then confirm
-`FLUX_BUILD_DIR` points at `../optics/build`.
+`FLUX_BUILD_DIR` points at the `debugoptimized` `../optics/build` tree.
 
 ## Cargo Coverage
 
