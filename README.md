@@ -2,7 +2,8 @@
 
 **Typio for Linux** — a Wayland-native input method host for the
 [Typio](https://github.com/) input method framework. Installs the `typio`
-daemon and the `typioctl` command-line client.
+daemon, the `typioctl` command-line client, and the `typio-settings` graphical
+settings application.
 
 > Currently Wayland-only (`text-input-v2` / `input-method-v2`). X11 is not
 > supported and not planned — this host targets the modern Wayland desktop.
@@ -24,8 +25,9 @@ paths.
 ## Building
 
 Requires Wayland, xkbcommon, fontconfig/harfbuzz/freetype, PipeWire for voice
-capture, and flux for the candidate Panel. `typio-core`, `typio-abi`,
-`typio-vet`, and `typioctl` are workspace crates in this repository.
+capture, and the optics graphics stack. `typio-core`, `typio-abi`,
+`typio-vet`, `typioctl`, and `typio-settings` are workspace crates in this
+repository.
 
 The host build is Cargo. `flux` is still a native C library, so build the
 sibling flux checkout first until flux has its own Cargo-native library
@@ -39,14 +41,20 @@ meson compile -C ../optics/build-release
 
 export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
+export LENS_BUILD_DIR="$PWD/../optics/build-release"
+export LENS_SOURCE_DIR="$PWD/../optics"
+export IRIS_BUILD_DIR="$PWD/../optics/build-release"
+export IRIS_SOURCE_DIR="$PWD/../optics"
 cargo build --release -p typio-host
 cargo build --release -p typioctl
+cargo build --release -p typio-settings
 cargo test -p typio-host
 ```
 
-The binaries are produced at `target/release/typio` and
-`target/release/typioctl`. Install them along with the systemd service, icons,
-and example configs with `cargo xtask install`.
+The binaries are produced at `target/release/typio`,
+`target/release/typioctl`, and `target/release/typio-settings`. Install them
+along with the systemd service, desktop metadata, icons, and example configs
+with `cargo xtask install`.
 
 See [`docs/dev/setup.md`](docs/dev/setup.md) for the full setup steps and
 additional options.
@@ -65,6 +73,12 @@ typio --verbose                # run the daemon with debug logging
 `typio` is the daemon. Inspecting and controlling a running instance (engines,
 config, status) is the job of the workspace `typioctl` client, which talks to
 the daemon over its UDS socket.
+
+Launch the graphical settings application after starting the daemon:
+
+```bash
+typio-settings
+```
 
 Installed packages start the daemon through the systemd user service:
 

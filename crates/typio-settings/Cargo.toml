@@ -1,0 +1,25 @@
+[package]
+name = "typio-settings"
+version = "0.1.0"
+description = "Graphical settings application for Typio"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "typio-settings"
+path = "src/main.rs"
+
+[dependencies]
+flux-sys.workspace = true
+iris.workspace = true
+iris-sys.workspace = true
+lens-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml_edit = "0.22"
+typio-client.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

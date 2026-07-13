@@ -5,6 +5,8 @@
 | Command | Purpose |
 |---------|---------|
 | `typio` | Start the Wayland input method daemon. |
+| `typioctl` | Inspect or control the running daemon over TIP. |
+| `typio-settings` | Open the graphical settings application. |
 
 ## Options
 
@@ -17,6 +19,11 @@
 | `-vv` | None | Enable trace logging, including high-volume key-routing traces. |
 | `-h`, `--help` | None | Print command-line help and exit. |
 | `--version` | None | Print version information and exit. |
+
+`typio-settings` accepts `-v`/`--verbose` to log raw Iris platform input and
+`-h`/`--help` to print usage. Its schema-backed pages require a running daemon;
+the Appearance page edits `platform.toml` directly and remains available while
+the daemon is stopped.
 
 ## Log Levels
 

@@ -20,12 +20,12 @@ breaking changes require a major version bump.
 
 | Interface | Tier | Consumers | Reference |
 |-----------|------|-----------|-----------|
-| TIP v1 wire format (UDS framing, JSON-RPC envelope, `protocolVersion` handshake) | Stable | `typioctl`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
-| TIP method surface (`engine.*`, `keyboard.*`, `voice.*`, `language.*`, `config.*`, `daemon.*`, `events.*`) | Unstable | `typioctl`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
+| TIP v1 wire format (UDS framing, JSON-RPC envelope, `protocolVersion` handshake) | Stable | `typioctl`, `typio-settings`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
+| TIP method surface (`engine.*`, `keyboard.*`, `voice.*`, `language.*`, `config.*`, `daemon.*`, `events.*`) | Unstable | `typioctl`, `typio-settings`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
 | `core.toml` / `platform.toml` keys | Unstable | End users | [Configuration Reference](configuration.md) |
 | Engine manifest format (`typio-engine-*.toml`) | Experimental | Engine package authors | [Engine Discovery Reference](engine-discovery.md) |
 | Typio Engine Protocol (fd 3 channel) | Experimental, defined by libtypio | Engine package authors | libtypio documentation |
-| CLI flags (`typio`, `typioctl`) | Unstable | End users, scripts | [CLI Reference](cli.md) |
+| CLI flags (`typio`, `typioctl`, `typio-settings`) | Unstable | End users, scripts | [CLI Reference](cli.md) |
 | D-Bus status interface and StatusNotifierItem | Experimental | Status bars, desktop shells | — |
 | systemd user unit name (`typio.service`) | Stable | Packagers, session managers | [How to Package for Distribution](../how-to/package-for-distribution.md) |
 

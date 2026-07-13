@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Typio Settings
+GenericName=Input Method Settings
+Comment=Configure Typio engines, shortcuts, and display preferences
+Comment[zh_CN]=配置 Typio 输入法引擎、快捷键和显示偏好
+Exec=typio-settings
+Icon=io.typio.Settings
+Terminal=false
+StartupNotify=true
+Categories=Settings;DesktopSettings;X-XFCE;X-GNOME-PersonalSettings;
+Keywords=input;ime;keyboard;typio;voice;settings;

@@ -72,6 +72,8 @@ fn plan_install(prefix: &Path) -> Result<InstallPlan> {
     let systemd_user_dir = libdir.join("systemd/user");
     let icons_dst = datadir.join("icons");
     let data_dst = datadir.join("typio");
+    let applications_dst = datadir.join("applications");
+    let metainfo_dst = datadir.join("metainfo");
 
     let mut copies = Vec::new();
     let mut dirs = vec![
@@ -79,6 +81,8 @@ fn plan_install(prefix: &Path) -> Result<InstallPlan> {
         systemd_user_dir.clone(),
         icons_dst.clone(),
         data_dst.clone(),
+        applications_dst.clone(),
+        metainfo_dst.clone(),
     ];
 
     // Binaries.
@@ -86,6 +90,20 @@ fn plan_install(prefix: &Path) -> Result<InstallPlan> {
     let target_dir = project_root.join("target").join(profile);
     copies.push((target_dir.join("typio"), bindir.join("typio")));
     copies.push((target_dir.join("typioctl"), bindir.join("typioctl")));
+    copies.push((
+        target_dir.join("typio-settings"),
+        bindir.join("typio-settings"),
+    ));
+
+    // Graphical settings launcher and AppStream metadata.
+    copies.push((
+        project_root.join("data/applications/io.typio.Settings.desktop"),
+        applications_dst.join("io.typio.Settings.desktop"),
+    ));
+    copies.push((
+        project_root.join("data/metainfo/io.typio.Settings.metainfo.xml"),
+        metainfo_dst.join("io.typio.Settings.metainfo.xml"),
+    ));
 
     // Systemd service file is rendered separately in install().
     dirs.push(systemd_user_dir.clone());

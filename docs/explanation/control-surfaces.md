@@ -71,6 +71,11 @@ length-prefixed JSON-RPC 2.0, defined as **TIP v1**. See
 [IPC Protocol Reference](../reference/ipc-protocol.md) for the method and
 event catalog.
 
+Workspace clients share `crates/typio-client` for socket discovery, TIP frame
+encoding, JSON-RPC response validation, and event subscriptions. `typioctl`
+adds command-line presentation; `typio-settings` adds an Iris/Lens graphical
+presentation. Neither client owns daemon policy or a second schema table.
+
 ### Request flow
 
 ```mermaid

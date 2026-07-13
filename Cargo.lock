@@ -456,6 +456,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "flux"
+version = "0.1.1"
+dependencies = [
+ "flux-sys",
+]
+
+[[package]]
 name = "flux-sys"
 version = "0.1.1"
 dependencies = [
@@ -600,6 +607,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "iris"
+version = "0.1.0"
+dependencies = [
+ "iris-sys",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
+name = "iris-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "pkg-config",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -636,6 +660,22 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "lens"
+version = "0.1.0"
+dependencies = [
+ "flux",
+ "lens-sys",
+]
+
+[[package]]
+name = "lens-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "pkg-config",
+]
 
 [[package]]
 name = "libc"
@@ -1241,6 +1281,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "typio-client"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "typio-core"
 version = "0.6.0"
 dependencies = [
@@ -1310,6 +1358,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "typio-settings"
+version = "0.1.0"
+dependencies = [
+ "flux-sys",
+ "iris",
+ "iris-sys",
+ "lens-sys",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml_edit 0.22.27",
+ "typio-client",
+]
+
+[[package]]
 name = "typio-vet"
 version = "0.1.0"
 dependencies = [
@@ -1322,8 +1385,8 @@ name = "typioctl"
 version = "0.1.1"
 dependencies = [
  "clap",
- "serde",
  "serde_json",
+ "typio-client",
 ]
 
 [[package]]

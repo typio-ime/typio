@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.typio.Settings</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <content_rating type="oars-1.1"/>
+
+  <name>Typio Settings</name>
+  <summary>Configure the Typio input method framework</summary>
+  <description>
+    <p>
+      Typio Settings is the graphical configuration application for Typio. It
+      uses the daemon's TIP control interface for schema-backed settings and
+      preserves the Panel's platform configuration when updating display
+      preferences.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Choose the active language, keyboard engine, and voice engine.</li>
+      <li>Edit engine options exposed by the active schema.</li>
+      <li>Configure shortcuts, notifications, and advanced behavior.</li>
+      <li>Tune candidate layout, typography, theme, and placement.</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.typio.Settings.desktop</launchable>
+  <url type="homepage">https://github.com/ming2k/typio</url>
+  <url type="bugtracker">https://github.com/ming2k/typio/issues</url>
+  <url type="vcs-browser">https://github.com/ming2k/typio</url>
+
+  <developer id="io.typio">
+    <name>Typio Contributors</name>
+  </developer>
+
+  <provides>
+    <binary>typio-settings</binary>
+  </provides>
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+
+  <releases>
+    <release version="0.1.0" date="2026-07-13">
+      <description>
+        <p>
+          Initial Rust settings application using the Iris/Lens/Flux graphics
+          stack and the shared Typio TIP client.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

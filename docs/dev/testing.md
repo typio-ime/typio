@@ -9,8 +9,10 @@ The suite is the Cargo workspace suite. `crates/typio-host` covers the
 shipping Rust daemon, subsystem ports, TIP framing, UDS IPC, engine
 discovery, and headless daemon behavior. `crates/typio-core`,
 `crates/typio-abi`, and `crates/typio-vet` cover the framework, shared ABI,
-and engine conformance tooling. `crates/typioctl` covers the command-line
-TIP/UDS client.
+and engine conformance tooling. `crates/typio-client` covers shared TIP framing
+and event subscriptions, `crates/typioctl` covers CLI presentation, and
+`crates/typio-settings` covers graphical config state and platform-config
+persistence.
 
 ## Run Cargo Tests
 
@@ -28,7 +30,9 @@ cargo test -p typio-host
 cargo test -p typio-core
 cargo test -p typio-abi
 cargo test -p typio-vet
+cargo test -p typio-client
 cargo test -p typioctl
+cargo test -p typio-settings
 ```
 
 Run one test:
@@ -52,7 +56,8 @@ or system `libflux.so`. Rebuild `../optics`, then confirm
 | Area | Test surface |
 |---|---|
 | Daemon lifecycle | `app` unit tests, `tests/typio_daemon.rs` |
-| TIP protocol and JSON-RPC framing | host `ipc` unit tests, `uds_server`, and `crates/typioctl/src/ipc.rs` |
+| TIP protocol and JSON-RPC framing | host `ipc` unit tests, `uds_server`, and `typio-client` tests |
+| Settings config persistence and TIP model decoding | `typio-settings` unit tests |
 | UDS server and IPC bus | `uds_server`, `ipc_bus`, `service` tests |
 | Engine manifests and registration | `engine_loader` unit and integration tests |
 | Wayland focus, key policy, repeat, candidate guard | `focus_controller`, `session_glue`, `keyboard_policy`, `keyboard::router`, `candidate_guard` tests |

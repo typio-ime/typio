@@ -60,19 +60,21 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0032](0032-tray-icon-composition.md) | Tray icon composition — language base + modality overlays | Accepted (extends ADR-0031 icon chain) |
 | [ADR-0033](0033-language-led-tray-surface.md) | Language-led tray surface (icon and menu) | Accepted (amends ADR-0031 menu structure and ADR-0032 icon chain) |
 | [ADR-0034](0034-dynamic-engine-capabilities.md) | Dynamic engine capabilities (runtime-mutable language declarations) | Accepted (amends ADR-0031 static-declaration assumption; revises ADR-0033 multi-language menu rule) |
-| [ADR-0035](0035-bilingual-migration-to-rust.md) | Bilingual migration of the host to Rust | Accepted |
+| [ADR-0035](0035-bilingual-migration-to-rust.md) | Bilingual migration of the host to Rust | Accepted (D5 superseded for settings by ADR-0045) |
 | [ADR-0036](0036-soft-present-gate-for-candidate-panel.md) | Soft Present Gate for the Candidate Panel | Superseded by ADR-0040 (present gate retained as pacing hygiene only) |
 | [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Superseded by ADR-0041 (watchdog removed) |
 | [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Accepted (supersedes ADR-0035 decision D1) |
-| [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038) |
+| [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038; client duplication and settings deferral superseded by ADR-0045) |
 | [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dma-buf presentation) |
 | [ADR-0041](0041-remove-watchdog.md) | Remove the host watchdog | Accepted (supersedes ADR-0004/0024/0037; bounds config-read instead) |
 | [ADR-0042](0042-text-input-transaction-staging.md) | Text-input transaction staging at key-batch boundaries | Accepted |
 | [ADR-0043](0043-bounded-preedit-coalescing.md) | Bounded preedit coalescing across reactor steps | Accepted (amends ADR-0042) |
 | [ADR-0044](0044-bounded-panel-rendering.md) | Bounded Panel rendering before SHM presentation | Accepted (supersedes ADR-0013's indefinitely grow-only sizing) |
+| [ADR-0045](0045-rust-settings-workspace-integration.md) | Rust Settings Workspace Integration | Accepted (supersedes ADR-0035 D5 for settings and ADR-0039's deferral) |
 
 ## Looking for something else?
 
 - Framework core ADRs: see `crates/typio-core/docs/adr/`
 - Historical CLI ADRs: see `crates/typioctl/docs/adr/`
-- Settings-panel ADRs: see the `typio-settings` repository
+- Historical settings-panel ADRs remain in the archived sibling checkout;
+  workspace settings decisions start at ADR-0045.

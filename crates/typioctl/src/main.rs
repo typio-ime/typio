@@ -5,7 +5,6 @@ use std::process;
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod commands;
-mod ipc;
 
 use commands::OutputFormat;
 

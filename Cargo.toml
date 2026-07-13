@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/typio-client",
     "crates/typio-core",
     "crates/typio-abi",
     "crates/typioctl",
+    "crates/typio-settings",
     "crates/typio-host",
     "crates/typio-host-platform",
     "crates/typio-host-types",
@@ -46,6 +48,9 @@ xkbcommon = "0.9"
 
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
 flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
+iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }
+lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"
@@ -59,6 +64,7 @@ typio-core = { path = "crates/typio-core" }
 typio-abi = { path = "crates/typio-abi" }
 typio-host-platform = { path = "crates/typio-host-platform" }
 typio-host-types = { path = "crates/typio-host-types" }
+typio-client = { path = "crates/typio-client" }
 clap = { version = "4", features = ["derive"] }
 
 [profile.release]

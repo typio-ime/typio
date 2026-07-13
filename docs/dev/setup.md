@@ -20,6 +20,7 @@ export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 
 cargo build -p typio-host
 cargo build -p typioctl
+cargo build -p typio-settings
 cargo test -p typio-host
 ./target/debug/typio --verbose
 ```
@@ -27,8 +28,9 @@ cargo test -p typio-host
 Typio links `libflux` straight out of the `optics/flux` Meson build
 tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
 is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `libtypio`,
-`typio-abi`, `typio-vet`, and `typioctl` are Cargo workspace members in this
-repository, so framework, ABI, vet, CLI, and host changes build together.
+`typio-abi`, `typio-vet`, `typio-client`, `typioctl`, and `typio-settings` are
+Cargo workspace members in this repository, so framework, ABI, client, GUI,
+CLI, and host changes build together.
 
 The shipping daemon is the Rust `typio` binary from `crates/typio-host`.
 
@@ -50,29 +52,29 @@ and Fedora releases.
 
 ## Repository Layout
 
-The Typio product workspace lives beside the engine umbrella and the settings
-panel repository. The GPU/media libraries live under a separate `optics/`
-umbrella because the canvas stack is shared with non-Typio projects:
+The Typio product workspace lives beside the engine umbrella. The GPU/media
+libraries live under a separate `optics/` umbrella because the canvas stack is
+shared with non-Typio projects:
 
 ```text
 projects/
-├── typio/                        # host + libtypio + typio-abi + typio-vet + typioctl
+├── typio/                        # host + framework + clients + settings GUI
 ├── typio-engines/
 │   ├── typio-engine-compose/     # Cargo: Latin + compose-key keyboard
 │   ├── typio-engine-rime/        # Meson: RIME-based Chinese keyboard
 │   ├── typio-engine-mozc/        # Meson: Mozc-based Japanese keyboard
 │   ├── typio-engine-sherpa/      # Meson: sherpa-onnx voice input
 │   └── typio-engine-whisper/     # Meson: whisper.cpp voice input
-├── typio-settings/               # Meson/C settings panel
 └── optics/
     ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
     ├── bindings/flux-rs/         # Rust bindings; published as git crate v0.1.0
-    ├── libs/iris/, libs/lens/, … # other optics components, not consumed by Typio
+    ├── libs/iris/, libs/lens/     # settings window and widget toolkit
+    └── bindings/iris-rs/, bindings/lens-rs/
 ```
 
-Typio resolves `libtypio`, `typio-abi`, `typio-vet`, and `typioctl` from
-local workspace paths. The only external native dependency is `libflux`, which
-`flux-sys`'s build script locates through pkg-config at build time.
+Typio resolves its framework, ABI, vet, command-line, and settings crates from
+local workspace paths. Native optics libraries are sibling dependencies found
+through pkg-config by their `-sys` crates.
 
 ## flux (C library)
 
@@ -136,6 +138,18 @@ Build the CLI:
 
 ```bash
 cargo build -p typioctl
+```
+
+Build and run the graphical settings application. Its Iris and Lens bindings
+discover the same sibling optics build tree automatically; explicit variables
+are useful when more than one optics checkout exists:
+
+```bash
+export LENS_BUILD_DIR="$PWD/../optics/build"
+export LENS_SOURCE_DIR="$PWD/../optics"
+export IRIS_BUILD_DIR="$PWD/../optics/build"
+export IRIS_SOURCE_DIR="$PWD/../optics"
+cargo run -p typio-settings
 ```
 
 Build the framework and ABI tooling explicitly when touching engine contracts:
@@ -245,6 +259,7 @@ Run the Cargo suite:
 ```bash
 cargo test -p typio-host
 cargo test -p typioctl
+cargo test -p typio-client -p typio-settings
 ```
 
 Run one test:
@@ -264,6 +279,7 @@ example configs:
 ```bash
 cargo build --release -p typio-host --bin typio
 cargo build --release -p typioctl
+cargo build --release -p typio-settings
 cargo xtask install --prefix /usr/local
 ```
 

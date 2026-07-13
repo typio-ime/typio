@@ -17,11 +17,17 @@ Build the host daemon:
 ```bash
 export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
+export LENS_BUILD_DIR="$PWD/../optics/build-release"
+export LENS_SOURCE_DIR="$PWD/../optics"
+export IRIS_BUILD_DIR="$PWD/../optics/build-release"
+export IRIS_SOURCE_DIR="$PWD/../optics"
 cargo build --release -p typio-host --bin typio
 cargo build --release -p typioctl
+cargo build --release -p typio-settings
 ```
 
-The output binaries are `target/release/typio` and `target/release/typioctl`.
+The output binaries are `target/release/typio`, `target/release/typioctl`, and
+`target/release/typio-settings`.
 
 ## Stage Package Files
 
@@ -47,8 +53,11 @@ systemd unit. `--destdir` is only the staging root.
 |------|-------------|---------|
 | `typio` | `<prefix>/bin/` | Main daemon binary |
 | `typioctl` | `<prefix>/bin/` | Command-line TIP/UDS client |
+| `typio-settings` | `<prefix>/bin/` | Graphical settings application |
 | `typio.service` | `<prefix>/lib/systemd/user/` | systemd user service unit |
 | `hicolor/*` | `<prefix>/share/icons/` | Status and tray icons |
+| `io.typio.Settings.desktop` | `<prefix>/share/applications/` | Desktop launcher |
+| `io.typio.Settings.metainfo.xml` | `<prefix>/share/metainfo/` | AppStream metadata |
 | `core.toml.example` | `<prefix>/share/typio/` | Example core configuration |
 | `platform.toml.example` | `<prefix>/share/typio/` | Example Wayland frontend configuration |
 | `typio-engine-*.toml` | `<prefix>/share/typio/engines/` | Engine manifests installed by engine packages |
@@ -67,6 +76,7 @@ The daemon requires:
 - FreeType, HarfBuzz, and fontconfig support libraries for candidate-panel
   text shaping (consumed by `TextRaster` via `flux-text-sys`)
 - `libflux` from the packaged optics/flux build (CPU canvas only)
+- `libiris` and `liblens` from the packaged optics build for `typio-settings`
 
 ## Engine Packages
 

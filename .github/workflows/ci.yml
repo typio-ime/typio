@@ -52,6 +52,10 @@ jobs:
         env:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../../optics/libs/flux
+          LENS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
+          LENS_SOURCE_DIR: ${{ github.workspace }}/../../optics
+          IRIS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
+          IRIS_SOURCE_DIR: ${{ github.workspace }}/../../optics
         run: cargo clippy --workspace -- -D warnings
 
   cargo-test:
@@ -86,6 +90,10 @@ jobs:
         env:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../../optics/libs/flux
+          LENS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
+          LENS_SOURCE_DIR: ${{ github.workspace }}/../../optics
+          IRIS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
+          IRIS_SOURCE_DIR: ${{ github.workspace }}/../../optics
           # typio-vet tests dlopen against the mock host
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../../optics/build
         run: |

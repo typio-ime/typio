@@ -1,20 +1,20 @@
-# Project Scope: Host, Framework, ABI, Vet, and CLI
+# Project Scope: Host, Framework, ABI, Vet, and Clients
 
 This document clarifies which layer owns which responsibility inside the
 Typio workspace. The repository contains the Linux host daemon, the
 platform-neutral framework library, the shared engine ABI crate, and the engine
-vetting tool, plus the command-line client. Keeping them in one workspace makes
-cross-layer changes atomic, but it does not erase the design boundary between
-the layers.
+vetting tool, shared TIP client, command-line client, and graphical settings
+application. Keeping them in one workspace makes cross-layer changes atomic,
+but it does not erase the design boundary between the layers.
 
 ## The Workspace Layers
 
-| | `typio-host` | `typio-core` | `typio-abi` | `typio-vet` | `typioctl` |
+| | `typio-host` | `typio-core` | `typio-abi` | `typio-vet` | TIP clients |
 |---|---|---|---|---|---|
-| **Role** | Linux/Wayland host daemon | Platform-neutral framework | Shared Rust ABI types | Engine contract checker | Command-line TIP client |
-| **Output** | `typio` binary | `libtypio.so` and `rlib` | `rlib` | `typio-vet` binary and test harness | `typioctl` binary |
-| **Knows about** | Wayland, flux CPU canvas, D-Bus, PipeWire, Linux filesystem | engines, input contexts, config schema, engine registry | `#[repr(C)]` engine structs and enums | engine lifecycle, ABI invariants, resource packaging | daemon TIP methods and CLI presentation |
-| **Does not know about** | how an engine processes a key; what Rime schema is active | compositor behavior, GPU resources, audio hardware | runtime state or host behavior | compositor, panel rendering, daemon event loop | Wayland, rendering, engine internals |
+| **Role** | Linux/Wayland host daemon | Platform-neutral framework | Shared Rust ABI types | Engine contract checker | Shared client, CLI, and graphical settings |
+| **Output** | `typio` binary | `libtypio.so` and `rlib` | `rlib` | `typio-vet` binary and test harness | `typio-client`, `typioctl`, `typio-settings` |
+| **Knows about** | Wayland, flux CPU canvas, D-Bus, PipeWire, Linux filesystem | engines, input contexts, config schema, engine registry | `#[repr(C)]` engine structs and enums | engine lifecycle, ABI invariants, resource packaging | daemon TIP methods; CLI or Iris/Lens presentation |
+| **Does not know about** | how an engine processes a key; what Rime schema is active | compositor behavior, GPU resources, audio hardware | runtime state or host behavior | compositor, panel rendering, daemon event loop | engine implementation or daemon policy |
 | **Contains engines** | No; discovers manifests and registers engine argv | No; owns engine routing, contracts, and worker transport | No | No; loads engines only for tests | No |
 
 The dependency direction is intentionally narrow:
@@ -22,7 +22,8 @@ The dependency direction is intentionally narrow:
 ```text
 typio-host ──▶ typio-core ──▶ typio-abi
 typio-vet  ───────────────▶ typio-abi
-typioctl   ───────────────▶ TIP/UDS daemon protocol
+typioctl ───────┐
+typio-settings ─┴─────────▶ typio-client ──▶ TIP/UDS daemon protocol
 engines    ───────────────▶ typio-abi
 ```
 
@@ -199,6 +200,23 @@ It must not own daemon policy. If a command needs a new source of truth, schema
 entry, engine switch rule, or event payload, that contract is added to the host
 protocol first and the CLI follows it.
 
+Socket discovery, framing, JSON-RPC response validation, and event subscription
+belong to `typio-client`, which is shared with the graphical application.
+
+## What typio-settings Owns
+
+`typio-settings` is the Iris/Lens graphical client for the same TIP control
+surface. It owns:
+
+- page layout, widget state, and user-facing validation feedback
+- presentation of daemon-provided schema fields and engine commands
+- the narrow, comment-preserving editor for frontend-owned `platform.toml`
+- desktop launcher, AppStream metadata, and application icon
+
+It does not duplicate config schema, engine activation policy, or TIP framing.
+Schema-backed changes go to the daemon; only Panel display values that are not
+part of TIP are written directly.
+
 ## What Belongs Where
 
 When deciding where a change belongs, apply these tests:
@@ -238,6 +256,12 @@ When deciding where a change belongs, apply these tests:
 | Does it change command-line syntax or output rendering? | Yes |
 | Does it map an existing daemon RPC to a user command? | Yes |
 | Does it improve client-side socket error reporting? | Yes |
+
+| Question | If yes, it belongs in `typio-settings` |
+|---|---|
+| Does it change graphical settings layout or interaction? | Yes |
+| Does it present an existing schema field or daemon action as a widget? | Yes |
+| Does it edit frontend-owned Panel appearance in `platform.toml`? | Yes |
 
 | Question | If yes, it belongs in an engine plugin |
 |---|---|

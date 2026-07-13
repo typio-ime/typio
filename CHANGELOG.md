@@ -165,6 +165,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Rust graphical settings application.** `typio-settings` now lives in the
+  Cargo workspace and uses Iris/Lens/Flux from the sibling `optics` checkout.
+  It edits schema-backed engine, language, shortcut, and advanced settings over
+  TIP, preserves comments while updating Panel values in `platform.toml`, and
+  installs a desktop entry, AppStream metadata, and icon. `typioctl` and the
+  GUI share the new `typio-client` framing and event-subscription crate
+  (ADR-0045).
+
 - **Runtime log-level control via `SIGUSR1`/`SIGUSR2`.** `SIGUSR1` raises the
   running daemon's log floor one step (`info`→`debug`→`trace`); `SIGUSR2`
   resets it to the startup level — no restart needed to capture a verbose

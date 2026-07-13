@@ -1,9 +1,9 @@
 # Project Layout
 
 Typio is split across a Cargo workspace for the Linux host, framework, ABI
-crate, and vet tool, plus separate repositories for engines and external
-clients. This document covers the **ecosystem map** first, then the internal
-layout of the `libtypio` crate.
+crate, vet tool, TIP clients, and graphical settings application, plus separate
+repositories for engines. This document covers the **ecosystem map** first,
+then the internal layout of the `libtypio` crate.
 
 ## Ecosystem (repositories)
 
@@ -13,8 +13,9 @@ layout of the `libtypio` crate.
 | **`crates/typio-abi`** | Shared `#[repr(C)]` type definitions for Rust engines and test tools | `rlib` (Rust types only) | — |
 | **`crates/typio-host`** | Linux/Wayland host | `typio` binary | `libtypio`, `typio-abi`, flux |
 | **`crates/typio-vet`** | Engine conformance checker | `typio-vet` binary | `typio-abi` |
-| **typioctl** | command-line client | `typioctl` binary | nothing (UDS only) |
-| **typio-settings** | flux-ui preferences panel | `typio-settings` binary | `libtypio` headers + shared lib + flux-ui |
+| **`crates/typio-client`** | shared TIP/UDS client | Rust library | `serde_json` |
+| **`crates/typioctl`** | command-line client | `typioctl` binary | `typio-client` |
+| **`crates/typio-settings`** | Iris/Lens preferences application | `typio-settings` binary | `typio-client` + sibling optics bindings |
 | **typio-engine-compose** | Latin keyboard engine with compose picker (optional; framework runs with zero engines) | `typio-engine-compose` executable + manifest | Typio Engine Protocol |
 | **typio-engine-rime** | Rime engine | `typio-engine-rime` executable + manifest | `libtypio` headers + librime |
 | **typio-engine-mozc** | Mozc engine | `typio-engine-mozc` executable + manifest | `libtypio` headers + protobuf |
@@ -34,9 +35,9 @@ from manifests under `<datadir>/typio/engines`, registered with libtypio, and
 run as workers under `<libexecdir>/typio/engines`. Neither core nor the host
 contains per-engine code (see [ADR-0004](../adr/0004-platform-neutral-core-host-loading.md)).
 
-The C ABI in `include/typio/` is the narrow boundary. Engines compile
-against only `typio/abi/`; hosts and the control panel additionally use
-`typio/runtime/` and `typio/schema/` (see
+The C ABI in `include/typio/` is the narrow engine/framework boundary. Engines
+compile against only `typio/abi/`; the Rust host uses the crate API, while
+external clients use the host's TIP socket (see
 [contract-layers.md](contract-layers.md)). The cross-process engine
 protocol (fd-3 framed IPC) is defined by `include/typio/abi/engine_protocol.h`
 and owned by this repository; the host-side UDS control surface (TIP v1)

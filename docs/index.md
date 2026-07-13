@@ -1,14 +1,15 @@
 # Typio Documentation
 
 The Linux/Wayland Typio workspace. This repository contains the `typio` daemon,
-the `typioctl` client, the framework and ABI crates, the candidate Panel
-renderer, the UDS control surface (TIP v1), system tray integration, and voice
-capture plumbing.
+the `typioctl` client, the `typio-settings` graphical application, the
+framework and ABI crates, the candidate Panel renderer, the UDS control surface
+(TIP v1), system tray integration, and voice capture plumbing.
 
 ## Sections
 
 - **[How-to Guides](how-to/)** — Task-oriented recipes for specific goals.
   - [How to Package for Distribution](how-to/package-for-distribution.md)
+  - [How to Configure Typio Graphically](how-to/configure-graphically.md)
   - [Troubleshooting](how-to/troubleshooting.md)
   - [How to Diagnose Candidate-Switching Lag](how-to/diagnose-candidate-lag.md)
 - **[Reference](reference/)** — Lookup-oriented API, config, and protocol documentation.
@@ -18,7 +19,7 @@ capture plumbing.
   - [Engine Discovery Reference](reference/engine-discovery.md) — search path, file-name rules, icons
   - [Interface Stability Reference](reference/stability.md) — stability tiers for every external interface
 - **[Explanation](explanation/)** — Understanding-oriented design documents.
-  - [Project Scope: Host, Framework, ABI, Vet, and CLI](explanation/project-scope.md)
+  - [Project Scope: Host, Framework, ABI, Vet, and Clients](explanation/project-scope.md)
   - [Wayland Input Method Protocol](explanation/wayland-input-method.md)
   - [Input-Method Session](explanation/input-method-session.md) — Disambiguates the three layers of "session"
   - [Focus Controller](explanation/focus-controller.md) — Derived-state, idempotent-diff lifecycle model

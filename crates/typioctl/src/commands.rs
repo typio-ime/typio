@@ -8,8 +8,7 @@
 use std::io::{self, Write};
 
 use serde_json::{Value, json};
-
-use crate::ipc::IpcClient;
+use typio_client::Client;
 
 /// Output format chosen by the global `--output`/`-o` flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,8 +17,8 @@ pub enum OutputFormat {
     Json,
 }
 
-fn connect() -> io::Result<IpcClient> {
-    IpcClient::connect()
+fn connect() -> io::Result<Client> {
+    Client::connect()
 }
 
 fn print_json(value: &Value) -> io::Result<()> {
