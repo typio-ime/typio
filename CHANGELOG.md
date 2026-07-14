@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The Panel reserves a free SHM buffer before CPU drawing, lazily allocates its
   first real content extent, and shrinks quantized framebuffer capacity after
   unusually wide pages. Contributor/CI native builds now use
-  `debugoptimized`, while release instructions use a Meson release tree, so a
-  Cargo release daemon cannot silently run the CPU renderer at optimization
-  level zero (ADR-0044).
+  `debugoptimized`, bare Cargo builds default to the Meson release tree, and
+  Cargo release builds reject a Meson Flux tree that reports optimization
+  level zero, so an environment left pointing at `../optics/build` cannot
+  silently produce a slow daemon (ADR-0044).
 
 - **Fast adjacent keys no longer leave inline preedit one letter behind.** Pure
   preedit now uses a latest-wins 2 ms quiet window with a fixed 4 ms maximum,

@@ -23,16 +23,21 @@ back-pressure mechanism.
 
 ## Capture a focused trace
 
-First confirm that the native CPU renderer is optimized. A Cargo release binary
-can still link an unoptimized Meson library through `FLUX_BUILD_DIR`:
+First confirm that the native CPU renderer is optimized. Current Cargo release
+builds reject a Meson tree that reports optimization level zero, but an older
+daemon can keep an unoptimized library mapped after the build tree is replaced:
 
 ```bash
-meson configure "$FLUX_BUILD_DIR" | rg "buildtype|optimization"
+meson configure "${FLUX_BUILD_DIR:-../optics/build-release}" | rg "buildtype|optimization"
+pid="$(pgrep -o typio)"
+rg '/optics/.*/libflux' "/proc/$pid/maps"
 ```
 
 Use `buildtype=release` for the trace. [How to Package for
 Distribution](package-for-distribution.md#build-a-release-binary) shows the
-separate native release build tree. Then capture:
+separate native release build tree. If the running daemon predates that build,
+its `maps` entry can end in `(deleted)`; the new binary and libraries take
+effect only in a later session. Then capture:
 
 ```bash
 cargo build --release -p typio-host --bin typio

@@ -22,3 +22,6 @@ nix.workspace = true
 libc.workspace = true
 tracing.workspace = true
 bitflags.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true

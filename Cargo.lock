@@ -1339,6 +1339,7 @@ dependencies = [
  "flux-text-sys",
  "libc",
  "nix",
+ "serde_json",
  "tracing",
  "typio-core",
  "typio-host-types",
