@@ -4,8 +4,7 @@
 //! libtypio-specific (host-only configuration helpers and instance config) are
 //! defined here.
 
-use std::ffi::{c_char, c_void};
-use std::os::raw::c_int;
+use std::ffi::c_char;
 
 /* Re-export everything from typio_abi except the opaque handles that
 libtypio implements internally (TypioInputContext, TypioInstance,
@@ -46,15 +45,6 @@ pub use typio_abi::{
 /* Instance config                                                            */
 /* -------------------------------------------------------------------------- */
 
-/// Host-provided engine discovery callback.
-///
-/// Receives the registry to which discovered engines should be registered
-/// (via `typio_registry_register_engine_process`), the directory to enumerate,
-/// and the opaque user-data pointer from `TypioInstanceConfig`.
-/// Returns the number of engines successfully registered (used for logging).
-pub type TypioPluginLoaderFunc =
-    extern "C" fn(*mut crate::c_api::registry::TypioRegistry, *const c_char, *mut c_void) -> c_int;
-
 /// Configuration passed to `typio_instance_init`.
 #[repr(C)]
 pub struct TypioInstanceConfig {
@@ -64,10 +54,4 @@ pub struct TypioInstanceConfig {
     pub data_dir: *const c_char,
     /// Directory for transient state (active engine, user prefs).
     pub state_dir: *const c_char,
-    /// NULL-terminated array of engine directories to scan, or NULL.
-    pub engine_dirs: *const *const c_char,
-    /// Host-provided engine discovery callback.
-    pub plugin_loader: Option<TypioPluginLoaderFunc>,
-    /// Opaque pointer passed to `plugin_loader`.
-    pub plugin_loader_user_data: *mut c_void,
 }

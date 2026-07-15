@@ -14,10 +14,10 @@ extern "C" {
 #endif
 
 /**
- * @brief Export annotation for symbols a plugin or host wants visible to
- *        dlopen consumers.
+ * @brief Export annotation for native engine entry points and host ABI
+ *        symbols that compatibility tools may resolve dynamically.
  *
- * Plugins built with `-fvisibility=hidden` (recommended) use this on every
+ * Engines built with `-fvisibility=hidden` (recommended) use this on every
  * entry point — the `TYPIO_*_ENGINE_DEFINE` macros apply it automatically.
  */
 #ifndef TYPIO_EXPORT
@@ -54,6 +54,10 @@ typedef enum {
     TYPIO_ERROR_ENGINE_LOAD_FAILED = -7,
     TYPIO_ERROR_ENGINE_NOT_AVAILABLE = -8,
 } TypioResult;
+
+/* Source-level alias used by optional engine operations. Both names have the
+ * same ABI value; ENGINE_NOT_AVAILABLE remains the canonical Rust enum case. */
+#define TYPIO_ERROR_NOT_SUPPORTED TYPIO_ERROR_ENGINE_NOT_AVAILABLE
 
 /* Engine types */
 typedef enum {

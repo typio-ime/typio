@@ -11,12 +11,9 @@ Headers: `typio/runtime/instance.h` (host-only) plus `typio/abi/instance.h`
 
 ```c
 typedef struct TypioInstanceConfig {
-    const char            *config_dir;
-    const char            *data_dir;
-    const char            *state_dir;
-    const char *const     *engine_dirs;
-    TypioPluginLoaderFunc  plugin_loader;
-    void                  *plugin_loader_user_data;
+    const char *config_dir;
+    const char *data_dir;
+    const char *state_dir;
 } TypioInstanceConfig;
 ```
 
@@ -25,23 +22,10 @@ typedef struct TypioInstanceConfig {
 | `config_dir` | No | Directory containing `core.toml` |
 | `data_dir` | No | Directory for engine data and schemas |
 | `state_dir` | No | Directory for runtime state (user dictionary, learning) |
-| `engine_dirs` | Yes | NULL-terminated list of engine directories. NULL skips engine discovery entirely. |
-| `plugin_loader` | Yes | Host callback invoked once per `engine_dirs` entry. NULL → no engines loaded. |
-| `plugin_loader_user_data` | — | Opaque pointer forwarded to `plugin_loader` |
 
-## `TypioPluginLoaderFunc`
-
-```c
-typedef int (*TypioPluginLoaderFunc)(TypioRegistry *registry,
-                                     const char *dir,
-                                     void *user_data);
-```
-
-| Aspect | Detail |
-|--------|--------|
-| Called | Once per directory in `TypioInstanceConfig::engine_dirs`, during `typio_instance_init`, after the registry is created and before last-used engine state is restored |
-| Responsibility | Enumerate engine manifests in `dir` and register each accepted engine process via `typio_registry_register_engine_process` |
-| Return | Number of engines successfully registered. Used for logging only; does not affect init success. |
+Engine directory resolution and manifest discovery are host policy. The host
+registers accepted process backends through the registry after instance
+initialisation; `TypioInstanceConfig` contains no discovery callback.
 
 ## Lifecycle
 
@@ -158,8 +142,9 @@ Callback signatures and pointer-lifetime rules are in
 
 ## Engine notifications (engine-facing)
 
-Engines call these to notify the host of state changes. They live in
-`typio/abi/instance.h` so plugins can include them.
+Engine implementations call these on their worker-local instance to report
+state changes in protocol replies. They live in `typio/abi/instance.h` so
+native workers can include them without host-only runtime headers.
 
 ```c
 void                    typio_instance_notify_status_icon   (TypioInstance *instance,
@@ -268,5 +253,5 @@ void  typio_instance_identity_clear_mode  (TypioInstance *instance,
 - [Registry](registry.md) — engine registration, activation, switching
 - [Config](config.md) — `TypioConfig` operations
 - [Input Context](input-context.md) — per-client input state
-- [Engine ▸ Entry points](../engine/entry.md) — what `plugin_loader` calls into
+- [Engine protocol](../engine-protocol.md) — worker discovery and activation handshake
 - [ADR-0003](../../adr/0003-plugin-engine-abi-dual-category.md) — dual-category engine slots

@@ -7,7 +7,7 @@ header belongs in which layer and who is allowed to consume it.
 | Layer        | Path                       | Audience                  |
 |--------------|----------------------------|---------------------------|
 | `abi/`       | `typio/abi/*.h`            | Engine worker implementations |
-| `schema/`    | `typio/schema/*.h`         | User-facing config        |
+| `schema/`    | `typio/schema/*.h`         | Hosts and engine schema declarations |
 | `runtime/`   | `typio/runtime/*.h`        | Hosts embedding libtypio  |
 
 Cross-process control surfaces (UDS, D-Bus) are host concerns and live in
@@ -15,9 +15,11 @@ the relevant host repository — see [ADR-0007](../adr/0007-ipc-ownership-host-a
 
 ## Rules
 
-1. Engines consume **only** headers from `typio/abi/`. The convenience
-   umbrella `typio/abi/abi.h` pulls in the whole engine ABI and is the
-   recommended single include for native C engine implementations.
+1. Engine runtime implementations consume headers from `typio/abi/`. The
+   convenience umbrella `typio/abi/abi.h` is the recommended single include
+   for native C implementations. A worker that publishes configuration may
+   additionally include `typio/schema/config_schema.h` to declare its static
+   `TypioConfigField` table; it must not include `typio/runtime/` host APIs.
 
 2. Hosts (`typio`, future platform hosts, and the
    control panel) consume anything from `typio/` and link `libtypio.so`.
@@ -35,16 +37,16 @@ the relevant host repository — see [ADR-0007](../adr/0007-ipc-ownership-host-a
    not on libtypio. They may still link the schema layer (`typio/schema/`)
    for shared config-key knowledge.
 
-5. Engine discovery is the host's responsibility. The host implements
-   `TypioPluginLoaderFunc` and registers each discovered worker via
-   `typio_registry_register_engine_process`. Core bakes in no engine paths.
+5. Engine discovery is the host's responsibility. The host resolves manifest
+   directories and registers each accepted process backend. Core bakes in no
+   engine paths and `TypioInstanceConfig` has no loader callback.
 
 ## Additive growth via `struct_size`
 
-Caller-allocated structs (`TypioEngineInfo`, `TypioKeyEvent`,
-`TypioComposition`) carry a `size_t struct_size` first field. The
-framework reads only the fields the caller knew about, so optional
-fields can be appended without breaking older engines.
+Caller-allocated event payloads such as `TypioKeyEvent` and
+`TypioComposition` carry a `size_t struct_size` first field. Engine metadata
+and vtables are versioned by `typio_engine_abi_version`; they do not use an
+independent size sentinel.
 
 ## Memory ownership
 

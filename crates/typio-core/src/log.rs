@@ -221,7 +221,7 @@ struct GlobalLogger;
 
 impl Log for GlobalLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        LOGGER.get().map_or(false, |l| l.enabled(metadata))
+        LOGGER.get().is_some_and(|l| l.enabled(metadata))
     }
 
     fn log(&self, record: &Record) {
@@ -310,10 +310,11 @@ pub extern "C" fn typio_logger_dump_recent(path: *const c_char) -> bool {
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy() };
     let path_ref = Path::new(path_str.as_ref());
 
-    if let Some(parent) = path_ref.parent() {
-        if !parent.exists() && std::fs::create_dir_all(parent).is_err() {
-            return false;
-        }
+    if let Some(parent) = path_ref.parent()
+        && !parent.exists()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
     }
 
     LOGGER

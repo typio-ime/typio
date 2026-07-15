@@ -1,162 +1,132 @@
-# Configuration System
+# Configuration system
 
-## Design Goal
+Typio describes each known configuration key once with a
+`TypioConfigField`. The same schema drives type checking, defaults, CLI
+introspection, and settings metadata.
 
-Every configuration field — type, default, UI metadata — is described by exactly one `TypioConfigField` record, regardless of who owns it. The daemon, control surfaces, and user documentation derive their behaviour from the schema rather than maintaining parallel field lists.
+## Ownership layers
 
-Ownership of those records is split: libtypio holds a **static base** for keys
-that are host-wide, and each engine contributes its own `engines.<name>.*`
-records during worker initialization. No engine-specific key is built in;
-every engine ships as a separate worker package.
+The schema has two layers:
 
-## Two-Layer Schema
+| Layer | Owner | Keys | Installed when |
+|---|---|---|---|
+| Static | libtypio | Framework policy such as shortcuts and notifications | Library startup |
+| Dynamic | Engine worker | `engines.<name>.*` | Manifest discovery |
+
+Frontend presentation does not belong in either layer. The reference host
+stores popup layout, fonts, and colour choices in `platform.toml`.
+
+An engine declares its dynamic fields through
+`typio_engine_get_config_schema`. The canonical worker harness performs two
+actions with that table:
+
+1. registers it locally before creating the worker's `TypioInstance`, so the
+   engine receives typed defaults;
+2. serialises it into EngineHello, so the host can expose the same fields to
+   TIP clients before the engine is active.
+
+The host validates every field, requires the `engines.<name>.` namespace, and
+replaces that engine's previous schema atomically. A malformed schema rejects
+the discovery probe without partially changing the registry.
+
+## Startup order
 
 ```mermaid
-flowchart TD
-    Static[Static base<br/>src/config_schema.rs]
-    Compose[typio-engine-compose<br/>engines.compose.*]
-    Rime[typio-engine-rime<br/>engines.rime.*]
-    Mozc[typio-engine-mozc<br/>engines.mozc.*]
-    Whisper[typio-engine-whisper<br/>engines.whisper.*]
-    Combined[Combined view<br/>typio_config_schema_fields]
+sequenceDiagram
+    participant H as Host
+    participant C as libtypio
+    participant W as Engine worker
+    participant U as TIP client
 
-    Static --> Combined
-    Compose -->|typio_config_schema_register_many| Combined
-    Rime -->|typio_config_schema_register_many| Combined
-    Mozc -->|typio_config_schema_register_many| Combined
-    Whisper -->|typio_config_schema_register_many| Combined
-
-    Combined --> Defaults[apply_defaults<br/>daemon init]
-    Combined --> UI[UI metadata<br/>typio-settings]
+    H->>C: initialise core.toml
+    H->>W: start discovery probe
+    W-->>H: EngineHello + SCHEMA records
+    H->>C: install dynamic schema
+    H--xW: close probe before HostHello
+    U->>H: config.list / engine.describe
+    H-->>U: typed fields and defaults
+    H->>W: start selected engine
+    W-->>H: EngineHello + SCHEMA records
+    H-->>W: HostHello
+    W->>C: create worker-local instance and initialise engine
 ```
 
-Lookup, default application, and field enumeration see both layers transparently. Adding a new host-level field means appending one entry to the static base; adding a new engine field means the engine declares the field and either exports `typio_engine_get_config_schema` for the host loader to register, or calls `typio_config_schema_register_many` from its own `init`. Core never has to know which knobs an engine exposes.
+Discovery executes only trusted manifests from the configured engine search
+directories. The probe must be cheap: workers publish metadata and schema
+before loading dictionaries or ML models, and must tolerate the channel
+closing without HostHello.
 
-Why dynamic registration matters: it lets the framework keep its own surface narrow ("display things and route key events") while letting engines evolve their own configuration independently of libtypio releases. Adding a new option to Rime no longer requires a libtypio change. See the [Schema reference](../reference/host-abi/schema.md) for the exact ABI.
+## Persistent files
 
-### Order of operations
+| File | Owner | Purpose |
+|---|---|---|
+| `core.toml` | libtypio through the host | Framework and per-engine user intent |
+| `platform.toml` | Reference host | Frontend presentation |
+| `engine-state.toml` | Engine registry | Last active language and engine choices |
+| `identity-engine-state.toml` | Host/core identity layer | Per-application engine and mode memory |
 
-1. Host loader `dlopen`s each engine plugin.
-2. Host calls `typio_engine_get_info` and (if exported) `typio_engine_get_config_schema`, forwarding the schema to `typio_config_schema_register_many`.
-3. `typio_instance_init` loads `core.toml` and calls `typio_config_apply_defaults`, which sees both layers in one pass.
-4. UI consumers and D-Bus introspection use `typio_config_schema_fields` to enumerate the combined view.
+Unknown keys already present in `core.toml` are preserved on round trip. This
+allows an engine to be temporarily uninstalled without destroying its
+configuration. TIP refuses a brand-new unknown key because it has neither a
+schema type nor an existing stored type.
 
-The "exported function before instantiation" order is what makes engine config visible to settings UIs before the engine itself is activated. An engine that registers from `init` instead won't show its keys until first activation; both are supported, the export form is preferred.
+## Defaults and strict writes
 
-### Unknown keys
+`typio_config_apply_defaults` fills missing schema keys without overwriting
+user values. An empty string default means “leave the key absent.”
 
-A `core.toml` may legitimately contain `engines.foo.*` keys whose plugin is not currently installed. Those keys are preserved by the TOML store on read and round-trip on write, so swapping the engine back in restores the user's settings. No layer treats an unrecognised `engines.*` key as an error.
+The TIP v3 configuration methods are the supported remote mutation surface:
 
-## Configuration Lifecycle
+| Method | Behaviour |
+|---|---|
+| `config.get` | Return the stored value or schema default, with type and source |
+| `config.list` | Enumerate stored and schema-only values, optionally by prefix |
+| `config.set` | Parse using the schema or an existing value's type, validate choices/ranges, save, and reload |
+| `config.unset` | Remove the user value and expose the schema default again |
+| `config.show` | Serialise the current config |
+| `config.reload` | Re-read files and refresh runtime consumers |
 
-### 1. Load
+Control surfaces must use TIP over the daemon's owner-only Unix socket. They
+must not edit `core.toml` behind the daemon's back. D-Bus remains an
+implementation detail for the StatusNotifierItem tray and desktop services;
+it is not Typio's configuration protocol.
 
-`typio_instance_init` reads `core.toml` from the config directory:
+## Reload behaviour
 
-```text
-load_file(path)  ->  TypioConfig (flat key-value store)
-```
+The reference host watches `core.toml`, `platform.toml`, and the engine config
+directory. File events are debounced so editor save sequences collapse into a
+single reload. Accepted changes are saved before runtime refresh; invalid
+typed values are rejected without replacing the current configuration.
 
-The parser handles a TOML-compatible subset: top-level keys, `[section]` headers, and `key = value` pairs. Dotted keys are built by joining `section.key`.
+On reload, libtypio reapplies defaults and forwards `reload-config` to active
+workers. Engine choice rollback is independent for keyboard and voice: a
+failed replacement must not discard a still-usable previous engine.
 
-**Known parser limitations:**
+## Adding a field
 
-- No nested tables (`[a.b.c]` works; inline `{...}` does not)
-- No array-of-tables (`[[array]]`)
-- No multiline strings
-- No inline arrays (TOML `[1, 2, 3]`)
+For a framework key:
 
-These are sufficient for Typio's flat configuration model.
+1. add a `TypioConfigField` to `config_schema.rs`;
+2. add UI metadata only when a generic client should render it;
+3. update the configuration reference and tests.
 
-### 2. Apply Defaults
+For an engine key:
 
-`typio_config_apply_defaults` iterates the schema table and sets any missing key to the field's default value. Existing user values are never overwritten.
+1. add the field to the engine's static schema table under
+   `engines.<engine-name>.*`;
+2. return that table from `typio_engine_get_config_schema`;
+3. read the value from the worker-local `TypioInstance`;
+4. document and test the field in the engine repository.
 
-Defaults are applied after initial load, after `ReloadConfig()`, and after a valid `SetConfigText(s)` replacement has been parsed. Empty `SetConfigText` content is rejected before defaults are applied so an accidental blank write cannot silently become a full default config.
-
-After this step the daemon holds a complete config with no missing defaults.
-
-### 3. Hold
-
-`TypioInstance` owns the live `TypioConfig *`. All daemon subsystems read from it. Engine-specific sections are extracted via `typio_instance_get_engine_config(instance, "rime")`, which returns a copied sub-config.
-
-### 4. Expose Over D-Bus
-
-The D-Bus service, path, and interface constants are owned by the host that
-exposes the bus (`typio` for the reference host); libtypio does not
-publish them.
-
-The status bus exposes two config-related properties:
-
-- **`ConfigText`** — the full config serialised to text (`typio_instance_get_config_text`)
-- **`ActiveEngineState`** — includes engine-specific config entries prefixed with `config.*`
-
-And two config-mutating methods:
-
-- **`SetConfigText(s)`** — parse -> defaults -> save -> reload
-- **`ReloadConfig()`** — re-read file from disk -> defaults -> switch engine if needed -> notify callback
-
-Both emit `PropertiesChanged` after completing.
-
-### 5. Edit From Control Surfaces
-
-Control surfaces follow the instant-apply model documented in the `typio-settings` repository's `docs/explanation/control-surfaces.md`:
-
-1. Read `ConfigText` from the daemon
-2. Seed a local stage
-3. Let the user edit
-4. Submit the full staged config via `SetConfigText`
-
-Control surfaces never write `core.toml` directly.
-
-### 6. Reload
-
-`typio_instance_reload_config` (called by `SetConfigText`, `ReloadConfig`, or the debounced config-watch timer) replaces the in-memory config, re-runs defaults, switches the active engine if the state file changed, tells the active engine to `reload_config`, and fires the `config_reloaded_callback`. The Wayland frontend registers this callback to refresh shortcuts, voice, and the status bus.
-
-Inotify events do not reload config directly. `wl_runtime_config.c` schedules a short debounce timer so common editor save patterns (`write`, `rename`, `chmod`, multiple close events) collapse into one reload. If the watched file is deleted, moved, or atomically replaced, the watcher is rearmed before the reload is scheduled.
-
-The callback boundary means Typio accepted the new config and refreshed the runtime pipeline. It does not require every optional subsystem to finish heavy work synchronously. In particular, voice backends may continue loading a replacement model on a background thread after `reload_config` returns.
-
-### 7. Explicit Rime Deploy
-
-`typio_instance_deploy_rime_config` is the manual rebuild path for out-of-band Rime edits under `user_data_dir`, such as `default.custom.yaml`. Unlike normal config reload, this path forces librime maintenance and invalidates generated `build/*.yaml` artifacts first so rapid successive edits still rebuild even if filesystem timestamps land in the same second.
-
-After deployment completes, the engine increments an internal `deploy_id`. All existing Rime sessions track the `deploy_id` at the time of their creation. On the next interaction, the engine detects the mismatch, transparently destroys the stale librime session, and recreates it using the newly compiled Rime data. This ensures that changes take effect immediately in all open applications without requiring a Typio restart.
-
-## Schema Table Structure
-
-`TypioConfigField` shape and per-field semantics are documented in the
-[Schema reference](../reference/host-abi/schema.md#typioconfigfield). Two
-points worth understanding at the design level:
-
-- Fields without `ui_label` are internal (no UI representation).
-- Fields with `runtime_property` are still persisted config keys, but the
-  metadata signals that the key has a direct daemon runtime mirror; control
-  surfaces should prefer that runtime property for display state when
-  appropriate. See [Config & Runtime Ownership](config-runtime-ownership.md).
-
-## How To Add A New Configuration Field
-
-For a **host-level** key (anything outside `engines.<name>.*`):
-
-1. Add one `TypioConfigField` entry to the `SCHEMA` table in `src/config_schema.rs`.
-2. If it should appear in `typio-settings`, set the `ui_*` fields.
-3. Update [Configuration Reference](../reference/configuration.md).
-
-For an **engine-level** key:
-
-1. Add the `TypioConfigField` entry to your engine.s static schema table.
-2. Either export it via `typio_engine_get_config_schema` or register it in your `init` with `typio_config_schema_register_many`.
-3. Update the engine's own user-facing docs (and the relevant row in [Engine Reference](../reference/engines.md) if upstream).
-4. No libtypio change is needed.
-
-Either way the field is automatically parsed, defaulted, serialised, and exposed over D-Bus.
+No libtypio release is required merely to add an engine-owned field.
 
 ## Invariants
 
-- The daemon is the only writer of `core.toml`.
-- `ConfigText` round-trips: `load_string(to_string(config))` produces an equivalent config.
-- `apply_defaults` never overwrites a user-set value.
-- All daemon-owned config entry points apply schema defaults before publishing the config to runtime subsystems.
-- Config watch reloads are debounced and must be safe across atomic file replacement.
-- Control surfaces must not write config state before receiving the first `ConfigText` from the daemon (see the known failure pattern in the `typio-settings` repository's `docs/explanation/control-surfaces.md`).
+- Each persisted key has one schema owner.
+- The daemon is the only writer of `core.toml` while it is running.
+- Defaults never overwrite user values.
+- Dynamic schema replacement is all-or-nothing and namespace-scoped.
+- Settings and CLI clients read runtime truth from TIP notifications/status,
+  not by guessing from files.
+- Engine commands use `engine.invoke`; mutable engine values use
+  `config.set`. The two mechanisms do not overlap.

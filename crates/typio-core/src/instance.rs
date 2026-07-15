@@ -18,7 +18,7 @@ use crate::config_schema;
 use crate::input_context;
 use crate::types::*;
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CStr, CString};
 use std::ptr;
 
 const TYPIO_CONFIG_FILE_NAME: &str = "core.toml";
@@ -28,43 +28,43 @@ const TYPIO_CONFIG_FILE_NAME: &str = "core.toml";
 /* -------------------------------------------------------------------------- */
 
 pub(super) fn get_default_config_dir() -> String {
-    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
-        if !config_home.is_empty() {
-            return format!("{}/typio", config_home);
-        }
+    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME")
+        && !config_home.is_empty()
+    {
+        return format!("{}/typio", config_home);
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return format!("{}/.config/typio", home);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return format!("{}/.config/typio", home);
     }
     "/tmp/typio".to_string()
 }
 
 pub(super) fn get_default_data_dir() -> String {
-    if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
-        if !data_home.is_empty() {
-            return format!("{}/typio", data_home);
-        }
+    if let Ok(data_home) = std::env::var("XDG_DATA_HOME")
+        && !data_home.is_empty()
+    {
+        return format!("{}/typio", data_home);
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return format!("{}/.local/share/typio", home);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return format!("{}/.local/share/typio", home);
     }
     "/tmp/typio/data".to_string()
 }
 
 pub(super) fn get_default_state_dir() -> String {
-    if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
-        if !state_home.is_empty() {
-            return format!("{}/typio", state_home);
-        }
+    if let Ok(state_home) = std::env::var("XDG_STATE_HOME")
+        && !state_home.is_empty()
+    {
+        return format!("{}/typio", state_home);
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return format!("{}/.local/state/typio", home);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return format!("{}/.local/state/typio", home);
     }
     "/tmp/typio/state".to_string()
 }
@@ -94,9 +94,6 @@ pub struct TypioInstance {
 
     pub(crate) engine_data_dirs: HashMap<String, CString>,
     pub(crate) engine_state_dirs: HashMap<String, CString>,
-
-    pub(crate) plugin_loader: Option<TypioPluginLoaderFunc>,
-    pub(crate) plugin_loader_user_data: *mut c_void,
 
     pub(crate) contexts: Vec<crate::wrappers::InputContextPtr>,
     pub(crate) focused_context: *mut input_context::TypioInputContext,
@@ -141,12 +138,6 @@ impl TypioInstance {
         TypioResult::TypioOk
     }
 
-    pub(crate) fn register_builtin_engines(&mut self) {
-        // libtypio is a pure framework: no engines are built in.
-        // All engines are loaded at runtime via the host's
-        // engine discovery callback from the configured engine directories.
-    }
-
     pub(crate) fn save_config(&self) -> TypioResult {
         if self.config.is_null() {
             return TypioResult::TypioErrorInvalidArgument;
@@ -167,7 +158,7 @@ impl TypioInstance {
 //
 // Added so a Rust host (typio ADR-0035) can construct and drive
 // a TypioInstance without going through the C ABI. The C ABI surface
-// below remains unchanged for engine plugins and other C consumers.
+// below remains available for native workers and other C consumers.
 //
 // These methods are thin wrappers over the existing `pub(crate)` helpers
 // — no behaviour change, just a typed entry point.
@@ -183,10 +174,8 @@ impl TypioInstance {
     /// caller owns the allocation and must call [`Self::shutdown_rust`]
     /// before dropping to persist state.
     ///
-    /// `engine_dirs` is stored verbatim; the host's engine-loader
-    /// callback (set separately via the C ABI for now — a follow-up
-    /// will add a Rust-native registration path) is invoked once per
-    /// entry during [`Self::init_rust`].
+    /// `engine_dirs` is stored for host-side manifest reload. Discovery is a
+    /// host concern and is not run implicitly by [`Self::init_rust`].
     pub fn new_rust(
         config_dir: Option<&str>,
         data_dir: Option<&str>,
@@ -223,8 +212,6 @@ impl TypioInstance {
             engine_dirs,
             engine_data_dirs: HashMap::new(),
             engine_state_dirs: HashMap::new(),
-            plugin_loader: None,
-            plugin_loader_user_data: ptr::null_mut(),
             contexts: Vec::with_capacity(8),
             focused_context: ptr::null_mut(),
             callbacks: Default::default(),
@@ -383,47 +370,15 @@ pub extern "C" fn typio_instance_new_with_config(
     }
     .or_else(|| Some(CString::new(get_default_state_dir()).unwrap()));
 
-    // The host supplies the list of engine directories to scan. Core no
-    // longer invents a default path or reads TYPIO_ENGINE_DIR — that is
-    // platform/host policy and belongs in the host.
-    let mut engine_dirs: Vec<CString> = Vec::new();
-    if !config.is_null() {
-        let dirs_ptr = unsafe { (*config).engine_dirs };
-        if !dirs_ptr.is_null() {
-            let mut i = 0isize;
-            loop {
-                let entry = unsafe { *dirs_ptr.offset(i) };
-                if entry.is_null() {
-                    break;
-                }
-                if let Ok(s) = unsafe { CStr::from_ptr(entry) }.to_str() {
-                    if !s.is_empty() {
-                        engine_dirs.push(CString::new(s).unwrap());
-                    }
-                }
-                i += 1;
-            }
-        }
-    }
-
-    let (plugin_loader, plugin_loader_user_data) = if !config.is_null() {
-        let cfg = unsafe { &*config };
-        (cfg.plugin_loader, cfg.plugin_loader_user_data)
-    } else {
-        (None, ptr::null_mut())
-    };
-
     let instance = Box::new(TypioInstance {
         registry: crate::wrappers::RegistryPtr(ptr::null_mut()),
         config: crate::wrappers::ConfigPtr(ptr::null_mut()),
         config_dir,
         data_dir,
         state_dir,
-        engine_dirs,
+        engine_dirs: Vec::new(),
         engine_data_dirs: HashMap::new(),
         engine_state_dirs: HashMap::new(),
-        plugin_loader,
-        plugin_loader_user_data,
         contexts: Vec::with_capacity(8),
         focused_context: ptr::null_mut(),
         callbacks: Default::default(),
@@ -513,27 +468,6 @@ pub extern "C" fn typio_instance_init(instance: *mut TypioInstance) -> TypioResu
                 .inner
                 .set_state_dir(&dir.to_string_lossy());
         }
-    }
-
-    inst.register_builtin_engines();
-
-    // Engine discovery is the host's job. Core invokes the host-supplied
-    // loader callback once per configured engine directory; the callback
-    // performs platform-specific enumeration and calls
-    // typio_registry_register_engine_process for each engine it accepts.
-    if let Some(loader) = inst.plugin_loader {
-        for dir in &inst.engine_dirs {
-            let loaded = loader(inst.registry.0, dir.as_ptr(), inst.plugin_loader_user_data);
-            log::info!(
-                "Host loader registered {} engine(s) from {}",
-                loaded,
-                dir.to_string_lossy()
-            );
-        }
-    } else if !inst.engine_dirs.is_empty() {
-        log::warn!(
-            "engine_dirs configured but no engine discovery callback provided — engines will not be available"
-        );
     }
 
     // Language-first activation (ADR-0018): when any languages are enabled

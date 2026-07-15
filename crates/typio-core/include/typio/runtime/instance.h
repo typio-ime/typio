@@ -20,32 +20,10 @@ extern "C" {
 
 /* ── Instance lifecycle ───────────────────────────────────────────────── */
 
-/**
- * @brief Host-provided engine discovery callback.
- *
- * Called once per directory in `TypioInstanceConfig::engine_dirs` during
- * `typio_instance_init`, after the registry is created but before last-used
- * engine state is restored. The implementation should enumerate engine
- * manifests in @p dir using platform policy and call
- * `typio_registry_register_engine_process` for each accepted engine.
- *
- * @return Number of engines successfully registered (used for logging).
- */
-typedef int (*TypioPluginLoaderFunc)(TypioRegistry *registry,
-                                      const char *dir,
-                                      void *user_data);
-
 typedef struct TypioInstanceConfig {
     const char *config_dir;
     const char *data_dir;
     const char *state_dir;
-    /** NULL-terminated list of directories scanned by `plugin_loader`.
-     *  May be NULL to skip engine discovery entirely. */
-    const char *const *engine_dirs;
-    /** Optional engine discovery callback (see `TypioPluginLoaderFunc`).
-     *  If NULL, no engines are available. */
-    TypioPluginLoaderFunc plugin_loader;
-    void *plugin_loader_user_data;
 } TypioInstanceConfig;
 
 /* Logging is configured out-of-band via `typio_logger_*` (`typio/abi/log.h`).

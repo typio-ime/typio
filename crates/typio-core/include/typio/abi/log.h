@@ -42,7 +42,7 @@ void typio_logger_set_recent_capacity(size_t capacity);
 
 bool typio_logger_dump_recent(const char *path);
 
-/* ── Engine/plugin logging ──────────────────────────────────────────────── */
+/* ── Engine worker logging ──────────────────────────────────────────────── */
 
 /* Implemented in Rust; C code should use the inline wrappers below. */
 void typio_log_emit(TypioLogLevel level, const char *message);

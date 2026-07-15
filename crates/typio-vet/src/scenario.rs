@@ -416,7 +416,7 @@ unsafe fn voice_drive(create: VoiceFactory) -> Vec<CheckResult> {
     } else {
         let silence = vec![0.0f32; 16_000];
         let text = ((*voice).process_audio.unwrap())(engine, silence.as_ptr(), silence.len());
-        let verdict = if text.is_null() {
+        if text.is_null() {
             CheckResult::pass(BEHAVIOR, "process_audio_silent")
         } else {
             let ok = CStr::from_ptr(text).to_str().is_ok();
@@ -431,8 +431,7 @@ unsafe fn voice_drive(create: VoiceFactory) -> Vec<CheckResult> {
             };
             libc::free(text as *mut c_void);
             v
-        };
-        verdict
+        }
     });
 
     if let Some(destroy) = (*base.base_ops).destroy {

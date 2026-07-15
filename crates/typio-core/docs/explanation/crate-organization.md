@@ -35,16 +35,16 @@ graph LR
     end
 
     HW --> LT
-    HS --> LT
-    HC -.->|UDS only| HW
+    HS -.->|TIP| HW
+    HC -.->|TIP| HW
 
     LT --> TA
 
-    EB --> TA
-    ER --> TA
-    EM --> TA
-    EW --> TA
-    EM2 --> TA
+    EB -.->|Engine Protocol| LT
+    ER -.->|Engine Protocol| LT
+    EM -.->|Engine Protocol| LT
+    EW -.->|Engine Protocol| LT
+    EM2 -.->|Engine Protocol| LT
 ```
 
 ### `libtypio` — the core crate
@@ -60,24 +60,25 @@ A single Rust crate that builds both `libtypio.so` (cdylib) and `libtypio.rlib`.
 
 It knows **nothing** about Wayland, GTK, X11, or the event loop. The only platform-specific code is the engine registration surface: the host discovers engine manifests and hands engine argv to `typio_registry_register_engine_process`.
 
-### `typio-abi` — the shared type crate
+### `typio-abi` — the C-layout type crate
 
 A workspace member at `crates/typio-abi/`. It contains **only** `#[repr(C)]` structs, enums, and type aliases — zero implementation, zero dependencies beyond `std`.
 
 Why does this exist as a separate crate?
 
-- **Rust engines** (e.g. `typio-engine-compose`) need the type definitions to compile, but they must not link `libtypio.so` (they are loaded *by* libtypio at runtime).
+- Core and conformance tools share one audited definition of each C layout.
 - **Test tools** can import the types without pulling in the full core library.
 - **cbindgen** runs against `typio-abi` to produce the C headers under `include/typio/abi/`.
 
-If you write a Rust engine, your `Cargo.toml` depends on `typio-abi`, not `libtypio`.
+A pure Rust worker may implement Typio Engine Protocol directly and need no
+Typio crate dependency, as `typio-engine-compose` does.
 
 ### Host and control repositories
 
 | Repository | Language | Links against | Reason for separation |
 |---|---|---|---|
-| `typio` | Rust | `libtypio` crate | Linux host integration: Wayland, candidate UI, D-Bus, and PipeWire. |
-| `typio-settings` | GTK4 | `libtypio.so` | UI toolkit dependency (GTK4) is heavy and platform-specific. |
+| `typio` | Rust | `libtypio` crate | Linux host integration: Wayland, candidate UI, TIP, tray D-Bus, and PipeWire. |
+| `typio-settings` | GTK4 | TIP client | UI toolkit dependency (GTK4) is heavy and platform-specific. |
 | `crates/typioctl` | Rust | nothing | Speaks UDS to the host; does not need libtypio at all. |
 
 ### Engine repositories
@@ -85,7 +86,9 @@ If you write a Rust engine, your `Cargo.toml` depends on `typio-abi`, not `libty
 Every engine is a standalone repo producing an engine executable and a
 `typio-engine-*.toml` manifest.
 
-- C engines: `typio/abi/*.h` headers + `libtypio.so` for ABI helper symbols inside the engine process.
+- C engines: Typio headers plus `libtypio.so` for the worker-local instance,
+  config, input-context, and protocol support. Engine object lifecycle helpers
+  are header-only.
 - Rust engines: any Rust crate that speaks Typio Engine Protocol on fd 3.
 
 Hosts conventionally discover installed manifests under
@@ -100,25 +103,30 @@ These rules decide whether a new component belongs in `libtypio`, in a host repo
 
 If a decision involves the Wayland protocol, XKB state, GTK widgets, or the event loop, it lives in a host repo. If it involves config parsing, engine switching, or input context state, it lives in `libtypio`.
 
-### 2. The C ABI is the only cross-repo contract
+### 2. Cross-repo contracts stay narrow
 
 `include/typio/` headers are partitioned by audience:
 
 | Layer | Audience | Stability promise |
 |---|---|---|
-| `typio/abi/` | Engine plugins | Additive-only; `struct_size` discipline |
+| `typio/abi/` | Native engine workers | Versioned C layouts; payload `struct_size` discipline |
 | `typio/runtime/` | Hosts embedding libtypio | Evolves with core releases |
 | `typio/schema/` | Config tools & UI | Evolves with core releases |
 
-No repo may reach into another repo's internals. Engines may include only `typio/abi/abi.h`. Hosts may include `typio/typio.h` (the full umbrella).
+No repo may reach into another repo's internals. Native engine implementation
+files use `typio/abi/abi.h`; the standard worker harness additionally uses the
+runtime and schema headers to own its local instance and publish config fields.
+Hosts may include `typio/typio.h` (the full umbrella).
 
 ### 3. Engines release independently
 
 Engines declare their own version, install their own manifest, and carry their own config schema extensions via `typio_config_schema_register_*`. A framework major bump does not force an engine rebuild unless Typio Engine Protocol or the engine ABI itself breaks.
 
-### 4. No `dlopen` in core
+### 4. No engine `dlopen`
 
-`libtypio` contains no hard-coded engine paths and does not discover engines. The host implements `TypioPluginLoaderFunc` and calls `typio_registry_register_engine_process`. This keeps core portable to platforms with different packaging and process-launch policies.
+`libtypio` contains no hard-coded engine paths. The host discovers manifests,
+resolves argv, and registers process backends. Core starts workers only through
+Typio Engine Protocol; it never loads engine code into the host process.
 
 ### 5. Cross-process protocols are host concerns
 
@@ -142,17 +150,16 @@ struct TypioKeyEvent {
     uint32_t keycode;
     // ...
 };
-```
-
 The framework reads only the fields the caller knew about. New payload fields
 can be appended without breaking older engines. Engine metadata and vtable
 compatibility are gated separately by `typio_engine_abi_version`.
 
 ### Version gating
 
-The engine runtime checks `typio_engine_abi_version` before registration. An
-engine compiled against a newer ABI than the runtime supports is rejected
-gracefully with `TypioErrorEngineLoadFailed`.
+Native workers export `typio_engine_abi_version` for conformance tooling and
+build against the versioned `typio-engine-abi.pc` contract. Host compatibility
+is negotiated independently by EngineHello's protocol version because the
+host never loads the native engine object.
 
 ### Ownership clarity
 
@@ -167,14 +174,15 @@ This prevents cross-CRT heap corruption on Windows and makes ownership auditable
 ### What the ABI is *not*
 
 - **Not a Rust public API.** The Rust crate is an implementation detail. Only the C headers are stable.
-- **Not a network protocol.** UDS and D-Bus schemas live in the host repo.
+- **Not the engine transport.** Typio Engine Protocol is the process boundary;
+  TIP is the host control boundary.
 - **Not a UI toolkit binding.** GTK, Qt, or native macOS UI code is a host concern.
 
 ## Summary
 
 | Question | Answer |
 |---|---|
-| Why is `typio-abi` a separate crate? | So Rust engines can share types without linking the full core library. |
+| Why is `typio-abi` a separate crate? | So core and conformance tools share audited C layouts without implementation coupling. |
 | Why is `typio-settings` a separate repo? | So GTK settings UI dependencies stay outside the host/framework workspace. |
 | Why do engines live in separate repos? | So they release on their own cadence and third parties can write new ones. |
 | Why does core contain no `dlopen`? | So the host owns platform-specific loading and core remains portable. |

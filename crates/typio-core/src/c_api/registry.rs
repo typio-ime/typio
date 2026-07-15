@@ -315,13 +315,13 @@ pub extern "C" fn typio_registry_get_instance(registry: *mut TypioRegistry) -> *
 /// exceed the runtime's.
 ///
 /// # Safety
-/// `plugin` must be NULL or point to a valid `TypioAbiVersion`.
+/// `reported` must be NULL or point to a valid `TypioAbiVersion`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typio_engine_abi_check(plugin: *const TypioAbiVersion) -> bool {
-    if plugin.is_null() {
+pub unsafe extern "C" fn typio_engine_abi_check(reported: *const TypioAbiVersion) -> bool {
+    if reported.is_null() {
         return false;
     }
-    let v = unsafe { &*plugin };
+    let v = unsafe { &*reported };
     v.major == typio_abi::TYPIO_ENGINE_ABI_MAJOR && v.minor <= typio_abi::TYPIO_ENGINE_ABI_MINOR
 }
 

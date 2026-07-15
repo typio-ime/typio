@@ -192,7 +192,10 @@ The `compose` engine (`typio-engine-compose/src/main.rs`) only ever returns
 with no preedit and no candidates. It is a minimum useful keyboard engine
 and a reference for what *not* using composition looks like.
 
-The `librime` plugin uses every stage — preedit, multi-page candidates, mode switching, deferred deployment. The `typio-engine-rime` repository's `docs/explanation/librime-integration.md` (§5.2 Processing Flow) shows the concrete steps an engine performs inside a single `process_key`.
+The `librime` worker uses every stage — preedit, multi-page candidates, mode
+switching, deferred deployment. The `typio-engine-rime` repository's
+`docs/explanation/librime-integration.md` (§5.2 Processing Flow) shows the
+concrete steps an engine performs inside a single `process_key`.
 
 ## See Also
 
@@ -200,4 +203,4 @@ The `librime` plugin uses every stage — preedit, multi-page candidates, mode s
 - [Architecture Overview](architecture-overview.md) — components and protocol stack
 - [Engine Operations](../reference/engine/ops.md) — full signatures for `TypioEngineBaseOps`, `TypioKeyboardEngineOps`
 - [Input Context](../reference/host-abi/input-context.md) — input-context emit functions
-- [How to Create a Custom Keyboard Engine](../how-to/create-custom-keyboard-engine.md) — applying this state machine in a new keyboard plugin
+- [How to Create a Custom Keyboard Engine](../how-to/create-custom-keyboard-engine.md) — applying this state machine in a new keyboard worker

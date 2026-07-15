@@ -3,21 +3,21 @@
  * @brief Engine ABI version — the compatibility witness between a native
  *        engine implementation and the engine runtime.
  *
- * Every engine plugin exports `typio_engine_abi_version()` (emitted
- * automatically by the `TYPIO_*_ENGINE_DEFINE` macros in engine.h). A direct
- * worker links it into the executable; a compatibility loader may resolve it
- * with `dlsym` inside the worker process. The runtime rejects the engine when
- * the major version differs from its own, or when the engine's minor exceeds
- * the runtime's.
+ * Every native engine implementation exports `typio_engine_abi_version()`
+ * (emitted automatically by the `TYPIO_*_ENGINE_DEFINE` macros in engine.h).
+ * A direct worker links it into the executable and validates it before engine
+ * construction; `typio-vet` may resolve it from a conformance artifact. The
+ * runtime rejects the engine when the major version differs from its own, or
+ * when the engine's minor exceeds the runtime's.
  * This replaces the older `TypioEngineInfo.struct_size` field — see
  * `docs/dev/abi-stability.md`.
  *
  * Versioning policy (pre-1.0):
- *   - MAJOR bumps on any incompatible layout/semantic change. Plugins built
+ *   - MAJOR bumps on any incompatible layout/semantic change. Engines built
  *     against a different major are always rejected.
  *   - MINOR bumps on backward-compatible additions. A runtime accepts engines
  *     whose minor is <= its own (the runtime understands everything the engine
- *     relies on); it rejects plugins built against a newer minor.
+ *     relies on); it rejects engines built against a newer minor.
  */
 
 #ifndef TYPIO_ABI_VERSION_H
@@ -35,7 +35,7 @@ extern "C" {
 #define TYPIO_ENGINE_ABI_MINOR 2u
 
 /**
- * @brief ABI version reported by a plugin through `typio_engine_abi_version`.
+ * @brief ABI version reported by an engine through `typio_engine_abi_version`.
  */
 typedef struct TypioAbiVersion {
     uint32_t major;
@@ -43,9 +43,9 @@ typedef struct TypioAbiVersion {
 } TypioAbiVersion;
 
 /**
- * @brief Type of the `typio_engine_abi_version` entry point every plugin
+ * @brief Type of the `typio_engine_abi_version` entry point every native engine
  *        exports. The returned pointer must remain valid for the lifetime of
- *        the loaded plugin (engines return a pointer to a static value).
+ *        the engine process (engines return a pointer to a static value).
  */
 typedef const TypioAbiVersion *(*TypioEngineAbiVersionFunc)(void);
 
@@ -56,12 +56,12 @@ typedef const TypioAbiVersion *(*TypioEngineAbiVersionFunc)(void);
  * Engine runtimes call this after resolving `typio_engine_abi_version` and
  * before registering the engine. The `typio-vet` tool uses it too.
  *
- * @param plugin Version reported by the plugin, or NULL.
- * @return true when @p plugin is non-NULL, `plugin->major` equals
- *         `TYPIO_ENGINE_ABI_MAJOR`, and `plugin->minor` is <=
+ * @param reported Version reported by the engine, or NULL.
+ * @return true when @p reported is non-NULL, `reported->major` equals
+ *         `TYPIO_ENGINE_ABI_MAJOR`, and `reported->minor` is <=
  *         `TYPIO_ENGINE_ABI_MINOR`; false otherwise.
  */
-bool typio_engine_abi_check(const TypioAbiVersion *plugin);
+bool typio_engine_abi_check(const TypioAbiVersion *reported);
 
 #ifdef __cplusplus
 }

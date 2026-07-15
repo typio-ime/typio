@@ -111,10 +111,10 @@ pub extern "C" fn typio_input_context_set_property(
         .into_owned();
 
     if let Some(prop) = ctx_ref.properties.iter_mut().find(|p| p.key == key_str) {
-        if let Some(ff) = prop.free_func {
-            if !prop.value.is_null() {
-                ff(prop.value);
-            }
+        if let Some(ff) = prop.free_func
+            && !prop.value.is_null()
+        {
+            ff(prop.value);
         }
         prop.value = value;
         prop.free_func = free_func;

@@ -166,24 +166,22 @@ pub(crate) unsafe fn apply_keyboard_mode(
         inst.last_status_icon = CString::new(icon.as_bytes()).ok();
     }
 
-    if announce {
-        if let Some(cb) = inst.callbacks.mode_changed {
-            cb(
-                instance.cast(),
-                &inst.last_mode.0,
-                inst.callbacks.mode_changed_user_data,
-            );
-        }
+    if announce && let Some(cb) = inst.callbacks.mode_changed {
+        cb(
+            instance.cast(),
+            &inst.last_mode.0,
+            inst.callbacks.mode_changed_user_data,
+        );
     }
 
-    if let Some(cb) = inst.callbacks.status_icon_changed {
-        if !mode_ref.icon_name.is_null() {
-            cb(
-                instance.cast(),
-                mode_ref.icon_name,
-                inst.callbacks.status_icon_changed_user_data,
-            );
-        }
+    if let Some(cb) = inst.callbacks.status_icon_changed
+        && !mode_ref.icon_name.is_null()
+    {
+        cb(
+            instance.cast(),
+            mode_ref.icon_name,
+            inst.callbacks.status_icon_changed_user_data,
+        );
     }
 }
 

@@ -183,10 +183,10 @@ impl TypioInputContext {
 impl Drop for TypioInputContext {
     fn drop(&mut self) {
         for prop in &self.properties {
-            if let Some(free_fn) = prop.free_func {
-                if !prop.value.is_null() {
-                    free_fn(prop.value);
-                }
+            if let Some(free_fn) = prop.free_func
+                && !prop.value.is_null()
+            {
+                free_fn(prop.value);
             }
         }
         self.properties.clear();

@@ -1,14 +1,14 @@
 /**
  * @file abi/abi.h
- * @brief Umbrella header for engine plugins — the complete engine ABI.
+ * @brief Umbrella header for native engine workers — the complete engine ABI.
  *
- * Engine plugins include this single header to access the entire stable
- * plugin ABI. It pulls in only the typio/abi headers — never host-only
+ * Native engine implementations include this single header to access the
+ * stable engine ABI. It pulls in only the typio/abi headers — never host-only
  * runtime, ipc, or schema headers — so an engine that includes this and
  * nothing else from typio/ is guaranteed to stay within the engine contract.
  *
- * Out-of-tree engines copy the necessary `typio/abi/` headers or link
- * against the `libtypio` static library at build time.
+ * Out-of-tree workers consume the installed headers and link libtypio for the
+ * worker-local instance and input-context implementation.
  */
 
 #ifndef TYPIO_ABI_ABI_H

@@ -11,13 +11,13 @@ Header: `typio/schema/config_schema.h`. Field values are stored in
 | Layer | Owner | Source | Mutable at runtime? |
 |-------|-------|--------|---------------------|
 | Static base | libtypio | Compiled into `libtypio.so` (`src/config_schema.rs`) | No |
-| Dynamic | Engine plugin (or any caller) | Registered via `typio_config_schema_register*` | Yes |
+| Dynamic | Engine worker (or any caller) | Published in EngineHello and registered via `typio_config_schema_register*` | Yes |
 
 Lookup, default application, and field enumeration see both layers
-transparently. Engine plugins own every `engines.<name>.*` key — including
+transparently. Engine workers own every `engines.<name>.*` key — including
 the built-in-feeling `engines.compose.*`, which ships as the
-`typio-engine-compose` plugin. The static base only covers host-level keys
-(`display.*`, `notifications.*`, `shortcuts.*`, `voice.*`).
+`typio-engine-compose` worker. The static base only covers framework-level
+policy; frontend presentation keys live in frontend-owned config files.
 
 ## `TypioFieldType`
 
@@ -55,7 +55,7 @@ typedef struct TypioConfigField {
 | `ui_section` | Logical grouping, e.g. `display`, `shortcuts`, `<engine-name>` |
 | `ui_min`/`ui_max`/`ui_step` | Range hints for numeric fields. Ignored when both `min` and `max` are `0`. |
 | `ui_options` | NULL-terminated string array for dropdowns. NULL for free-form. |
-| `runtime_property` | Matching D-Bus runtime property, or NULL. See [Config & Runtime Ownership](../../explanation/config-runtime-ownership.md). |
+| `runtime_property` | Optional host-defined runtime state key, or NULL. See [Config & Runtime Ownership](../../explanation/config-runtime-ownership.md). |
 
 ## Lookup
 
@@ -69,13 +69,13 @@ const char             *typio_config_schema_runtime_property(const char *key);
 |----------|---------|-------|
 | `typio_config_schema_find` | Pointer into the combined table, or NULL | Searches static base **and** dynamic registrations |
 | `typio_config_schema_fields` | Pointer to the flat combined table | `*count` is written if non-NULL |
-| `typio_config_schema_runtime_property` | Matching D-Bus property name, or NULL | NULL when the field has no `runtime_property` |
+| `typio_config_schema_runtime_property` | Host-defined runtime state key, or NULL | NULL when the field has no `runtime_property` |
 
 Pointer-stability contract: pointers returned by the read APIs (and the
 strings they reference) are valid until the next `register*` / `unregister`
 call. Callers needing a long-lived snapshot should copy out. In practice
-engines register their schema once at plugin-load time, well before any UI
-consumer queries it.
+the host installs each engine schema during the executable's discovery probe,
+before any UI consumer queries it.
 
 ## Defaults
 
@@ -115,8 +115,7 @@ free or stack-drop its storage immediately after the call returns.
 
 ## Recommended Engine Worker Pattern
 
-Declare a static field table and either register it during worker
-initialization or expose it through
+Declare a static field table and expose it through
 [`typio_engine_get_config_schema`](../engine/entry.md#optional-typio_engine_get_config_schema):
 
 ```c
@@ -152,6 +151,11 @@ const TypioConfigField *typio_engine_get_config_schema(size_t *out_count) {
     return RIME_SCHEMA;
 }
 ```
+
+The canonical worker harness registers this table in its local schema before
+creating `TypioInstance`, and serialises it into EngineHello for the host. The
+host validates the `engines.<name>.` namespace and replaces that engine's
+previous dynamic schema atomically.
 
 ## See also
 

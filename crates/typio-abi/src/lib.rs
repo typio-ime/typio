@@ -387,7 +387,6 @@ pub struct TypioEngine {
     pub user_data: *mut c_void,
     pub active: bool,
     pub initialized: bool,
-    pub config_path: *mut c_char,
     pub surface: *const TypioEngineSurfaceOps,
 }
 

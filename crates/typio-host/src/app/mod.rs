@@ -245,9 +245,11 @@ impl App {
             self.options.config_dir.as_deref(),
             self.options.data_dir.as_deref(),
             None, // state_dir — let libtypio pick the default.
-            // Rust host owns manifest discovery below; libtypio's legacy
-            // loader callback slot is intentionally unused.
-            Vec::new(),
+            // Retained for host-side engine.reload manifest resolution.
+            engine_dirs
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
         );
 
         instance
@@ -272,8 +274,9 @@ impl App {
         // Register engines from the resolved directories via libtypio's
         // native Rust API (ADR-0035). EngineLoader handles manifest
         // discovery, parsing, capability negotiation, and ProcessBackend
-        // registration in one pass — bypassing the C ABI used by the
-        // legacy `typio_registry_register_engine_process` path.
+        // registration in one pass. Embedding hosts can perform the same
+        // operation through the C `typio_registry_register_engine_process`
+        // API.
         let raw = instance.as_mut() as *mut TypioInstance;
         let registry = typio::instance::typio_instance_get_registry(raw);
         if registry.is_null() {

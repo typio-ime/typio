@@ -51,7 +51,8 @@ lives in the host crate — see
 The core library — a Rust crate (`libtypio`) exposing a hand-written C
 ABI, plus its public headers.
 
-- `Cargo.toml` / `Cargo.lock` — crate manifest. Package: `libtypio`. Outputs: `libtypio.so` (cdylib) and `libtypio.rlib`.
+- `Cargo.toml` — crate manifest. Package: `typio-core`; library name: `typio`.
+  Outputs: `libtypio.so` (cdylib) and `libtypio.rlib`.
 - `build.rs` — build script. Generates the `libtypio.pc` and `typio-engine-abi.pc` pkg-config files into `target/<profile>/`, and applies the GNU ld version script (`libtypio.map`) on ELF targets to restrict exported symbols to the `typio_*` / `TYPIO_*` namespace. The C headers under `include/typio/` are hand-written.
 - `libtypio.map` — linker version script controlling exported C ABI symbols.
 - `src/` — Rust sources. Each top-level module corresponds to one ABI area; larger modules are split into a directory of submodules.
@@ -60,7 +61,8 @@ ABI, plus its public headers.
   - `config_schema.rs` — static schema describing config keys, types, and defaults.
   - `input_context.rs` + `input_context/` (`callbacks.rs`, `content.rs`, `focus.rs`) — input context state, surrounding-text content, focus tracking, host callbacks.
   - `instance.rs` + `instance/` (`identity.rs`, `context.rs`, `callbacks.rs`, `config_ops.rs`) — top-level Typio instance lifecycle and per-instance config operations.
-  - `engine/mod.rs` — public engine trait and FFI vtable plumbing exposed to plugins.
+  - `engine/mod.rs` — C-mode metadata copy/equality helpers retained at the
+    local instance boundary; process workers are managed under `core/engine/`.
   - `core/engine/` (`mod.rs`, `backend/`, `event.rs`, `mode.rs`) — pure-Rust engine trait and `EngineBackend` abstraction ([ADR-0005](../adr/0005-internal-engine-backend-abstraction.md)). The only backend today is `Process` (out-of-process workers speaking the Typio Engine Protocol over fd 3); the in-process `FfiEngine` was removed in 0.2.0.
   - `core/engine/backend/` (`mod.rs`, `process.rs`, `engine_protocol.rs`) — the out-of-process worker transport and framed-IPC primitives.
   - `core/registry/` (`mod.rs`, `policy.rs`) — `EngineRegistry`, idle policy, switching.

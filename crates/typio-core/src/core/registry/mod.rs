@@ -687,10 +687,10 @@ impl EngineRegistry {
                 );
             }
         }
-        if engine_type == EngineType::Keyboard {
-            if let Some(remembered) = self.remembered_keyboard_for(tag) {
-                return Some(remembered);
-            }
+        if engine_type == EngineType::Keyboard
+            && let Some(remembered) = self.remembered_keyboard_for(tag)
+        {
+            return Some(remembered);
         }
         self.slots
             .iter()
@@ -783,6 +783,7 @@ impl EngineRegistry {
     pub fn invoke_command(&mut self, engine_name: &str, id: &str) -> Result<()> {
         let idx = self.find_index(engine_name).ok_or(EngineError::NotFound)?;
         let slot = &mut self.slots[idx];
+        slot.backend.instantiate()?;
         match slot.backend.with_engine(|engine| engine.invoke_command(id)) {
             Some(Ok(())) => Ok(()),
             Some(Err(e)) => Err(e),
@@ -800,6 +801,7 @@ impl EngineRegistry {
     ) -> Result<Vec<crate::core::engine::Command>> {
         let idx = self.find_index(engine_name).ok_or(EngineError::NotFound)?;
         let slot = &mut self.slots[idx];
+        slot.backend.instantiate()?;
         match slot.backend.with_engine(|engine| engine.list_commands()) {
             Some(v) => Ok(v),
             None => Ok(vec![]),
@@ -1030,14 +1032,14 @@ impl EngineRegistry {
 
     fn activate_slot(&mut self, idx: usize) -> Result<()> {
         let slot = &mut self.slots[idx];
-        if !slot.backend.is_instantiated() {
-            if let Err(e) = slot.backend.instantiate() {
-                log_msg(
-                    TypioLogLevel::TypioLogError,
-                    &format!("Engine '{}' instantiate failed: {:?}", slot.name, e),
-                );
-                return Err(e);
-            }
+        if !slot.backend.is_instantiated()
+            && let Err(e) = slot.backend.instantiate()
+        {
+            log_msg(
+                TypioLogLevel::TypioLogError,
+                &format!("Engine '{}' instantiate failed: {:?}", slot.name, e),
+            );
+            return Err(e);
         }
         let init_result = slot
             .backend
@@ -1112,7 +1114,7 @@ impl Default for EngineRegistry {
 mod tests {
     use super::*;
     use crate::core::engine::backend::process::ProcessBackend;
-    use crate::core::engine::{EngineInfo, EngineType};
+    use crate::core::engine::{Command, EngineInfo, EngineType};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -1175,6 +1177,10 @@ while True:
         raise SystemExit(0)
     if line == "availability":
         response = "AVAILABILITY\tREADY\n"
+    elif line == "list-commands":
+        response = f"COMMAND\t{'diagnose'.encode().hex()}\t{'Run diagnostics'.encode().hex()}\n"
+    elif line.startswith("invoke-command\t"):
+        response = "OK\n"
     elif line.startswith("process-key"):
         response = "RESULT\tNOT_HANDLED\n"
     elif line.startswith("process-audio"):
@@ -1215,6 +1221,21 @@ while True:
         assert_eq!(reg.list_keyboards(), vec!["mock"]);
         reg.activate_keyboard("mock").unwrap();
         assert_eq!(reg.active_keyboard_name(), Some("mock"));
+    }
+
+    #[test]
+    fn process_commands_instantiate_and_round_trip() {
+        let mut reg = EngineRegistry::new();
+        register_keyboard(&mut reg, "mock");
+
+        assert_eq!(
+            reg.list_commands("mock").unwrap(),
+            vec![Command {
+                id: "diagnose".into(),
+                label: "Run diagnostics".into(),
+            }]
+        );
+        reg.invoke_command("mock", "diagnose").unwrap();
     }
 
     #[test]

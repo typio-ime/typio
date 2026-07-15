@@ -11,7 +11,7 @@ should read the [Engine Reference](../engine/index.md) instead.
 | Page | Surface |
 |------|---------|
 | [Shared types](types.md) | `TypioResult`, opaque handles (`TypioInstance`, `TypioRegistry`, `TypioInputContext`, `TypioConfig`, `TypioVoiceSession`), callback typedefs |
-| [Instance](instance.md) | `TypioInstance` lifecycle, `TypioInstanceConfig`, plugin-loader callback, registry/context/config access, host callbacks, voice session, per-app identity |
+| [Instance](instance.md) | `TypioInstance` lifecycle, directories, registry/context/config access, host callbacks, voice session, per-app identity |
 | [Registry](registry.md) | `TypioRegistry` — engine registration, listing, activation, switching, commit notification |
 | [Input Context](input-context.md) | `TypioInputContext` — focus, key processing, composition (`TypioPreedit`, `TypioComposition`, `TypioCandidate`), surrounding text, capabilities, callbacks |
 | [Config](config.md) | `TypioConfig` — TOML load/save, typed getters/setters, array/section/key access, merge |

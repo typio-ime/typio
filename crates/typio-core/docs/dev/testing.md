@@ -38,7 +38,7 @@ Add or update tests when changing:
 
 ## Style
 
-- Use Rust 2021 edition for all code in this repo.
+- Use Rust 2024 edition for all workspace Rust code.
 - Use `#[cfg(test)]` inline unit tests; the old C test files under `tests/*.c` have been removed.
 - Keep public API names in the `typio_*` / `Typio*` style already used by the repo.
 - Prefer local helpers and direct data flow over broad abstractions.

@@ -6,12 +6,12 @@
  *
  * The schema has two layers:
  *
- *   1. Static base — host-owned settings (display, notifications, shortcuts,
- *      voice, …) plus built-in `engines.compose.*` fields. Hardcoded in libtypio.
+ *   1. Static base — framework-owned policy (notifications, shortcuts,
+ *      keyboard and voice selection). Hardcoded in libtypio.
  *
  *   2. Dynamic layer — engine-owned `engines.<name>.*` fields registered at
- *      runtime via `typio_config_schema_register*`. Engine plugins call
- *      these from their loader/init path so the host never has to know which
+ *      runtime via `typio_config_schema_register*`. Engine workers publish
+ *      these fields in EngineHello so the host never has to hard-code which
  *      knobs an engine exposes.
  *
  * Lookup, default application, and field enumeration transparently see both
@@ -53,7 +53,7 @@ typedef struct TypioConfigField {
     const char *ui_section;     /* "display"|"notifications"|"keyboard"|"compose"|"rime"|"mozc"|"shortcuts"|"voice" */
     int ui_min, ui_max, ui_step;
     const char *const *ui_options; /* NULL-terminated string array for dropdowns, or NULL */
-    const char *runtime_property;  /* matching D-Bus runtime property, or NULL */
+    const char *runtime_property;  /* optional host-defined runtime state key */
 } TypioConfigField;
 
 /**
@@ -63,8 +63,8 @@ typedef struct TypioConfigField {
 const TypioConfigField *typio_config_schema_find(const char *key);
 
 /**
- * @brief Get the runtime D-Bus property mirrored by a persisted config key.
- * @return Property name, or NULL if the key has no direct runtime mirror.
+ * @brief Get the optional runtime state key mirrored by a persisted config key.
+ * @return Host-defined state key, or NULL if there is no direct runtime mirror.
  */
 const char *typio_config_schema_runtime_property(const char *key);
 
@@ -132,8 +132,8 @@ TypioResult typio_config_schema_register(const TypioConfigField *field);
  * on the first error and returns it. Fields that succeeded before the error
  * remain registered.
  *
- * Engine plugins typically declare a static `TypioConfigField[]` table and
- * call this once from their plugin entry point (or `init`).
+ * Engine workers typically declare a static `TypioConfigField[]` table and
+ * register it before constructing their worker-local TypioInstance.
  */
 TypioResult typio_config_schema_register_many(const TypioConfigField *fields,
                                               size_t count);
@@ -141,8 +141,8 @@ TypioResult typio_config_schema_register_many(const TypioConfigField *fields,
 /**
  * @brief Remove a previously-registered dynamic field by key.
  *
- * Static fields cannot be unregistered. Engines should unregister their
- * fields when their plugin is unloaded.
+ * Static fields cannot be unregistered. Process-engine schemas are removed
+ * automatically when their registry slot is unloaded.
  *
  * @return TYPIO_OK on success, TYPIO_ERROR_NOT_FOUND if no dynamic field with
  *         that key is registered.

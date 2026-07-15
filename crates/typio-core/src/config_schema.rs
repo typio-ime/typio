@@ -5,19 +5,19 @@
 //! * A **static base** declared in this file, covering framework-owned
 //!   settings (keyboard policy, notifications, shortcuts, voice runtime).
 //!   No `engines.<name>.*` or `display.*` field lives here —
-//!   every engine (including `basic`) ships as its own plugin and registers
+//!   every engine ships as its own worker and publishes
 //!   its own keys, and display/popup styling is owned by each frontend
 //!   (`typio`, future GUI hosts) in its own config file.
 //! * A **dynamic layer** populated at runtime via the registration API
-//!   (`typio_config_schema_register*`). Engine plugins use this to declare
-//!   their own `engines.<engine>.*` fields without core having to know about
-//!   them, fulfilling the goal of ADR-style "engines own their config".
+//!   (`typio_config_schema_register*`). Process workers send their schema in
+//!   EngineHello; the backend installs those `engines.<engine>.*` fields
+//!   without core having to know about them.
 //!
 //! Pointer-stability contract: pointers returned by `typio_config_schema_*`
 //! remain valid until the next registration mutation (`register` /
 //! `register_many` / `unregister`). Callers that need a longer-lived view must
 //! copy the data out. In practice engines register their schema once at
-//! plugin-load time before any UI consumer queries it.
+//! discovery time before any UI consumer queries it.
 
 use crate::config::Config;
 use crate::types::*;
@@ -246,9 +246,9 @@ static SCHEMA: LazyLock<Vec<SchemaEntry>> = LazyLock::new(|| {
 /* Dynamic schema entry — owned copy of caller-supplied data                  */
 /* -------------------------------------------------------------------------- */
 
-/// Owned storage for one dynamically-registered field. Stored in a `Box`
-/// inside the registry so its address (and therefore every `*const c_char`
-/// derived from it) stays stable while it is registered.
+/// Owned storage for one dynamically-registered field. The C-facing pointers
+/// refer to the heap buffers owned by `CString` and `Vec`, so moving this value
+/// within the registry does not invalidate them.
 struct DynamicEntry {
     key: CString,
     type_: TypioFieldType,
@@ -275,7 +275,7 @@ unsafe impl Send for DynamicEntry {}
 unsafe impl Sync for DynamicEntry {}
 
 impl DynamicEntry {
-    fn from_field(src: &TypioConfigField) -> Result<Box<Self>, TypioResult> {
+    fn from_field(src: &TypioConfigField) -> Result<Self, TypioResult> {
         if src.key.is_null() {
             return Err(TypioResult::TypioErrorInvalidArgument);
         }
@@ -306,7 +306,7 @@ impl DynamicEntry {
 
         let ui_options_storage = clone_options(src.ui_options);
 
-        let mut boxed = Box::new(Self {
+        let mut entry = Self {
             key,
             type_: src.type_,
             def_string,
@@ -321,19 +321,19 @@ impl DynamicEntry {
             ui_options_storage,
             ui_options_ptrs: Vec::new(),
             runtime_property,
-        });
+        };
         // Pointers into each owned CString remain stable across `Vec` moves
         // because CString stores its bytes in a heap `Box<[u8]>`. Build the
         // NULL-terminated `*const c_char` array once and shrink to its final
         // capacity to lock the data pointer.
-        boxed.ui_options_ptrs = boxed
+        entry.ui_options_ptrs = entry
             .ui_options_storage
             .iter()
             .map(|s| s.as_ptr())
             .chain(std::iter::once(ptr::null()))
             .collect();
-        boxed.ui_options_ptrs.shrink_to_fit();
-        Ok(boxed)
+        entry.ui_options_ptrs.shrink_to_fit();
+        Ok(entry)
     }
 
     fn build_view(&self) -> TypioConfigField {
@@ -399,15 +399,15 @@ fn clone_options(opts: *const *const c_char) -> Vec<CString> {
 /* -------------------------------------------------------------------------- */
 
 struct Registry {
-    dynamic: Vec<Box<DynamicEntry>>,
+    dynamic: Vec<DynamicEntry>,
     /// Cached C-compatible flat view: static entries first, dynamic after.
     /// Rebuilt on every register/unregister.
     combined: Vec<TypioConfigField>,
 }
 
 // SAFETY: Registry's combined Vec contains raw pointers, but they all point
-// either into leaked static CStrings (static entries) or into Box<DynamicEntry>
-// heap allocations owned by `dynamic`. The RwLock guards concurrent access.
+// either into leaked static CStrings (static entries) or into heap buffers
+// owned by entries in `dynamic`. The RwLock guards concurrent access.
 unsafe impl Send for Registry {}
 unsafe impl Sync for Registry {}
 
@@ -522,6 +522,56 @@ static STATIC_VIEW: LazyLock<StaticView> = LazyLock::new(|| {
 });
 
 static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| RwLock::new(Registry::new()));
+
+/// Atomically replace the dynamic schema owned by one process engine.
+///
+/// The worker HELLO carries borrowed C-compatible fields. Convert and validate
+/// every field before mutating the global registry so a malformed worker
+/// cannot leave a partially-registered schema behind.
+pub(crate) fn replace_process_engine_schema(
+    engine_name: &str,
+    fields: &[TypioConfigField],
+) -> Result<(), TypioResult> {
+    let prefix = format!("engines.{engine_name}.");
+    let mut entries = Vec::with_capacity(fields.len());
+    for field in fields {
+        let entry = DynamicEntry::from_field(field)?;
+        let key = entry
+            .key
+            .to_str()
+            .map_err(|_| TypioResult::TypioErrorInvalidArgument)?;
+        if !key.starts_with(&prefix) || key.len() == prefix.len() {
+            return Err(TypioResult::TypioErrorInvalidArgument);
+        }
+        if entries
+            .iter()
+            .any(|existing: &DynamicEntry| existing.key.as_c_str() == entry.key.as_c_str())
+        {
+            return Err(TypioResult::TypioErrorAlreadyExists);
+        }
+        entries.push(entry);
+    }
+
+    let mut registry = REGISTRY.write().expect("schema registry poisoned");
+    if entries.iter().any(|entry| {
+        let key = entry.key.to_string_lossy();
+        Registry::key_in_static(&key)
+            || registry.dynamic.iter().any(|existing| {
+                let existing_key = existing.key.to_string_lossy();
+                !existing_key.starts_with(&prefix)
+                    && existing.key.as_c_str() == entry.key.as_c_str()
+            })
+    }) {
+        return Err(TypioResult::TypioErrorAlreadyExists);
+    }
+
+    registry
+        .dynamic
+        .retain(|entry| !entry.key.to_string_lossy().starts_with(&prefix));
+    registry.dynamic.extend(entries);
+    registry.rebuild();
+    Ok(())
+}
 
 /* -------------------------------------------------------------------------- */
 /* C FFI — read                                                               */
@@ -988,5 +1038,68 @@ mod tests {
             TypioResult::TypioErrorAlreadyExists
         );
         typio_config_schema_unregister(key.as_ptr());
+    }
+
+    #[test]
+    fn process_engine_schema_is_replaced_atomically() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let old_key = CString::new("engines.probe.old").unwrap();
+        let old_field = TypioConfigField {
+            key: old_key.as_ptr(),
+            type_: TypioFieldType::TypioFieldInt,
+            def: TypioFieldDefault { i: 7 },
+            ui_label: ptr::null(),
+            ui_section: ptr::null(),
+            ui_min: 0,
+            ui_max: 10,
+            ui_step: 1,
+            ui_options: ptr::null(),
+            runtime_property: ptr::null(),
+        };
+        replace_process_engine_schema("probe", &[old_field]).unwrap();
+        assert!(!typio_config_schema_find(old_key.as_ptr()).is_null());
+
+        let new_key = CString::new("engines.probe.new").unwrap();
+        let new_field = TypioConfigField {
+            key: new_key.as_ptr(),
+            type_: TypioFieldType::TypioFieldBool,
+            def: TypioFieldDefault { b: true },
+            ui_label: ptr::null(),
+            ui_section: ptr::null(),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: ptr::null(),
+            runtime_property: ptr::null(),
+        };
+        replace_process_engine_schema("probe", &[new_field]).unwrap();
+        assert!(typio_config_schema_find(old_key.as_ptr()).is_null());
+        assert!(!typio_config_schema_find(new_key.as_ptr()).is_null());
+
+        replace_process_engine_schema("probe", &[]).unwrap();
+        assert!(typio_config_schema_find(new_key.as_ptr()).is_null());
+    }
+
+    #[test]
+    fn process_engine_schema_rejects_foreign_namespace() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let key = CString::new("engines.other.value").unwrap();
+        let field = TypioConfigField {
+            key: key.as_ptr(),
+            type_: TypioFieldType::TypioFieldBool,
+            def: TypioFieldDefault { b: false },
+            ui_label: ptr::null(),
+            ui_section: ptr::null(),
+            ui_min: 0,
+            ui_max: 0,
+            ui_step: 0,
+            ui_options: ptr::null(),
+            runtime_property: ptr::null(),
+        };
+        assert_eq!(
+            replace_process_engine_schema("probe", &[field]),
+            Err(TypioResult::TypioErrorInvalidArgument)
+        );
+        assert!(typio_config_schema_find(key.as_ptr()).is_null());
     }
 }

@@ -2,11 +2,10 @@
 
 The contract that C engine implementations use inside an out-of-process
 engine worker. The daemon does not `dlopen` engines; it starts manifest-declared
-worker executables and libtypio speaks Typio Engine Protocol over fd 3. C
-workers may link this ABI directly, or a compatibility worker may load a
-legacy `.so` internally. The ABI evolves additively: structs that the engine
-allocates open with a `struct_size` sentinel (ADR-0003) and capability strings
-advertise optional behaviour.
+worker executables and libtypio speaks Typio Engine Protocol over fd 3. Native
+workers compile the engine implementation and canonical harness into one
+executable. Event payloads use `struct_size`; engine metadata and vtables use
+`typio_engine_abi_version`.
 
 Read this if you are authoring a keyboard or voice engine. Hosts
 embedding libtypio should read the [Host ABI Reference](../host-abi/index.md)
@@ -17,8 +16,8 @@ The distinction between *engine* and *worker packaging* is deliberate
 
 - **Engine** — any implementation of the `TypioEngine` vtable.
 - **Worker** — an executable package declared by a `typio-engine-*.toml`
-  manifest. The worker may contain a native C engine, a Rust engine, or a
-  bridge to a legacy loadable object.
+  manifest. The worker may contain a native C engine or implement the protocol
+  directly in another language.
 
 | Page | Surface |
 |------|---------|
@@ -40,7 +39,7 @@ from `typio/runtime/` or `typio/schema/` — see
 |-----------|---------|-------|
 | `typio_engine_abi_version` | Native C engine implementation | Engine metadata and vtable compatibility; major must match, engine minor must not exceed runtime minor. |
 | `struct_size` first field | `TypioKeyEvent`, `TypioComposition` | Caller-allocated payload structs grow additively; set the field to `sizeof(...)` at build time. The reader honours only the fields the writer's size covers. |
-| Capability negotiation | `required_capabilities` / `optional_capabilities` on `TypioEngineInfo` (NULL-terminated string arrays) | Any required capability not in the host's supported set → engine rejected at load. Optional capability missing → info-level log, engine still loaded. |
+| Capability negotiation | `required` / `optional` manifest arrays | Any required capability not in the host's supported set → engine rejected at discovery. Optional misses are tolerated. |
 
 ## See also
 

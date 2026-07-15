@@ -73,7 +73,7 @@ typedef void (*TypioLogCallback)(const TypioLogEvent *event, void *user_data);
 | `line` | Source line number |
 | `timestamp_ms` | Milliseconds since the Unix epoch |
 
-## Engine/plugin logging
+## Engine worker logging
 
 C engines should use the convenience macros rather than calling `typio_log_emit` directly:
 

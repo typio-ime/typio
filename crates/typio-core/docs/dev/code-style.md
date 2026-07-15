@@ -2,9 +2,8 @@
 
 ## Language versions
 
-- Rust 2021 edition for all code in `libtypio` (crate `libtypio`)
-- Rust 2024 edition for the CLI (`typioctl` repository, crate `typioctl`)
-- C23 for out-of-tree engine plugins (C ABI)
+- Rust 2024 edition for every workspace crate (minimum Rust 1.85)
+- C23 for native out-of-tree engine workers
 - C++17 where C++ is already required
 
 ## Formatting

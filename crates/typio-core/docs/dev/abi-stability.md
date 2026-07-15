@@ -33,12 +33,14 @@ This export gates engine metadata and vtable compatibility. The former
 
 ## The negotiation algorithm
 
-A direct worker links `typio_engine_abi_version` into the executable. A
-compatibility worker may resolve it with `dlsym` inside the worker process
-before calling any other engine symbol. The result is passed to:
+A direct worker links `typio_engine_abi_version` into the executable; the
+shared harness validates it before schema discovery, metadata access, or
+engine construction. A compatibility worker may resolve it with `dlsym`
+inside the worker process before calling any other engine symbol. The result
+is passed to:
 
 ```c
-bool typio_engine_abi_check(const TypioAbiVersion *plugin);
+bool typio_engine_abi_check(const TypioAbiVersion *reported);
 ```
 
 A native engine is accepted when **all** hold:

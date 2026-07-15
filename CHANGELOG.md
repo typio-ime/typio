@@ -7,7 +7,167 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Inactive engine schema discovery.** Engine workers now publish typed
+  `SCHEMA` records in EngineHello. The host probes executable manifests during
+  discovery, validates each `engines.<name>.*` namespace, atomically replaces
+  the engine's dynamic schema, and removes it on unload. Heavy engine
+  construction begins only after HostHello, so settings and strict TIP config
+  validation can inspect inactive engines without loading dictionaries or
+  models.
+
+- **Process-engine command surface.** `engine.describe` and `engine.invoke`
+  now bridge `TypioEngineSurfaceOps` through Typio Engine Protocol with
+  bounded, hex-encoded `list-commands` and `invoke-command` operations.
+  Explicit command discovery or invocation instantiates an inactive worker,
+  making engine-owned setup actions such as Sherpa-ONNX model installation
+  reachable from `typioctl` and the settings client.
+
+- **Rust graphical settings application.** `typio-settings` now lives in the
+  Cargo workspace and uses Iris/Lens/Flux from the sibling `optics` checkout.
+  It edits schema-backed engine, language, shortcut, and advanced settings over
+  TIP, preserves comments while updating Panel values in `platform.toml`, and
+  installs a desktop entry, AppStream metadata, and icon. `typioctl` and the
+  GUI share the new `typio-client` framing and event-subscription crate
+  (ADR-0045).
+
+- **Runtime log-level control via `SIGUSR1`/`SIGUSR2`.** `SIGUSR1` raises the
+  running daemon's log floor one step (`info`→`debug`→`trace`); `SIGUSR2`
+  resets it to the startup level — no restart needed to capture a verbose
+  trace of a live repro. This makes the behavior documented in
+  `docs/reference/cli.md` real (the filter is now a hot-reloadable layer; the
+  signal handlers only flag the request, and the non-async-signal-safe reload
+  runs on the main loop).
+- **Super+V voice push-to-talk.** The host records bounded 16 kHz mono audio
+  through `pw-record`, sends it to the active voice engine, commits the
+  transcription, and reports recording and inference state in a dedicated
+  voice status banner.
+- **Candidate-panel performance tracing.** The `typio.panel.perf`,
+  `typio.panel.shm`, and `typio.panel.scheduler` targets expose layout, SHM
+  reservation, CPU draw, supersample resolve, byte-swap, attach, and dirty-state
+  convergence timing. See [How to Diagnose Candidate-Switching
+  Lag](docs/how-to/diagnose-candidate-lag.md).
+
+### Changed
+
+- **Wayland runtime loop split into cohesive reactor drivers.** Named poll
+  sources and deadline reduction, ordered keyboard/text processing, and
+  candidate Panel convergence now live in separate modules. The main loop keeps
+  only I/O preparation and explicit phase ordering; UDS readiness is dispatched
+  in the same reactor step instead of the following iteration. One-shot status
+  timers now keep their timerfd and armed state in one object without redundant
+  poll deadlines, and Panel scheduling uses only the states the SHM presentation
+  path can actually reach.
+
+- **Dropped the `lazy_static` dependency in favor of `std::sync::LazyLock`.**
+  `typio-core` and `typio-vet` no longer depend on the `lazy_static` crate;
+  their once-initialized globals now use the standard-library `LazyLock`
+  (stable since Rust 1.80), and the test-only `static mut` capture slot in
+  `typio-core`'s input-context tests was rewritten as a `Mutex`-guarded
+  `Send` newtype to remove the last `static mut` from the crate.
+- **Framework, ABI, and vet crates moved into the host workspace.**
+  `libtypio`, `typio-abi`, and `typio-vet` now live under `crates/` in this
+  repository, so engine-contract, framework, vet, and host changes can land in
+  one atomic commit instead of coordinating a sibling `libtypio` checkout or
+  git tag.
+- **`typioctl` moved into the main Typio workspace.** The command-line client
+  now builds as `cargo build -p typioctl` from this repository, so TIP/UDS
+  client changes can land atomically with daemon protocol changes.
+- **Unified all runtime diagnostics onto `tracing`.** Every `eprintln!`
+  used for daemon logging (startup self-check, lifecycle, indicator, panel,
+  voice, tray, config-watcher, Wayland I/O errors) now goes through
+  structured `tracing` events with `typio.<subsystem>` targets and proper
+  levels, so `RUST_LOG`, `-v`/`-vv`, and runtime `SIGUSR1`/`SIGUSR2` control
+  all of it uniformly. The
+  previously always-printed `indicator:`/`panel:`/`voice:` lines are now
+  `debug`, so default operation is quiet; startup and lifecycle stay at
+  `info`. CLI verbosity now maps to `info`/`debug`/`trace` (matching
+  `docs/reference/cli.md`), correcting the prior `warn`/`info`/`debug`. The
+  only remaining direct stderr write in daemon runtime is the pre-logging CLI
+  argument error.
+- **Log output is colorized only on a terminal.** When stderr is the systemd
+  journal or a redirected file, ANSI escapes are now suppressed, so captured
+  logs are plain text.
+- **Frontend watchdog defaults are lighter.** The watchdog now starts
+  disarmed and is armed only while an input field is focused; while armed, its
+  coarse sampling interval is 2 s instead of 1 s. Idle operation keeps zero
+  watchdog wakeups, and focused operation keeps the grab-stall safety net with
+  lower sampling overhead.
+
+### Removed
+
+- **Legacy instance plugin-loader callback.** `TypioInstanceConfig` now owns
+  only config, data, and state directories. The unused `engine_dirs`,
+  `TypioPluginLoaderFunc`, and callback user-data fields were removed; the Rust
+  host is the single manifest-discovery owner and registers isolated process
+  backends explicitly.
+
+- **In-process engine lifecycle state.** The dead `TypioEngine.config_path`
+  field and exported host-side engine-object lifecycle helpers are gone.
+  Native workers use header-only constructors/accessors around their local
+  engine object; the daemon communicates only through protocol frames.
+
+- **Host watchdog.** The background thread that sampled the main loop's stage
+  progress and `SIGKILL`ed the daemon on a 3 s stall has been removed entirely
+  (ADR-0041). An audit found every main-loop stage non-blocking or already
+  bounded (engine IPC at 100 ms, Wayland I/O non-blocking, GPU present removed
+  by ADR-0040), so the watchdog guarded no live risk yet cost 327 lines and 39
+  intrusive `set_stage` annotations across the main loop. The one genuine
+  unbounded blocking point it covered — config-file `read_to_string` on a
+  stalled NFS/FUSE mount — is now bounded at 2 s at the source
+  (`typio_config_load_file` reads on a short-lived thread with a channel
+  timeout). The per-draw `heartbeat`/`before_present` callbacks were removed
+  from `FluxPanel::draw_candidates` / `draw_status_banner`, and the unused
+  `watchdogArmed` IPC field was dropped. Supersedes ADR-0004 (watchdog part),
+  ADR-0024, ADR-0037.
+
+
+- **Candidate Panel no longer uses a Vulkan/dma-buf present path.** It renders
+  to flux's CPU canvas (`flux_canvas_cpu_*`), shapes text through flux-text's
+  host-resident coverage atlas, and attaches host-owned SHM buffers;
+  `panel_dmabuf.rs` and the `linux-dmabuf-unstable-v1` protocol XML are gone.
+- **Watchdog `Present`-stage elevated threshold dropped.** `flux_surface_read_pixels`
+  is no longer in the panel path, so the 15 s `PRESENT_STUCK_MS` that guarded a
+  GPU-fence/readback stall is gone; every non-restful stage uses the single
+  `STUCK_MS` window. `LoopStage::Present` stays as a non-restful stage.
+- **Over-engineering cleanup in the panel subsystem.** Removed the orphan
+  `core/registry/policy.rs` (a 5-line dead placeholder with zero references),
+  and rewrote stale comments in `panel_present_gate` / `panel_shm` /
+  `input_method` / `watchdog` that still described the removed Vulkan swapchain
+  as the present path.
+- **`typio-vet` no longer ships a hand-rolled SVG validator.** The
+  `validate_svg` / `balanced_tags` mini-XML-parser (~110 LOC) was removed; SVG
+  well-formedness is the compositor renderer's job. Icon name, asset-presence,
+  and placement checks (which catch real packaging bugs) remain.
+
 ### Fixed
+
+- **Native worker ABI validation.** The shared C worker harness now validates
+  `typio_engine_abi_version()` before reading schema metadata or constructing
+  an engine, rejecting incompatible binaries before any vtable call.
+
+- **Failed process handshake schema rollback.** A first-time worker spawn that
+  fails after publishing EngineHello now removes the schema it just installed,
+  preventing stale fields and duplicate-registration failures in embedding
+  hosts. Schemas from a completed discovery probe remain available.
+
+- **Reproducible CI dependency and security gates.** CI now checks out the
+  Optics sibling at a fixed commit in the path Cargo actually resolves, runs
+  Clippy across all targets, and rejects RustSec advisories through a dedicated
+  `cargo audit` job.
+
+- **Wayland XML scanner dependency vulnerabilities.** The Wayland code
+  generator now vendors the published `wayland-scanner 0.31.10` source with
+  upstream's `quick-xml 0.41` compatibility fix, addressing
+  RUSTSEC-2026-0194 and RUSTSEC-2026-0195 without adopting unreleased scanner
+  API changes.
+
+- **Input-context destruction no longer double-frees owned contexts.**
+  `typio_instance_destroy_context` now transfers the context out of the
+  instance's owning collection exactly once instead of dropping it during
+  removal and then freeing the same allocation again. The real Rime process
+  integration suite now covers this teardown path.
 
 - **Candidate Panel navigation no longer performs avoidable full-frame work.**
   The Panel reserves a free SHM buffer before CPU drawing, lazily allocates its
@@ -42,10 +202,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      on a cold Rime deploy can take seconds; the 100 ms budget caused a spurious
      timeout that left the socket mid-frame, cascading into permanent transport
      errors for every subsequent request (keys leaked, availability reported
-     `Failed`, mode never published). Timeouts are now per-operation: 60 s for
-     the cold-start handshake, 5 s for `init`/`reload-config`, 120 s for voice
-     `process-audio`, 500 ms for focus/reset/mode queries, and 100 ms for
-     `process-key`/`availability`.
+     `Failed`, mode never published). Timeouts are now per-operation: 5 s for
+     metadata/schema HELLO, 60 s for cold `init`, 5 s for `reload-config`,
+     120 s for voice `process-audio`, 500 ms for focus/reset/mode queries, and
+     100 ms for `process-key`/`availability`.
   2. **No transport-error recovery.** A single timeout or response-id mismatch
      poisoned the socket permanently — every later request on the same worker
      failed. The `ProcessEngine` now tracks a `poisoned` flag; on transport
@@ -102,96 +262,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read/write timeouts. `engine.load` and prevalidated `engine.reload` now drive
   the live registry instead of returning a fixed unsupported error.
 
-### Removed
-
-- **Host watchdog.** The background thread that sampled the main loop's stage
-  progress and `SIGKILL`ed the daemon on a 3 s stall has been removed entirely
-  (ADR-0041). An audit found every main-loop stage non-blocking or already
-  bounded (engine IPC at 100 ms, Wayland I/O non-blocking, GPU present removed
-  by ADR-0040), so the watchdog guarded no live risk yet cost 327 lines and 39
-  intrusive `set_stage` annotations across the main loop. The one genuine
-  unbounded blocking point it covered — config-file `read_to_string` on a
-  stalled NFS/FUSE mount — is now bounded at 2 s at the source
-  (`typio_config_load_file` reads on a short-lived thread with a channel
-  timeout). The per-draw `heartbeat`/`before_present` callbacks were removed
-  from `FluxPanel::draw_candidates` / `draw_status_banner`, and the unused
-  `watchdogArmed` IPC field was dropped. Supersedes ADR-0004 (watchdog part),
-  ADR-0024, ADR-0037.
-
-### Changed
-
-- **Wayland runtime loop split into cohesive reactor drivers.** Named poll
-  sources and deadline reduction, ordered keyboard/text processing, and
-  candidate Panel convergence now live in separate modules. The main loop keeps
-  only I/O preparation and explicit phase ordering; UDS readiness is dispatched
-  in the same reactor step instead of the following iteration. One-shot status
-  timers now keep their timerfd and armed state in one object without redundant
-  poll deadlines, and Panel scheduling uses only the states the SHM presentation
-  path can actually reach.
-
-- **Dropped the `lazy_static` dependency in favor of `std::sync::LazyLock`.**
-  `typio-core` and `typio-vet` no longer depend on the `lazy_static` crate;
-  their once-initialized globals now use the standard-library `LazyLock`
-  (stable since Rust 1.80), and the test-only `static mut` capture slot in
-  `typio-core`'s input-context tests was rewritten as a `Mutex`-guarded
-  `Send` newtype to remove the last `static mut` from the crate.
-- **Framework, ABI, and vet crates moved into the host workspace.**
-  `libtypio`, `typio-abi`, and `typio-vet` now live under `crates/` in this
-  repository, so engine-contract, framework, vet, and host changes can land in
-  one atomic commit instead of coordinating a sibling `libtypio` checkout or
-  git tag.
-- **`typioctl` moved into the main Typio workspace.** The command-line client
-  now builds as `cargo build -p typioctl` from this repository, so TIP/UDS
-  client changes can land atomically with daemon protocol changes.
-- **Unified all runtime diagnostics onto `tracing`.** Every `eprintln!`
-  used for daemon logging (startup self-check, lifecycle, indicator, panel,
-  voice, tray, config-watcher, Wayland I/O errors) now goes through
-  structured `tracing` events with `typio.<subsystem>` targets and proper
-  levels, so `RUST_LOG`, `-v`/`-vv`, and runtime `SIGUSR1`/`SIGUSR2` control
-  all of it uniformly. The
-  previously always-printed `indicator:`/`panel:`/`voice:` lines are now
-  `debug`, so default operation is quiet; startup and lifecycle stay at
-  `info`. CLI verbosity now maps to `info`/`debug`/`trace` (matching
-  `docs/reference/cli.md`), correcting the prior `warn`/`info`/`debug`. The
-  only remaining direct stderr write in daemon runtime is the pre-logging CLI
-  argument error.
-- **Log output is colorized only on a terminal.** When stderr is the systemd
-  journal or a redirected file, ANSI escapes are now suppressed, so captured
-  logs are plain text.
-- **Frontend watchdog defaults are lighter.** The watchdog now starts
-  disarmed and is armed only while an input field is focused; while armed, its
-  coarse sampling interval is 2 s instead of 1 s. Idle operation keeps zero
-  watchdog wakeups, and focused operation keeps the grab-stall safety net with
-  lower sampling overhead.
-
-### Added
-
-- **Rust graphical settings application.** `typio-settings` now lives in the
-  Cargo workspace and uses Iris/Lens/Flux from the sibling `optics` checkout.
-  It edits schema-backed engine, language, shortcut, and advanced settings over
-  TIP, preserves comments while updating Panel values in `platform.toml`, and
-  installs a desktop entry, AppStream metadata, and icon. `typioctl` and the
-  GUI share the new `typio-client` framing and event-subscription crate
-  (ADR-0045).
-
-- **Runtime log-level control via `SIGUSR1`/`SIGUSR2`.** `SIGUSR1` raises the
-  running daemon's log floor one step (`info`→`debug`→`trace`); `SIGUSR2`
-  resets it to the startup level — no restart needed to capture a verbose
-  trace of a live repro. This makes the behavior documented in
-  `docs/reference/cli.md` real (the filter is now a hot-reloadable layer; the
-  signal handlers only flag the request, and the non-async-signal-safe reload
-  runs on the main loop).
-- **Super+V voice status prompt.** The host now treats Super+V as a
-  push-to-talk shortcut and shows a separate voice status banner. Until an
-  audio source is wired, the shortcut reports `Voice: no audio source`
-  instead of silently doing nothing.
-- **Candidate-panel performance tracing.** The `typio.panel.perf`,
-  `typio.panel.shm`, and `typio.panel.scheduler` targets expose layout, SHM
-  reservation, CPU draw, supersample resolve, byte-swap, attach, and dirty-state
-  convergence timing. See [How to Diagnose Candidate-Switching
-  Lag](docs/how-to/diagnose-candidate-lag.md).
-
-### Fixed
+- **Engine reload finds startup manifests.** The Rust host now retains its
+  resolved engine search directories inside `TypioInstance`, so TIP
+  `engine.reload` can locate an installed manifest after normal startup instead
+  of searching an accidentally empty directory list.
 
 - **Removed preedit wait-on-`done` serial gate.** Holding pure preedit until
   compositor `done` was a same-serial workaround that made composition lag;
@@ -228,26 +302,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-blocking Wayland commit. Busy buffers skip CPU drawing and retain only the
   newest dirty candidate snapshot. There is no Vulkan WSI, dma-buf, GPU
   readback, or frame-callback pacing in the Panel path.
-
-### Removed
-
-- **Candidate Panel no longer uses a Vulkan/dma-buf present path.** It renders
-  to flux's CPU canvas (`flux_canvas_cpu_*`), shapes text through flux-text's
-  host-resident coverage atlas, and attaches host-owned SHM buffers;
-  `panel_dmabuf.rs` and the `linux-dmabuf-unstable-v1` protocol XML are gone.
-- **Watchdog `Present`-stage elevated threshold dropped.** `flux_surface_read_pixels`
-  is no longer in the panel path, so the 15 s `PRESENT_STUCK_MS` that guarded a
-  GPU-fence/readback stall is gone; every non-restful stage uses the single
-  `STUCK_MS` window. `LoopStage::Present` stays as a non-restful stage.
-- **Over-engineering cleanup in the panel subsystem.** Removed the orphan
-  `core/registry/policy.rs` (a 5-line dead placeholder with zero references),
-  and rewrote stale comments in `panel_present_gate` / `panel_shm` /
-  `input_method` / `watchdog` that still described the removed Vulkan swapchain
-  as the present path.
-- **`typio-vet` no longer ships a hand-rolled SVG validator.** The
-  `validate_svg` / `balanced_tags` mini-XML-parser (~110 LOC) was removed; SVG
-  well-formedness is the compositor renderer's job. Icon name, asset-presence,
-  and placement checks (which catch real packaging bugs) remain.
 
 ## [0.5.4] - 2026-06-25
 

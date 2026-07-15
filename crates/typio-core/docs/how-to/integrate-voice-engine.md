@@ -72,7 +72,6 @@ static char *my_voice_process_audio(TypioVoiceEngine *engine,
 }
 
 static const TypioEngineInfo my_voice_info = {
-    .struct_size = sizeof(TypioEngineInfo),
     .name = "my-voice",
     .display_name = "My Voice",
     .description = "Example voice engine",
@@ -165,17 +164,17 @@ optional = []
 1. **Unit test** — If the engine has pure logic (e.g. an audio preprocessor), add tests under `tests/`.
 2. **Integration test** — Run the host with the engine's manifest directory
    enabled and exercise voice input with verbose logging.
-3. **Config reload test** — Change the engine's `core.toml` section and trigger reload (SIGHUP or D-Bus) to verify `reload_config` behavior.
+3. **Config reload test** — Change the engine's `core.toml` section and
+   trigger reload through TIP to verify `reload_config` behavior.
 
 ---
 
 ## Checklist
 
-- [ ] Engine implements required ops (`init`, `destroy`, `process_audio`).
-- [ ] `struct_size` is `sizeof(TypioEngineInfo)`.
+- [ ] Engine provides a base vtable and implements `process_audio`.
 - [ ] `type` is `TYPIO_ENGINE_TYPE_VOICE`.
 - [ ] Sources include only `typio/abi/abi.h` from the `typio/` tree.
-- [ ] `process_audio` never blocks.
+- [ ] `process_audio` completes within the protocol inference timeout.
 - [ ] Engine state is stored in `user_data`, not globals.
 - [ ] Built as the `typio-engine-<name>` executable.
 - [ ] Executable installed under `<libexecdir>/typio/engines`.

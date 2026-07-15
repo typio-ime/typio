@@ -41,11 +41,19 @@ pub extern "C" fn typio_instance_destroy_context(
         return;
     }
     let inst = unsafe { &mut *instance };
-    inst.contexts.retain(|c| c.0 != ctx);
+    let Some(index) = inst
+        .contexts
+        .iter()
+        .position(|candidate| candidate.0 == ctx)
+    else {
+        return;
+    };
     if inst.focused_context == ctx {
         inst.focused_context = ptr::null_mut();
     }
-    input_context::typio_input_context_free(ctx);
+    // InputContextPtr owns the allocation. Removing it drops the context once;
+    // an explicit free here would double-free the same Box.
+    inst.contexts.swap_remove(index);
 }
 
 /// Get the currently focused input context, or NULL.
@@ -70,5 +78,26 @@ pub extern "C" fn typio_instance_set_focused_context(
     }
     unsafe {
         (*instance).focused_context = ctx;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destroy_context_removes_and_frees_the_owned_context_once() {
+        let instance = crate::instance::typio_instance_new();
+        assert!(!instance.is_null());
+        let ctx = typio_instance_create_context(instance);
+        assert!(!ctx.is_null());
+        typio_instance_set_focused_context(instance, ctx);
+
+        typio_instance_destroy_context(instance, ctx);
+
+        let inst = unsafe { &*instance };
+        assert!(inst.contexts.is_empty());
+        assert!(inst.focused_context.is_null());
+        crate::instance::typio_instance_free(instance);
     }
 }

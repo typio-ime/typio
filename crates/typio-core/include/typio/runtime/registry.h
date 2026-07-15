@@ -2,11 +2,11 @@
  * @file registry.h
  * @brief Engine registry — the sole C surface for managing engines (ADR-0005).
  *
- * Hosts (`typiod-wayland`, the control panel, and future platform hosts)
+ * Hosts (`typio` and future platform hosts)
  * use these functions to register, list, activate, and switch engines.
  *
- * @note This is a runtime header (no ABI stability promise). Engine plugins
- *       must NOT include this file; they pull only from `typio/abi/`.
+ * @note This is a runtime header (no ABI stability promise). Engine workers
+ *       must NOT include this file.
  */
 
 #ifndef TYPIO_REGISTRY_H

@@ -1,8 +1,8 @@
 /**
  * @file abi/instance.h
- * @brief Engine-facing TypioInstance operations (part of the plugin ABI).
+ * @brief Engine-facing TypioInstance operations (part of the native ABI).
  *
- * Functions in this header are callable by engine plugins.  They form
+ * Functions in this header are callable inside native engine workers. They form
  * the read/observe/notify surface that engines need to participate in
  * the runtime without being coupled to host or core internals.
  *
@@ -81,8 +81,8 @@ TypioResult typio_instance_save_config(TypioInstance *instance);
  * name (e.g. "model"), not the full dotted path.
  *
  * The function validates that the full key exists in the config schema (the
- * engine must have registered it via typio_config_schema_register* during
- * plugin load), writes the value, saves the config file, and fires
+ * engine must have published it through its worker schema), writes the value,
+ * saves the config file, and fires
  * on_config_change on the target engine.
  *
  * @return TypioOk on success.

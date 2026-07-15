@@ -6,17 +6,21 @@ manifest-declared worker executable. A direct C worker links these symbols into
 the executable, while a compatibility worker may resolve them with `dlsym`
 inside the worker process.
 
-The `TYPIO_KEYBOARD_ENGINE_DEFINE` / `TYPIO_VOICE_ENGINE_DEFINE` macros emit the mandatory pair with correct linkage and visibility. Use the macros unless you have a specific reason not to.
+The `TYPIO_KEYBOARD_ENGINE_DEFINE` / `TYPIO_VOICE_ENGINE_DEFINE` macros
+emit the mandatory exports with correct linkage and visibility. Use the macros
+unless you have a specific reason not to.
 
 ## Required exports
 
-A native C engine exports exactly two symbols. Both have C linkage (`extern "C"` in C++) and default visibility.
+A native C engine exports three symbols. They have C linkage (`extern "C"`
+in C++) and default visibility.
 
 ### Keyboard engine
 
 ```c
 const TypioEngineInfo *typio_engine_get_info(void);
 TypioKeyboardEngine   *typio_keyboard_engine_create(void);
+const TypioAbiVersion *typio_engine_abi_version(void);
 ```
 
 ### Voice engine
@@ -24,22 +28,28 @@ TypioKeyboardEngine   *typio_keyboard_engine_create(void);
 ```c
 const TypioEngineInfo *typio_engine_get_info(void);
 TypioVoiceEngine      *typio_voice_engine_create(void);
+const TypioAbiVersion *typio_engine_abi_version(void);
 ```
 
 ### `typio_engine_get_info`
 
 | Aspect | Contract |
 |---|---|
-| When called | During worker startup or compatibility loading, before instantiation. The worker may call it again to refresh metadata; the same pointer to the same struct must be returned every time. |
+| When called | During worker startup, before instantiation. The same pointer to the same struct must be returned every time. |
 | Return value | Pointer to an engine-owned `TypioEngineInfo`. Allocate it statically (e.g. as a `static const TypioEngineInfo`); never heap-allocate a fresh struct on each call. |
 | Lifetime | The returned struct must remain valid for the entire engine lifetime. The worker/libtypio side copies fields it retains. |
-| `struct_size` | The first field MUST be initialised to `sizeof(TypioEngineInfo)` at engine build time. The reader honours only the fields the writer's size covers, so older engines keep working across additive struct growth (see [Versioning](index.md#versioning)). |
+
+### `typio_engine_abi_version`
+
+The worker calls `typio_engine_abi_check` on this result before reading the
+optional schema, metadata, or vtables. An incompatible major or newer minor
+terminates startup without constructing engine state.
 
 ### `typio_keyboard_engine_create` / `typio_voice_engine_create`
 
 | Aspect | Contract |
 |---|---|
-| When called | Lazily, the first time the engine is activated. The worker/runtime may call it again after `typio_engine_free` if the engine is re-activated. |
+| When called | During startup of each worker process, after metadata and schema discovery. |
 | Return value | A `TypioKeyboardEngine *` / `TypioVoiceEngine *` allocated by `typio_keyboard_engine_new` / `typio_voice_engine_new` (recommended), or `NULL` on failure. |
 | Failure | `NULL` is the **only** failure signal. The runtime treats `NULL` as `TYPIO_ERROR_ENGINE_LOAD_FAILED` and restores the previously active engine in the same category. Log details with `typio_log_error` before returning. |
 | Threading | Called serially by the engine runtime. It is not re-entrant. |
@@ -58,18 +68,13 @@ This export is **not** emitted by the `TYPIO_*_ENGINE_DEFINE` macros — define 
 
 | Behaviour | Detail |
 |-----------|--------|
-| Caller | The worker or compatibility loader, immediately after `typio_engine_get_info` (before instantiation) |
-| Disposition | Returned fields are forwarded to `typio_config_schema_register_many` so they participate in defaulting, lookup, and UI introspection without the engine being active |
-| Lifetime | The returned array, and every string reachable from it, must remain valid for as long as the plugin is loaded (typically a static); libtypio deep-copies on registration |
+| Caller | The worker harness before instantiation |
+| Disposition | Fields are registered in the worker-local schema and serialised in EngineHello for host-side defaulting, lookup, and UI introspection |
+| Lifetime | The returned array, and every string reachable from it, must remain valid for the worker lifetime (typically a static); the local schema registry deep-copies on registration |
 | Empty schema | Return NULL with `*out_count = 0`, or omit the symbol entirely |
 
-See the [Schema reference](../host-abi/schema.md#recommended-engine-plugin-pattern)
+See the [Schema reference](../host-abi/schema.md#recommended-engine-worker-pattern)
 for a Rime-style example.
-
-Alternative: an engine that prefers eager registration can call
-`typio_config_schema_register_many` directly from its `init` instead of
-exporting the function — but that delays schema visibility until the engine
-is instantiated, so UI consumers won't see the keys before first activation.
 
 ## Helper macros
 
@@ -83,15 +88,18 @@ TYPIO_VOICE_ENGINE_DEFINE(info_var, create_func)
 | `info_var` | An lvalue of type `TypioEngineInfo` reachable by name at file scope. Typically a `static const TypioEngineInfo MY_INFO = { ... };`. The macro takes its address. |
 | `create_func` | A `void`-argument factory returning `TypioKeyboardEngine *` (or `TypioVoiceEngine *`). The macro forwards the call from the exported symbol. |
 
-Each macro expands to **both** exports (`typio_engine_get_info` and the matching `*_create`), each marked `extern "C"` and `TYPIO_EXPORT` so they remain visible even when the rest of the plugin is compiled `-fvisibility=hidden`.
+Each macro expands to the ABI-version export, `typio_engine_get_info`, and
+the matching `*_create`. They are marked `extern "C"` and
+`TYPIO_EXPORT` so they remain visible even when the rest of the engine is
+compiled `-fvisibility=hidden`.
 
-Recommended plugin build flags:
+Recommended native-engine build flags:
 
 ```
 -fvisibility=hidden -fvisibility-inlines-hidden
 ```
 
-## Lifecycle helpers
+## Header-only lifecycle helpers
 
 ```c
 TypioKeyboardEngine *typio_keyboard_engine_new(const TypioEngineInfo        *info,
@@ -105,7 +113,10 @@ TypioVoiceEngine    *typio_voice_engine_new(const TypioEngineInfo       *info,
 void                 typio_engine_free(TypioEngine *engine);
 ```
 
-The host pairs each successful `*_engine_new` with exactly one `typio_engine_free`. Engines do not call `typio_engine_free` themselves.
+These are `static inline` worker-side helpers from `engine.h`; libtypio does
+not export an in-process engine lifecycle API. The worker harness pairs each
+successful `*_engine_new` with exactly one `typio_engine_free`. Engine
+callbacks do not call `typio_engine_free` themselves.
 
 | Argument | Lifetime |
 |---|---|
@@ -115,7 +126,9 @@ The host pairs each successful `*_engine_new` with exactly one `typio_engine_fre
 
 Failure: each function returns `NULL` if any argument is `NULL` or if allocation fails. If `*_create` returns `NULL`, `typio_engine_free` is **not** called — destroy any partially-built state manually before returning.
 
-`typio_engine_free` invokes the engine's `base_ops->destroy`, releases the engine's `config_path`, and frees the struct itself. Engine `user_data` is not freed; release it from `destroy`.
+`typio_engine_free` invokes the engine's `base_ops->destroy` and frees the
+engine struct. Engine `user_data` is not freed automatically; release it from
+`destroy`.
 
 ## Utility accessors
 
@@ -126,8 +139,6 @@ bool              typio_engine_has_capability(const TypioEngine *engine,
                                               const char *capability);
 bool              typio_engine_is_active(const TypioEngine *engine);
 
-const char       *typio_engine_get_config_path(const TypioEngine *engine);
-void              typio_engine_set_config_path(TypioEngine *engine, const char *path);
 void              typio_engine_set_user_data(TypioEngine *engine, void *data);
 void              *typio_engine_get_user_data(const TypioEngine *engine);
 
@@ -140,15 +151,14 @@ These operate on the common `TypioEngine *` base. From inside an engine, pass `&
 
 | Accessor | Notes |
 |---|---|
-| `typio_engine_get_name` / `_get_type` | Read-through to `TypioEngineInfo` — same lifetime as the info struct (i.e. valid for the plugin's load lifetime). |
+| `typio_engine_get_name` / `_get_type` | Read-through to `TypioEngineInfo` — valid for the worker process lifetime. |
 | `typio_engine_has_capability` | Searches both `required_capabilities` and `optional_capabilities`. Returns `false` for a NULL engine or unknown name. Capability names are case-sensitive (e.g. `"preedit"`). |
 | `typio_engine_set_user_data` / `_get_user_data` | The engine owns the pointer; libtypio does not free it. Set in `*_create` or `base_ops->init`; release in `base_ops->destroy`. |
-| `typio_engine_set_config_path` | Called by the host before `init`. The path is duplicated; the caller may free its copy. |
-| `typio_engine_set_surface_ops` | Optional control vtable for engines that expose properties / commands. Call from `*_create` or `base_ops->init`. Engines that do not call it behave as if `surface == NULL`. See [Operations ▸ Surface ops](ops.md#surface-operations-optional). |
+| `typio_engine_set_surface_ops` | Optional command vtable. Call from `*_create` or `base_ops->init`. Engines that do not call it behave as if `surface == NULL`. See [Operations ▸ Surface ops](ops.md#surface-operations-optional). |
 
 ## Minimal worked example
 
-A keyboard plugin with no-op base ops and a passthrough `process_key`:
+A keyboard engine with no-op base ops and a passthrough `process_key`:
 
 ```c
 #include <typio/abi/abi.h>
@@ -180,7 +190,6 @@ static const TypioKeyboardEngineOps MY_KB = {
 };
 
 static const TypioEngineInfo MY_INFO = {
-    .struct_size  = sizeof(TypioEngineInfo),
     .name         = "demo",
     .display_name = "Demo",
     .description  = "passthrough demo",

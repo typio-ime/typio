@@ -18,21 +18,25 @@ use super::super::{
     VoiceEngine,
 };
 use super::engine_protocol::{ENGINE_PROTOCOL_FD, Frame, MessageType, read_frame, write_frame};
+use crate::config_schema::replace_process_engine_schema;
 use crate::log::log_msg;
-use crate::types::TypioLogLevel;
-use std::ffi::CString;
+use crate::types::{TypioConfigField, TypioFieldDefault, TypioFieldType, TypioLogLevel};
+use std::ffi::{CString, c_char};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
-// Worker startup may include one-time model/schema initialization before the
-// worker emits HELLO. This runs during activation, before the hot input path.
-const ENGINE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+// HELLO contains metadata and schema only. Heavy engine initialisation starts
+// after HostHello and is covered by the `init` request timeout below.
+const ENGINE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const ENGINE_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
-const ENGINE_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+const ENGINE_INIT_TIMEOUT: Duration = Duration::from_secs(60);
+const ENGINE_RELOAD_TIMEOUT: Duration = Duration::from_secs(5);
+const ENGINE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const ENGINE_DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 const ENGINE_VOICE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -41,12 +45,15 @@ const ENGINE_VOICE_TIMEOUT: Duration = Duration::from_secs(120);
 /// `init`/`reload-config` get a bounded slow-operation budget. Cold startup
 /// before HELLO is covered separately by [`ENGINE_HANDSHAKE_TIMEOUT`].
 /// `process-key`/`availability` are hot-path and stay tight at 100 ms.
-/// Everything else (focus-in, reset, set-active-mode, commit-candidate,
-/// list-modes, get-active-mode) gets a generous 500 ms.
+/// Engine commands share the 5 s control-plane budget. Everything else
+/// (focus-in, reset, set-active-mode, commit-candidate, list-modes,
+/// get-active-mode) gets a generous 500 ms.
 fn request_timeout_for(line: &str) -> Duration {
     let op = line.split('\t').next().unwrap_or("");
     match op {
-        "init" | "reload-config" => ENGINE_INIT_TIMEOUT,
+        "init" => ENGINE_INIT_TIMEOUT,
+        "reload-config" => ENGINE_RELOAD_TIMEOUT,
+        "invoke-command" => ENGINE_COMMAND_TIMEOUT,
         "process-key" | "availability" => ENGINE_REQUEST_TIMEOUT,
         "process-audio" => ENGINE_VOICE_TIMEOUT,
         _ => ENGINE_DEFAULT_TIMEOUT,
@@ -59,6 +66,7 @@ pub struct ProcessBackend {
     info: EngineInfo,
     argv: Vec<String>,
     engine: Option<ProcessEngine>,
+    schema_registered: bool,
 }
 
 impl ProcessBackend {
@@ -68,6 +76,7 @@ impl ProcessBackend {
             info,
             argv,
             engine: None,
+            schema_registered: false,
         }
     }
 
@@ -79,6 +88,20 @@ impl ProcessBackend {
     /// Mutable engine metadata, for registry-side enrichment (languages).
     pub(crate) fn info_mut(&mut self) -> &mut EngineInfo {
         &mut self.info
+    }
+
+    /// Validate the worker's HELLO and register its configuration schema,
+    /// then stop it before heavyweight engine initialisation begins.
+    ///
+    /// Discovery uses this so strict config validation and settings UIs can
+    /// see engine-owned fields before that engine is selected.
+    pub fn probe_schema(&mut self) -> Result<()> {
+        if self.argv.is_empty() || self.argv[0].is_empty() {
+            return Err(EngineError::InvalidArgument);
+        }
+        ProcessEngine::probe_schema(&self.info, &self.argv)?;
+        self.schema_registered = true;
+        Ok(())
     }
 
     /// Start the engine process if needed.
@@ -98,7 +121,12 @@ impl ProcessBackend {
         if self.argv.is_empty() || self.argv[0].is_empty() {
             return Err(EngineError::InvalidArgument);
         }
-        self.engine = Some(ProcessEngine::spawn(self.info.clone(), &self.argv)?);
+        self.engine = Some(ProcessEngine::spawn(
+            self.info.clone(),
+            &self.argv,
+            !self.schema_registered,
+        )?);
+        self.schema_registered = true;
         Ok(())
     }
 
@@ -113,9 +141,9 @@ impl ProcessBackend {
     /// Execute a closure with a mutable reference to the engine process.
     ///
     /// If the worker was poisoned by a prior transport error, it is respawned
-    /// transparently before the closure runs. The heavy engine `init` runs
-    /// before the worker's HELLO, so the protocol-level `init` request is a
-    /// no-op confirmation for current engines; we send it for correctness.
+    /// transparently before the closure runs. The worker starts heavyweight
+    /// engine initialisation after HostHello; the protocol-level `init`
+    /// request waits for that startup to finish and confirms readiness.
     pub fn with_engine<F, R>(&mut self, f: F) -> Option<R>
     where
         F: FnOnce(&mut dyn Engine) -> R,
@@ -137,7 +165,7 @@ impl ProcessBackend {
         if self.argv.is_empty() || self.argv[0].is_empty() {
             return;
         }
-        match ProcessEngine::spawn(self.info.clone(), &self.argv) {
+        match ProcessEngine::spawn(self.info.clone(), &self.argv, false) {
             Ok(engine) => {
                 if let Err(e) = engine.request("init", None) {
                     log_msg(
@@ -168,6 +196,10 @@ impl ProcessBackend {
     /// Stop the engine process.
     pub fn destroy(&mut self) {
         self.engine.take();
+        if self.schema_registered {
+            let _ = replace_process_engine_schema(&self.info.name, &[]);
+            self.schema_registered = false;
+        }
     }
 
     /// Snapshot the active voice worker for an inference job.
@@ -178,6 +210,12 @@ impl ProcessBackend {
     pub(crate) fn voice_handle(&mut self) -> Option<VoiceProcessHandle> {
         self.recover_poisoned();
         self.engine.as_ref().cloned().map(VoiceProcessHandle)
+    }
+}
+
+impl Drop for ProcessBackend {
+    fn drop(&mut self) {
+        self.destroy();
     }
 }
 
@@ -229,80 +267,102 @@ impl std::fmt::Debug for ProcessEngine {
     }
 }
 
-impl ProcessEngine {
-    fn spawn(info: EngineInfo, argv: &[String]) -> Result<Self> {
-        let (mut host_stream, engine_stream) = UnixStream::pair().map_err(|e| {
-            EngineError::Transport(format!("engine-protocol socketpair failed: {e}"))
+fn launch_worker(argv: &[String]) -> Result<(Child, UnixStream)> {
+    let (host_stream, engine_stream) = UnixStream::pair()
+        .map_err(|e| EngineError::Transport(format!("engine-protocol socketpair failed: {e}")))?;
+    host_stream
+        .set_read_timeout(Some(ENGINE_HANDSHAKE_TIMEOUT))
+        .map_err(|e| {
+            EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
         })?;
-        host_stream
-            .set_read_timeout(Some(ENGINE_HANDSHAKE_TIMEOUT))
-            .map_err(|e| {
-                EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
-            })?;
-        host_stream
-            .set_write_timeout(Some(ENGINE_HANDSHAKE_TIMEOUT))
-            .map_err(|e| {
-                EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
-            })?;
+    host_stream
+        .set_write_timeout(Some(ENGINE_HANDSHAKE_TIMEOUT))
+        .map_err(|e| {
+            EngineError::Transport(format!("engine-protocol timeout setup failed: {e}"))
+        })?;
 
-        let mut command = ProcessCommand::new(&argv[0]);
-        let engine_fd = engine_stream.as_raw_fd();
-        command.args(&argv[1..]);
-        command
-            .env("TYPIO_ENGINE_PROTOCOL", "1.0")
-            .env("TYPIO_ENGINE_FD", ENGINE_PROTOCOL_FD.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        unsafe {
-            command.pre_exec(move || {
-                if libc::dup2(engine_fd, ENGINE_PROTOCOL_FD) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if engine_fd != ENGINE_PROTOCOL_FD {
-                    libc::close(engine_fd);
-                }
-                Ok(())
-            });
-        }
+    let mut command = ProcessCommand::new(&argv[0]);
+    let engine_fd = engine_stream.as_raw_fd();
+    command.args(&argv[1..]);
+    command
+        .env("TYPIO_ENGINE_PROTOCOL", "1.0")
+        .env("TYPIO_ENGINE_FD", ENGINE_PROTOCOL_FD.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(engine_fd, ENGINE_PROTOCOL_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if engine_fd != ENGINE_PROTOCOL_FD {
+                libc::close(engine_fd);
+            }
+            Ok(())
+        });
+    }
 
-        // ETXTBSY guard: an engine binary that was just written and marked
-        // executable — or one being replaced by a package upgrade — can still be
-        // open for writing when we execve it, which fails with ETXTBSY. The
-        // condition is transient, so retry a few times with a short backoff
-        // before surfacing it. Any other spawn error fails fast.
-        const SPAWN_RETRIES: u32 = 10;
-        let child = {
-            let mut attempt = 0;
-            loop {
-                match command.spawn() {
-                    Ok(child) => break child,
-                    Err(e)
-                        if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < SPAWN_RETRIES =>
-                    {
-                        attempt += 1;
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(e) => {
-                        return Err(EngineError::Transport(format!("spawn {}: {e}", argv[0])));
-                    }
+    // ETXTBSY is transient while a package upgrade replaces an executable.
+    const SPAWN_RETRIES: u32 = 10;
+    let child = {
+        let mut attempt = 0;
+        loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < SPAWN_RETRIES => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    return Err(EngineError::Transport(format!("spawn {}: {e}", argv[0])));
                 }
             }
-        };
-        drop(engine_stream);
+        }
+    };
+    drop(engine_stream);
+    Ok((child, host_stream))
+}
+
+fn stop_child(mut child: Child) {
+    // Child deliberately does not kill or reap on Drop. Always clean up a
+    // schema probe or failed handshake so discovery cannot leak workers.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn read_and_register_engine_hello(info: &EngineInfo, stream: &mut UnixStream) -> Result<()> {
+    let hello = read_frame(stream)?;
+    if hello.message_type != MessageType::EngineHello {
+        return Err(EngineError::Transport(format!(
+            "engine-protocol expected hello, got {:?}",
+            hello.message_type
+        )));
+    }
+    let hello_text = String::from_utf8(hello.payload)
+        .map_err(|e| EngineError::Transport(format!("engine-protocol invalid hello utf-8: {e}")))?;
+    let schema = parse_engine_hello(info, &hello_text)?;
+    let fields: Vec<TypioConfigField> = schema.iter().map(HelloSchemaField::as_field).collect();
+    replace_process_engine_schema(&info.name, &fields).map_err(|error| {
+        EngineError::Transport(format!(
+            "engine-protocol rejected schema for '{}': {error:?}",
+            info.name
+        ))
+    })
+}
+
+impl ProcessEngine {
+    fn probe_schema(info: &EngineInfo, argv: &[String]) -> Result<()> {
+        let (child, mut stream) = launch_worker(argv)?;
+        let result = read_and_register_engine_hello(info, &mut stream);
+        stop_child(child);
+        result
+    }
+
+    fn spawn(info: EngineInfo, argv: &[String], remove_schema_on_failure: bool) -> Result<Self> {
+        let (child, mut host_stream) = launch_worker(argv)?;
 
         let handshake = (|| -> Result<()> {
-            let hello = read_frame(&mut host_stream)?;
-            if hello.message_type != MessageType::EngineHello {
-                return Err(EngineError::Transport(format!(
-                    "engine-protocol expected hello, got {:?}",
-                    hello.message_type
-                )));
-            }
-            let hello_text = String::from_utf8(hello.payload).map_err(|e| {
-                EngineError::Transport(format!("engine-protocol invalid hello utf-8: {e}"))
-            })?;
-            validate_engine_hello(&info, &hello_text)?;
+            read_and_register_engine_hello(&info, &mut host_stream)?;
 
             let host_hello = format!(
                 "protocol\t1.0\nengine\t{}\ntype\t{}",
@@ -326,12 +386,10 @@ impl ProcessEngine {
             Ok(())
         })();
         if let Err(error) = handshake {
-            // `std::process::Child` deliberately does not kill or reap on drop.
-            // Clean up every post-spawn failure so a bad/slow HELLO cannot
-            // accumulate live workers or zombies across recovery attempts.
-            let mut child = child;
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_child(child);
+            if remove_schema_on_failure {
+                let _ = replace_process_engine_schema(&info.name, &[]);
+            }
             return Err(error);
         }
 
@@ -507,7 +565,11 @@ impl ProcessEngine {
             self.handle_response_line(response, &mut reply, ctx.as_deref())?;
         }
         if let Some(err) = reply.error.take() {
-            return Err(EngineError::Transport(err));
+            return Err(match err.split('\t').next().unwrap_or("") {
+                "NOT_FOUND" => EngineError::NotFound,
+                "NOT_SUPPORTED" => EngineError::NotSupported,
+                _ => EngineError::Transport(err),
+            });
         }
         if let Some(mode) = reply.active_mode.as_ref() {
             self.observe_active_mode(mode);
@@ -531,6 +593,7 @@ impl ProcessEngine {
             "AVAILABILITY" => reply.availability = parse_availability(arg),
             "TEXT" => reply.text = Some(decode_hex_to_string(arg)?),
             "MODE" => reply.modes.push(parse_mode(arg)?),
+            "COMMAND" => reply.commands.push(parse_command(arg)?),
             "ACTIVE_MODE" => reply.active_mode = Some(parse_mode(arg)?),
             "COMPOSITION" => {
                 if let Some(ctx) = ctx {
@@ -656,7 +719,14 @@ impl Engine for ProcessEngine {
     }
 
     fn list_commands(&self) -> Vec<Command> {
-        vec![]
+        self.request("list-commands", None)
+            .map(|reply| reply.commands)
+            .unwrap_or_default()
+    }
+
+    fn invoke_command(&mut self, id: &str) -> Result<()> {
+        let line = format!("invoke-command\t{}", hex_encode_str(id));
+        self.request(&line, None).map(|_| ())
     }
 
     fn on_config_change(&mut self, _key: &str, _value: &str) {
@@ -761,6 +831,7 @@ struct WorkerReply {
     availability: Option<EngineAvailability>,
     text: Option<String>,
     modes: Vec<EngineMode>,
+    commands: Vec<Command>,
     active_mode: Option<EngineMode>,
 }
 
@@ -796,10 +867,184 @@ fn engine_type_name(engine_type: super::super::EngineType) -> &'static str {
     }
 }
 
-fn validate_engine_hello(info: &EngineInfo, payload: &str) -> Result<()> {
+struct HelloSchemaField {
+    key: CString,
+    type_: TypioFieldType,
+    def_string: Option<CString>,
+    def_int: i32,
+    def_bool: bool,
+    def_float: f64,
+    ui_label: Option<CString>,
+    ui_section: Option<CString>,
+    ui_min: i32,
+    ui_max: i32,
+    ui_step: i32,
+    ui_options_storage: Vec<CString>,
+    ui_options_ptrs: Vec<*const c_char>,
+    runtime_property: Option<CString>,
+}
+
+impl HelloSchemaField {
+    fn parse(line: &str) -> Result<Self> {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 11 {
+            return Err(EngineError::Transport(format!(
+                "engine-protocol SCHEMA expected 11 fields, got {}",
+                fields.len()
+            )));
+        }
+
+        let key = decode_hex_cstring(fields[1], "schema key")?;
+        if key.as_bytes().is_empty() {
+            return Err(EngineError::Transport(
+                "engine-protocol schema key is empty".into(),
+            ));
+        }
+        let type_ = match fields[2] {
+            "0" => TypioFieldType::TypioFieldString,
+            "1" => TypioFieldType::TypioFieldInt,
+            "2" => TypioFieldType::TypioFieldBool,
+            "3" => TypioFieldType::TypioFieldFloat,
+            other => {
+                return Err(EngineError::Transport(format!(
+                    "engine-protocol invalid schema field type '{other}'"
+                )));
+            }
+        };
+
+        let mut def_string = None;
+        let mut def_int = 0;
+        let mut def_bool = false;
+        let mut def_float = 0.0;
+        match type_ {
+            TypioFieldType::TypioFieldString => {
+                def_string = Some(decode_hex_cstring(fields[3], "string default")?);
+            }
+            TypioFieldType::TypioFieldInt => {
+                def_int = parse_schema_i32(fields[3], "integer default")?;
+            }
+            TypioFieldType::TypioFieldBool => {
+                def_bool = match fields[3] {
+                    "true" | "1" => true,
+                    "false" | "0" => false,
+                    other => {
+                        return Err(EngineError::Transport(format!(
+                            "engine-protocol invalid boolean default '{other}'"
+                        )));
+                    }
+                };
+            }
+            TypioFieldType::TypioFieldFloat => {
+                def_float = fields[3].parse::<f64>().map_err(|_| {
+                    EngineError::Transport(format!(
+                        "engine-protocol invalid float default '{}'",
+                        fields[3]
+                    ))
+                })?;
+                if !def_float.is_finite() {
+                    return Err(EngineError::Transport(
+                        "engine-protocol non-finite float default".into(),
+                    ));
+                }
+            }
+        }
+
+        let ui_options_storage = if fields[9].is_empty() {
+            Vec::new()
+        } else {
+            fields[9]
+                .split(',')
+                .map(|value| decode_hex_cstring(value, "schema option"))
+                .collect::<Result<Vec<_>>>()?
+        };
+        let ui_options_ptrs = ui_options_storage
+            .iter()
+            .map(|value| value.as_ptr())
+            .chain(std::iter::once(ptr::null()))
+            .collect();
+
+        Ok(Self {
+            key,
+            type_,
+            def_string,
+            def_int,
+            def_bool,
+            def_float,
+            ui_label: decode_hex_optional_cstring(fields[4], "schema label")?,
+            ui_section: decode_hex_optional_cstring(fields[5], "schema section")?,
+            ui_min: parse_schema_i32(fields[6], "schema minimum")?,
+            ui_max: parse_schema_i32(fields[7], "schema maximum")?,
+            ui_step: parse_schema_i32(fields[8], "schema step")?,
+            ui_options_storage,
+            ui_options_ptrs,
+            runtime_property: decode_hex_optional_cstring(fields[10], "runtime property")?,
+        })
+    }
+
+    fn as_field(&self) -> TypioConfigField {
+        let def = match self.type_ {
+            TypioFieldType::TypioFieldString => TypioFieldDefault {
+                s: self
+                    .def_string
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
+            },
+            TypioFieldType::TypioFieldInt => TypioFieldDefault { i: self.def_int },
+            TypioFieldType::TypioFieldBool => TypioFieldDefault { b: self.def_bool },
+            TypioFieldType::TypioFieldFloat => TypioFieldDefault { f: self.def_float },
+        };
+        TypioConfigField {
+            key: self.key.as_ptr(),
+            type_: self.type_,
+            def,
+            ui_label: self
+                .ui_label
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr()),
+            ui_section: self
+                .ui_section
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr()),
+            ui_min: self.ui_min,
+            ui_max: self.ui_max,
+            ui_step: self.ui_step,
+            ui_options: if self.ui_options_storage.is_empty() {
+                ptr::null()
+            } else {
+                self.ui_options_ptrs.as_ptr()
+            },
+            runtime_property: self
+                .runtime_property
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr()),
+        }
+    }
+}
+
+fn decode_hex_cstring(value: &str, label: &str) -> Result<CString> {
+    CString::new(decode_hex(value)?)
+        .map_err(|_| EngineError::Transport(format!("engine-protocol {label} contains a NUL byte")))
+}
+
+fn decode_hex_optional_cstring(value: &str, label: &str) -> Result<Option<CString>> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        decode_hex_cstring(value, label).map(Some)
+    }
+}
+
+fn parse_schema_i32(value: &str, label: &str) -> Result<i32> {
+    value
+        .parse::<i32>()
+        .map_err(|_| EngineError::Transport(format!("engine-protocol invalid {label} '{value}'")))
+}
+
+fn parse_engine_hello(info: &EngineInfo, payload: &str) -> Result<Vec<HelloSchemaField>> {
     let mut protocol_ok = false;
     let mut worker_engine = None;
     let mut worker_type = None;
+    let mut schema = Vec::new();
 
     for line in payload.lines() {
         let mut fields = line.splitn(2, '\t');
@@ -809,6 +1054,7 @@ fn validate_engine_hello(info: &EngineInfo, payload: &str) -> Result<()> {
             "protocol" => protocol_ok = value == "1.0",
             "engine" => worker_engine = Some(value),
             "type" => worker_type = Some(value),
+            "SCHEMA" => schema.push(HelloSchemaField::parse(line)?),
             _ => {}
         }
     }
@@ -834,7 +1080,7 @@ fn validate_engine_hello(info: &EngineInfo, payload: &str) -> Result<()> {
         )));
     }
 
-    Ok(())
+    Ok(schema)
 }
 
 fn keysym_to_u32(sym: super::super::KeySym) -> u32 {
@@ -990,6 +1236,19 @@ fn parse_mode(payload: &str) -> Result<EngineMode> {
     })
 }
 
+fn parse_command(payload: &str) -> Result<Command> {
+    let mut fields = payload.splitn(2, '\t');
+    let id = decode_hex_to_string(fields.next().unwrap_or(""))?;
+    let label = fields
+        .next()
+        .ok_or_else(|| EngineError::Transport("short command payload".into()))
+        .and_then(decode_hex_to_string)?;
+    if id.is_empty() {
+        return Err(EngineError::Transport("empty command id".into()));
+    }
+    Ok(Command { id, label })
+}
+
 fn decode_hex_to_option(value: &str) -> Result<Option<String>> {
     if value.is_empty() {
         Ok(None)
@@ -1037,6 +1296,49 @@ fn hex_value(b: u8) -> Result<u8> {
 mod tests {
     use super::*;
 
+    const PROBE_WORKER_TEST: &str = "core::engine::backend::process::tests::schema_probe_worker";
+
+    #[test]
+    fn schema_probe_worker() {
+        if std::env::var("TYPIO_ENGINE_PROTOCOL").as_deref() != Ok("1.0") {
+            return;
+        }
+        use std::os::fd::FromRawFd;
+        let mut stream = unsafe { UnixStream::from_raw_fd(ENGINE_PROTOCOL_FD) };
+        let payload = format!(
+            "protocol\t1.0\nengine\tprobe_worker\ntype\tkeyboard\n\
+             SCHEMA\t{}\t2\ttrue\t{}\t{}\t0\t0\t0\t\t",
+            hex_encode_str("engines.probe_worker.enabled"),
+            hex_encode_str("Enabled"),
+            hex_encode_str("probe_worker")
+        );
+        write_frame(
+            &mut stream,
+            &Frame::new(MessageType::EngineHello, 0, payload.into_bytes()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn schema_probe_launches_worker_and_cleans_up_registration() {
+        let executable = std::env::current_exe().unwrap();
+        let mut backend = ProcessBackend::new(
+            EngineInfo::new("probe_worker", super::super::super::EngineType::Keyboard),
+            vec![
+                executable.to_string_lossy().into_owned(),
+                "--exact".into(),
+                PROBE_WORKER_TEST.into(),
+                "--nocapture".into(),
+            ],
+        );
+        backend.probe_schema().unwrap();
+
+        let key = CString::new("engines.probe_worker.enabled").unwrap();
+        assert!(!crate::config_schema::typio_config_schema_find(key.as_ptr()).is_null());
+        drop(backend);
+        assert!(crate::config_schema::typio_config_schema_find(key.as_ptr()).is_null());
+    }
+
     #[test]
     fn request_timeouts_match_operation_cost() {
         assert_eq!(
@@ -1045,11 +1347,82 @@ mod tests {
         );
         assert_eq!(request_timeout_for("availability"), ENGINE_REQUEST_TIMEOUT);
         assert_eq!(request_timeout_for("init"), ENGINE_INIT_TIMEOUT);
-        assert_eq!(request_timeout_for("reload-config"), ENGINE_INIT_TIMEOUT);
+        assert_eq!(request_timeout_for("reload-config"), ENGINE_RELOAD_TIMEOUT);
+        assert_eq!(
+            request_timeout_for("invoke-command\t646961676e6f7365"),
+            ENGINE_COMMAND_TIMEOUT
+        );
         assert_eq!(
             request_timeout_for("process-audio\t00"),
             ENGINE_VOICE_TIMEOUT
         );
         assert_eq!(request_timeout_for("focus-in\t1"), ENGINE_DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn command_payload_is_typed_and_bounded() {
+        assert_eq!(
+            parse_command("646961676e6f7365\t52756e20646961676e6f7374696373").unwrap(),
+            Command {
+                id: "diagnose".into(),
+                label: "Run diagnostics".into(),
+            }
+        );
+        assert!(parse_command("\t6c6162656c").is_err());
+        assert!(parse_command("6964").is_err());
+        assert!(parse_command("zz\t6c6162656c").is_err());
+    }
+
+    #[test]
+    fn engine_hello_parses_typed_schema() {
+        let info = EngineInfo::new("demo", super::super::super::EngineType::Keyboard);
+        let payload = format!(
+            "protocol\t1.0\nengine\tdemo\ntype\tkeyboard\n\
+             SCHEMA\t{}\t0\t{}\t{}\t{}\t0\t0\t0\t{},{}\t",
+            hex_encode_str("engines.demo.mode"),
+            hex_encode_str("alpha"),
+            hex_encode_str("Mode"),
+            hex_encode_str("demo"),
+            hex_encode_str("alpha"),
+            hex_encode_str("beta")
+        );
+
+        let schema = parse_engine_hello(&info, &payload).unwrap();
+        assert_eq!(schema.len(), 1);
+        let field = schema[0].as_field();
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(field.key) }
+                .to_str()
+                .unwrap(),
+            "engines.demo.mode"
+        );
+        assert_eq!(field.type_, TypioFieldType::TypioFieldString);
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(field.def.s) }
+                .to_str()
+                .unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(*field.ui_options.add(1)) }
+                .to_str()
+                .unwrap(),
+            "beta"
+        );
+        assert!(unsafe { (*field.ui_options.add(2)).is_null() });
+    }
+
+    #[test]
+    fn engine_hello_rejects_malformed_schema() {
+        let info = EngineInfo::new("demo", super::super::super::EngineType::Keyboard);
+        let bad_type = format!(
+            "protocol\t1.0\nengine\tdemo\ntype\tkeyboard\n\
+             SCHEMA\t{}\t9\t\t\t\t0\t0\t0\t\t",
+            hex_encode_str("engines.demo.bad")
+        );
+        assert!(parse_engine_hello(&info, &bad_type).is_err());
+
+        let mismatch = "protocol\t1.0\nengine\tother\ntype\tkeyboard";
+        assert!(parse_engine_hello(&info, mismatch).is_err());
     }
 }

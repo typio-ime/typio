@@ -13,7 +13,7 @@ keys pass through to the focused application unchanged.
 flowchart TD
     WC[Wayland compositor]
     Host["typio<br/>(typio binary)"]
-    DBus[("D-Bus<br/>org.typio.InputMethod1")]
+    TIP[("TIP v3<br/>UDS JSON-RPC")]
     Client[typioctl]
     Control[typio-settings]
     Core[libtypio]
@@ -21,9 +21,9 @@ flowchart TD
     Engines["engines<br/>(typio-engine-compose, -rime, -mozc,<br/>-sherpa, -whisper, …)"]
 
     WC --> Host
-    Host <--> DBus
-    Host --- Client
-    DBus --- Control
+    Host <--> TIP
+    TIP --- Client
+    TIP --- Control
     Host --> Core
     Host <-.->|worker IPC| Engines
     Engines --> Abi
@@ -44,7 +44,7 @@ Protocol and the engine ABI are the cross-repo contracts.
 | `crates/typio-abi` | Shared C ABI type definitions for Rust engines and test tools. Zero-implementation workspace member; keeps Rust engines in sync without linking the full framework library | Rust (types only) |
 | `crates/typio-vet` | Engine conformance checker and mock host harness | Rust |
 | `crates/typioctl` | Command-line client. Speaks UDS JSON-RPC to a running `typio` daemon | Rust |
-| `typio-settings` | GTK4 settings panel. Edits configuration through `libtypio`; reflects/changes runtime state over the host's D-Bus interface | GTK4 |
+| `typio-settings` | GTK4 settings panel. Reads and changes config/runtime state through TIP | GTK4 |
 | `typio-engine-compose` | Latin keyboard engine with compose picker for accented characters. Optional; the framework runs with zero engines installed | Rust |
 | `typio-engine-rime` | Rime IME engine (CJK input via librime) | C++ |
 | `typio-engine-mozc` | Mozc IME engine (Japanese) | C++ |
@@ -139,11 +139,11 @@ Lives in the `typio-settings` repository.
 Responsibilities:
 
 - provide a GTK preferences panel for runtime state and persistent configuration
-- consume the D-Bus status surface exposed by the host
-- reuse `libtypio` config and schema helpers where shared parsing logic is preferable to duplicating it in UI code
+- consume TIP schema, status, and notifications exposed by the host
+- submit typed config changes and engine actions to the owning daemon
 
-The D-Bus surface itself is the host's contract, not libtypio's; see the
-`typio` repository for the full protocol specification.
+Desktop D-Bus is limited to services that require it, such as the tray; TIP is
+the Typio control contract.
 
 ### `typio-engine-compose`
 
@@ -161,26 +161,22 @@ It is **not** built into `libtypio` or `typio`, and is not required for
 the framework to run. If no engine package is installed, the host passes
 unhandled keys through to the focused application unchanged.
 
-Rust engines such as `compose` depend on the **`typio-abi`** crate for shared `#[repr(C)]` types (`TypioEngineInfo`, `TypioKeyEvent`, the vtable structs, etc.). This avoids replicating ABI definitions by hand and guarantees the engine's layout matches the host's exactly. C and C++ engines continue to include the C headers under `include/typio/abi/` directly. See [project-layout.md](../dev/project-layout.md) for the crate split rationale.
+Pure Rust engines such as `compose` may implement Typio Engine Protocol
+directly without linking libtypio. Native C and C++ engines use the installed
+headers and the canonical worker harness. See
+[project-layout.md](../dev/project-layout.md) for the crate split rationale.
 
 ## Engine Manager Model
 
-`TypioRegistry` ([ADR-0005](../adr/0005-internal-engine-backend-abstraction.md)) is the sole engine-management surface. Engines
-are loaded as external shared objects from the host-supplied engine
-directories — there are no in-tree built-in engines.
+`TypioRegistry` is the sole engine-management surface. The host discovers
+`typio-engine-*.toml` manifests, validates capabilities, probes EngineHello for
+schema, and registers process backends. There are no in-tree built-in engines
+and no engine `dlopen` path.
 
-For external engines, Typio expects exported symbols:
-
-- `typio_engine_get_info`
-- `typio_engine_create`
-
-Each engine instance receives a config path such as:
-
-```text
-~/.config/typio/engines/<engine>.toml
-```
-
-Engines that share Typio's main config file read their section from the root `~/.config/typio/core.toml`, typically under keys such as `[engines.rime]` and `[engines.mozc]`.
+Native workers export `typio_engine_get_info`, the modality factory, and
+`typio_engine_abi_version` to their own harness. The host sees only manifest
+metadata and protocol frames. Worker-local instances read the shared
+`core.toml`, including sections such as `[engines.rime]`.
 
 Activation rules:
 
@@ -210,8 +206,7 @@ The daemon is single-process and event-loop driven. The main loop polls:
 
 - Wayland display events
 - keyboard repeat timer
-- status D-Bus fd
-- tray D-Bus fd
+- TIP UDS server events
 - voice completion fd
 - config inotify fd
 - config reload timer fd
@@ -219,7 +214,7 @@ The daemon is single-process and event-loop driven. The main loop polls:
 Scheduling rules:
 
 - Wayland dispatch remains the primary path and must not be starved by auxiliary fds
-- D-Bus dispatchers process a bounded number of messages per tick
+- TIP dispatch processes a bounded amount of client work per tick
 - config filesystem events are debounced before reload
 - the virtual-keyboard keymap deadline can shorten the poll timeout
 - voice reloads are deferred while recording or inference is active, then applied once the active job finishes
@@ -330,7 +325,7 @@ Implemented:
 - keyboard grab and XKB integration
 - commit/preedit callback bridge
 - candidate popup surface rendering over pure Wayland protocol objects
-- dynamic engine loading ABI
+- manifest discovery and isolated process-engine protocol
 - out-of-tree engines — `typio-engine-compose` (the keyboard fallback),
   `typio-engine-rime`, `typio-engine-mozc`, `typio-engine-sherpa`,
   `typio-engine-whisper`, … — built as engine executables and registered
@@ -347,7 +342,7 @@ Still limited in this repository:
 These are data-structure-level ownership rules.
 
 - `TypioInstance` owns `TypioRegistry`, `TypioConfig`, and created contexts.
-- `TypioInputContext` owns its preedit, candidates, and property storage.
+- `TypioInputContext` owns its preedit and candidates.
 - `TypioWlFrontend` owns the Wayland connection, popup surface, current session, and keyboard grab.
 - `TypioVoiceService` owns the PipeWire capture, the audio buffer, the inference thread, and the `eventfd` notification.
 - Engine implementations own their own `user_data`.

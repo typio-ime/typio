@@ -4,11 +4,12 @@
 //! This is the primary implementation; there is no separate C runtime.
 
 // This crate is a C-ABI boundary: almost every public function is a
-// `#[unsafe(no_mangle)] extern "C"` entry point that dereferences raw pointers passed
-// in by the C caller. Marking them all `unsafe` does not change the C-callable
-// signature and only adds noise, so the lint is allowed crate-wide. The safety
-// contract lives at the call sites in `daemon/` and the engine plugins.
-#![allow(unsafe_op_in_unsafe_fn)]
+// `#[unsafe(no_mangle)] extern "C"` entry point that dereferences raw pointers
+// passed in by the C caller. Converting every export and callback vtable to
+// `unsafe extern "C"` is a separate Rust-API migration, so the raw-pointer lint
+// is allowed at this boundary while the ABI remains pre-1.0. The safety
+// contract lives at the call sites in the host and native engine workers.
+#![allow(unsafe_op_in_unsafe_fn, clippy::not_unsafe_ptr_arg_deref)]
 #![warn(missing_docs)]
 
 pub mod c_api;

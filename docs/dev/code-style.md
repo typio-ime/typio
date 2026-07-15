@@ -2,7 +2,7 @@
 
 ## Language versions
 
-- Rust 2021 edition (Rust 1.85+), per the workspace `Cargo.toml`
+- Rust 2024 edition (Rust 1.85+), per the workspace `Cargo.toml`
 - C only for libtypio's framework core and the FFI ABI surface; new host
   code is Rust (see [ADR-0035](../adr/0035-bilingual-migration-to-rust.md),
   [ADR-0038](../adr/0038-framework-abi-vet-monorepo.md))

@@ -7,10 +7,6 @@ This document is for contributors who will modify Typio source code. **If you on
 - Rust toolchain (latest stable `rustc` + `cargo`)
 - `pkg-config`
 
-Optional:
-
-- `wayland-scanner` and `wayland-protocols` — only if you are working on Wayland-protocol–related tests (rare)
-
 Engines (rime, mozc, …) are separate projects; their dependencies (e.g.
 `librime`, `protobuf`) are documented in those repositories.
 
@@ -18,17 +14,21 @@ Engines (rime, mozc, …) are separate projects; their dependencies (e.g.
 
 | Dependency | Source | Resolved version | You need to install it? |
 |---|---|---|---|
-| **Rust** (`libtypio`) | Cargo | latest stable | **Yes** — install `rustc` + `cargo` |
+| **Rust** (`typio-core`) | Cargo | 1.85 or newer | **Yes** — install `rustc` + `cargo` |
 
 System libraries are discovered via `pkg-config`.
 
 ### Pure Rust architecture
 
-`libtypio` is a pure Rust crate:
+`typio-core` is a pure Rust crate whose library artifact is named `typio`:
 
-- **Rust** — The core library (`src/`, crate `libtypio`): instance lifecycle, config parsing and schema, input context state, engine ABI/manager/labels, key-event types, logging sink, string utilities, and Rime schema discovery.
+- **Rust** — The core library (`src/`, crate `typio-core`): instance
+  lifecycle, config parsing and schema, input-context state, process-engine
+  registry and transport, key-event types, logging sink, and string utilities.
 
-The hand-written C headers in `include/typio/*.h` are the ABI contract — the single source of truth. Rust implements matching `#[no_mangle] pub extern "C"` functions. `cargo build` produces both the `libtypio.so` shared library and the `libtypio.rlib` Rust library artifact.
+The hand-written C headers in `include/typio/*.h` are the ABI contract. Rust
+implements the exported C functions and `cargo build` produces both
+`libtypio.so` and `libtypio.rlib`.
 
 When modifying Rust code, edits are picked up automatically on the next `cargo build`.
 

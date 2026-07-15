@@ -2,7 +2,7 @@
  * @file voice.h
  * @brief Voice-engine ABI types shared between engines and the host.
  *
- * Voice engines (loaded as plugins) implement `TypioVoiceEngineOps`; see
+ * Native voice workers implement `TypioVoiceEngineOps` internally; see
  * `typio/abi/engine.h`. This header defines only the types that need to be
  * visible to engines for that contract: the audio-source vtable used by the
  * host to feed PCM samples, the voice state enum reported back to the host,

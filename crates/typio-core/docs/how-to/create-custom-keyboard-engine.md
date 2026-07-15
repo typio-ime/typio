@@ -29,7 +29,7 @@ TypioKeyboardEngine *typio_keyboard_engine_create(void);
 ```c
 #include "typio/abi/abi.h"
 
-/* ── Base operations (mandatory for every engine) ─────────────────────── */
+/* ── Base operations (optional lifecycle callbacks) ───────────────────── */
 
 static TypioResult my_init(TypioEngine *engine, TypioInstance *instance) {
     (void)engine;
@@ -86,7 +86,6 @@ static TypioKeyProcessResult my_process_key(TypioKeyboardEngine *engine,
 /* ── Metadata ────────────────────────────────────────────────────────── */
 
 static const TypioEngineInfo my_info = {
-    .struct_size = sizeof(TypioEngineInfo),
     .name = "my-engine",
     .display_name = "My Engine",
     .description = "Example Typio keyboard engine",
@@ -122,8 +121,10 @@ TYPIO_KEYBOARD_ENGINE_DEFINE(my_info, my_create)
 
 Link the engine implementation and engine protocol entry point into an
 executable named `typio-engine-my-engine`. C and C++ implementations include
-`typio/abi/abi.h` and link the libtypio engine-facing helper symbols. Native
-Rust engines may implement Typio Engine Protocol directly.
+`typio/abi/abi.h`; engine construction helpers are header-only, while the
+worker links libtypio for its local instance, input-context, logging, and
+protocol support. Native Rust engines may implement Typio Engine Protocol
+directly.
 
 ## Verify and install
 
@@ -139,17 +140,20 @@ Rust engines may implement Typio Engine Protocol directly.
 
 ### Base-ops checklist (all engines)
 
-Every engine must provide all seven base callbacks.  If your engine does not need a particular behaviour, implement it as a no-op.
+The base vtable is required, but lifecycle slots may be `NULL`. Implement a
+callback when the engine owns the corresponding resource or behavior.
 
 | Callback | Required | Reason |
 |----------|----------|--------|
-| `init` | **Yes** | Allocate `user_data`, load config |
-| `destroy` | **Yes** | Free resources |
-| `deactivate` | **Yes** | Free large resources when switched away (or no-op) |
-| `focus_in` | **Yes** | Restore UI state (or no-op) |
-| `focus_out` | **Yes** | Clear UI, preserve session state |
-| `reset` | **Yes** | Cancel composition on Escape |
-| `reload_config` | **Yes** | Re-parse config (or no-op) |
+| `init` | No | Allocate `user_data`, load config |
+| `destroy` | No | Free resources allocated by `init` |
+| `deactivate` | No | Free large resources when switched away |
+| `focus_in` | No | Restore UI state |
+| `focus_out` | No | Clear UI while preserving session state |
+| `reset` | No | Cancel composition on Escape |
+| `reload_config` | No | Re-read worker-local unified config |
+| `on_config_change` | No | React to one engine-owned key |
+| `availability` | No | Report asynchronous readiness; NULL means Ready |
 
 ### Keyboard-ops checklist
 

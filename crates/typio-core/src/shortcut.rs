@@ -310,13 +310,12 @@ pub extern "C" fn typio_shortcut_get(
         let key = format!("shortcuts.{}", id);
         if let Ok(c_key) = CString::new(key) {
             let val = typio_config_get_string(config, c_key.as_ptr(), ptr::null());
-            if !val.is_null() {
-                if let Ok(s) = unsafe { CStr::from_ptr(val) }.to_str() {
-                    if let Some(b) = parse_str(s) {
-                        unsafe { *out = b };
-                        return true;
-                    }
-                }
+            if !val.is_null()
+                && let Ok(s) = unsafe { CStr::from_ptr(val) }.to_str()
+                && let Some(b) = parse_str(s)
+            {
+                unsafe { *out = b };
+                return true;
             }
         }
     }

@@ -2,8 +2,8 @@
  * @file engine.h
  * @brief Input engine interface for Typio
  *
- * This file defines the engine interface that all input engines must implement.
- * Engines are loaded as plugins and provide input method functionality.
+ * This file defines the engine interface implemented inside native engine
+ * worker executables. The daemon does not load engine code in-process.
  *
  * Design principles:
  *   1. Type separation — keyboard and voice engines are distinct C types.
@@ -12,8 +12,8 @@
  *      modalities.  TypioKeyboardEngine and TypioVoiceEngine embed it as
  *      their first member so pointer conversion between the specific type
  *      and the common base is always safe (offset zero).
- *   3. Explicit contracts — every callback in base_ops is mandatory.
- *      Engines that do not need a particular behaviour provide a no-op.
+ *   3. Explicit contracts — the base vtable is required, while callbacks that
+ *      do not apply to an engine may be NULL and receive worker defaults.
  */
 
 #ifndef TYPIO_ENGINE_H
@@ -21,6 +21,9 @@
 
 #include "typio/abi/types.h"
 #include "typio/abi/version.h"
+
+#include <stdlib.h>
+#include <string.h>
 
 struct TypioConfigField; /* fwd-decl; full def in typio/schema/config_schema.h */
 
@@ -31,7 +34,7 @@ extern "C" {
 /**
  * @brief Engine metadata structure.
  *
- * Each engine plugin allocates this statically and returns it from
+ * Each native engine allocates this statically and returns it from
  * `typio_engine_get_info()`. Compatibility is established out-of-band via the
  * exported `typio_engine_abi_version()` (see typio/abi/version.h), so this
  * struct no longer carries a `struct_size` witness.
@@ -72,11 +75,11 @@ typedef struct TypioVoiceEngine TypioVoiceEngine;
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Base operations — mandatory for every engine.
+ * @brief Base operations — the vtable is mandatory for every engine.
  *
- * All callbacks must be provided.  If an engine does not need a particular
- * behaviour it should supply a no-op implementation (e.g. a function that
- * simply returns TYPIO_OK or does nothing).
+ * Individual callbacks are optional. The worker treats missing lifecycle
+ * callbacks as no-ops, missing reload as success, and missing availability as
+ * TYPIO_ENGINE_READY.
  *
  * The @c engine parameter is a pointer to the common base (TypioEngine).
  * Because TypioKeyboardEngine and TypioVoiceEngine both embed TypioEngine as
@@ -283,8 +286,8 @@ typedef struct TypioVoiceEngineOps {
  *
  * Engine-owned *properties* (e.g. Rime's "schema") are NOT on this surface
  * (ADR-0008). They live in the unified config schema layer:
- * engines register their property fields at load time via
- * `typio_config_schema_register_many` and react to changes via the
+ * engines publish their fields from `typio_engine_get_config_schema` and
+ * react to changes via the
  * `on_config_change` callback on `TypioEngineBaseOps`. Values are read
  * from / written to the unified config tree (`typio_config_get_*` /
  * `typio_config_set_*`).
@@ -331,7 +334,6 @@ struct TypioEngine {
     void *user_data;                    /* Engine-specific data */
     bool active;                        /* Whether engine is currently active */
     bool initialized;                   /* Whether init has been called */
-    char *config_path;                  /* Path to engine configuration file */
     const TypioEngineSurfaceOps *surface; /* Optional surface vtable (may be NULL) */
 };
 
@@ -382,7 +384,7 @@ typedef TypioVoiceEngine *(*TypioVoiceEngineFactory)(void);
 /**
  * @brief Engine info function type
  *
- * All engine libraries export a function with this signature named
+ * All native engine implementations export a function with this signature named
  * "typio_engine_get_info" to return engine metadata.
  */
 typedef const TypioEngineInfo *(*TypioEngineInfoFunc)(void);
@@ -392,12 +394,11 @@ typedef const TypioEngineInfo *(*TypioEngineInfoFunc)(void);
  *
  * Engines that declare `engines.<name>.*` configuration fields should export
  * a function named "typio_engine_get_config_schema" with this signature.
- * The host loader calls it immediately after `typio_engine_get_info` (i.e.
- * before instantiation) and forwards the result to
- * `typio_config_schema_register_many`, so the schema is visible to UI and
+ * The worker harness calls it before instantiation, registers it locally, and
+ * serializes it in EngineHello so the schema is visible to host UI and
  * defaulting layers without the engine being active.
  *
- * The returned array must remain valid for as long as the plugin is loaded;
+ * The returned array must remain valid for the worker process lifetime;
  * libtypio takes its own deep copy on registration. Engines may return NULL
  * with `*out_count == 0` to indicate no engine-owned config.
  */
@@ -407,7 +408,7 @@ typedef const struct TypioConfigField *(*TypioEngineConfigSchemaFunc)(size_t *ou
  * Engine-entry-point macros.
  *
  * Each macro expands to three exported symbols with explicit C linkage and
- * default visibility regardless of the plugin's `-fvisibility` setting:
+ * default visibility regardless of the engine's `-fvisibility` setting:
  *
  *   - `typio_engine_abi_version` (the host's compatibility witness)
  *   - `typio_engine_get_info`
@@ -424,7 +425,7 @@ typedef const struct TypioConfigField *(*TypioEngineConfigSchemaFunc)(size_t *ou
 #  define TYPIO__EXTERN_C
 #endif
 
-/* Emits typio_engine_abi_version() reporting the ABI the plugin was built
+/* Emits typio_engine_abi_version() reporting the ABI the engine was built
  * against. Shared by both engine-kind macros. */
 #define TYPIO__ENGINE_ABI_VERSION_DEFINE \
     TYPIO__EXTERN_C TYPIO_EXPORT const TypioAbiVersion *typio_engine_abi_version(void) { \
@@ -452,9 +453,136 @@ typedef const struct TypioConfigField *(*TypioEngineConfigSchemaFunc)(size_t *ou
         return create_func(); \
     }
 
-/* libtypio no longer provides in-process engine lifecycle/helper functions.
- * Engine workers allocate their own TypioKeyboardEngine / TypioVoiceEngine
- * values and communicate with the host through the process protocol. */
+/* -------------------------------------------------------------------------- */
+/* Header-only worker utilities                                               */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * These helpers construct the engine object that lives inside an
+ * out-of-process worker. They are static inline by design: libtypio exports no
+ * in-process engine lifecycle symbols, and the host only sees protocol frames.
+ */
+
+static inline TypioKeyboardEngine *
+typio_keyboard_engine_new(const TypioEngineInfo *info,
+                          const TypioEngineBaseOps *base_ops,
+                          const TypioKeyboardEngineOps *keyboard) {
+    if (!info || !base_ops || !keyboard) {
+        return NULL;
+    }
+    TypioKeyboardEngine *engine =
+        (TypioKeyboardEngine *)calloc(1, sizeof(*engine));
+    if (!engine) {
+        return NULL;
+    }
+    engine->base.info = info;
+    engine->base.base_ops = base_ops;
+    engine->keyboard = keyboard;
+    return engine;
+}
+
+static inline TypioVoiceEngine *
+typio_voice_engine_new(const TypioEngineInfo *info,
+                       const TypioEngineBaseOps *base_ops,
+                       const TypioVoiceEngineOps *voice) {
+    if (!info || !base_ops || !voice) {
+        return NULL;
+    }
+    TypioVoiceEngine *engine = (TypioVoiceEngine *)calloc(1, sizeof(*engine));
+    if (!engine) {
+        return NULL;
+    }
+    engine->base.info = info;
+    engine->base.base_ops = base_ops;
+    engine->voice = voice;
+    return engine;
+}
+
+static inline void typio_engine_free(TypioEngine *engine) {
+    if (!engine) {
+        return;
+    }
+    if (engine->base_ops && engine->base_ops->destroy) {
+        engine->base_ops->destroy(engine);
+    }
+    free(engine);
+}
+
+static inline const char *typio_engine_get_name(const TypioEngine *engine) {
+    return engine && engine->info ? engine->info->name : NULL;
+}
+
+static inline TypioEngineType typio_engine_get_type(const TypioEngine *engine) {
+    return engine && engine->info
+        ? engine->info->type
+        : TYPIO_ENGINE_TYPE_KEYBOARD;
+}
+
+static inline bool typio_engine_has_capability(const TypioEngine *engine,
+                                                const char *capability) {
+    if (!engine || !engine->info || !capability) {
+        return false;
+    }
+    const char *const *sets[] = {
+        engine->info->required_capabilities,
+        engine->info->optional_capabilities,
+    };
+    for (size_t set = 0; set < sizeof(sets) / sizeof(sets[0]); set++) {
+        for (const char *const *item = sets[set]; item && *item; item++) {
+            if (strcmp(*item, capability) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static inline bool typio_engine_is_active(const TypioEngine *engine) {
+    return engine && engine->active;
+}
+
+static inline void typio_engine_set_user_data(TypioEngine *engine, void *data) {
+    if (engine) {
+        engine->user_data = data;
+    }
+}
+
+static inline void *typio_engine_get_user_data(const TypioEngine *engine) {
+    return engine ? engine->user_data : NULL;
+}
+
+static inline void
+typio_engine_set_surface_ops(TypioEngine *engine,
+                             const TypioEngineSurfaceOps *ops) {
+    if (engine) {
+        engine->surface = ops;
+    }
+}
+
+static inline const TypioEngineSurfaceOps *
+typio_engine_get_surface_ops(const TypioEngine *engine) {
+    return engine ? engine->surface : NULL;
+}
+
+static inline const TypioEngineCommand *
+typio_engine_list_commands(TypioEngine *engine, size_t *out_count) {
+    size_t ignored_count = 0;
+    size_t *count = out_count ? out_count : &ignored_count;
+    *count = 0;
+    if (!engine || !engine->surface || !engine->surface->list_commands) {
+        return NULL;
+    }
+    return engine->surface->list_commands(engine, count);
+}
+
+static inline TypioResult typio_engine_invoke_command(TypioEngine *engine,
+                                                       const char *id) {
+    if (!engine || !id || !engine->surface ||
+        !engine->surface->invoke_command) {
+        return TYPIO_ERROR_NOT_SUPPORTED;
+    }
+    return engine->surface->invoke_command(engine, id);
+}
 
 #ifdef __cplusplus
 }

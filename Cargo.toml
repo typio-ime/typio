@@ -67,6 +67,13 @@ typio-host-types = { path = "crates/typio-host-types" }
 typio-client = { path = "crates/typio-client" }
 clap = { version = "4", features = ["derive"] }
 
+# wayland-scanner 0.31.10 pins quick-xml 0.39, which is affected by
+# RUSTSEC-2026-0194 and RUSTSEC-2026-0195. Keep the published scanner source
+# with upstream's dependency-only quick-xml 0.41 fix until a new crate release
+# is available. See third-party/wayland-scanner/README.typio.md.
+[patch.crates-io]
+wayland-scanner = { path = "third-party/wayland-scanner" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

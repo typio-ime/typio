@@ -38,11 +38,12 @@ typio-core's public headers:
 
 ### Surface 1: Instance lifecycle (`typio/runtime/instance.h`)
 
-The host creates a `TypioInstance`, provides engine directories and an engine
-discovery callback, then drives init and shutdown. typio-core never scans engine
-paths; it calls back into the host's `TypioPluginLoaderFunc` once per engine
-directory, and the host does manifest parsing, capability negotiation, and IPC
-registration.
+The host creates a `TypioInstance`, provides config/data/state directories,
+then drives init and shutdown. Engine discovery is deliberately outside the C
+instance constructor: a host scans manifest directories, validates metadata and
+capabilities, and registers accepted process backends through the registry.
+The Rust host also stores its resolved engine directories in the native
+instance so `engine.reload` can repeat the same discovery operation.
 
 ### Surface 2: Input context (`typio/abi/input_context.h`)
 
@@ -263,7 +264,7 @@ When deciding where a change belongs, apply these tests:
 | Does it present an existing schema field or daemon action as a widget? | Yes |
 | Does it edit frontend-owned Panel appearance in `platform.toml`? | Yes |
 
-| Question | If yes, it belongs in an engine plugin |
+| Question | If yes, it belongs in an engine worker |
 |---|---|
 | Does it implement a specific input method (Rime, Pinyin, voice)? | Yes |
 | Does it process key events and produce text? | Yes |
@@ -271,8 +272,9 @@ When deciding where a change belongs, apply these tests:
 
 ## Common Confusion Points
 
-**"I want to add a new input method."** Write an engine plugin against
-`typio/abi/abi.h`. Neither `typio-host` nor typio-core needs to change.
+**"I want to add a new input method."** Write an engine worker that speaks
+Typio Engine Protocol. Native C workers may use `typio/abi/abi.h` internally.
+Neither `typio-host` nor typio-core needs to change.
 
 **"I want the panel to show a new kind of content."** This is `typio-host`.
 The panel content model (`TypioPanelContent`) is GPU-free and testable, but
@@ -282,14 +284,14 @@ the surface, rendering, and positioning are Wayland-specific.
 trigger mechanism (keyboard shortcut detection, modifier buffering) is in the
 host. The registry operation (`next_keyboard`) is in typio-core.
 
-**"I want to add a new config key."** If the key is consumed by engines, define
-it in typio-core's config schema. If the key controls a host behavior (panel
-font, tray visibility, GPU options), it belongs in `typio-host` runtime
-config.
+**"I want to add a new config key."** If an engine consumes the key, publish it
+from that worker as an `engines.<name>.*` schema field. Framework policy keys
+belong in typio-core's static schema. Frontend presentation keys such as panel
+font or tray visibility belong in `typio-host` runtime config.
 
 **"I want to port Typio to macOS."** Write a new host that links typio-core,
 feeds keys, handles text output, and renders a native panel. typio-core,
-typio-abi, typio-vet, and engine plugins stay the same unless the shared
+typio-abi, typio-vet, and engine workers stay the same unless the shared
 contract itself needs to change.
 
 ## See also

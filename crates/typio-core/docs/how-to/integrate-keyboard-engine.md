@@ -18,9 +18,8 @@ keyboard strategy surface for that engine process.
 
 ## Write the engine implementation
 
-A minimal keyboard engine needs `init`, `destroy`, and `process_key`. See [`typio-engine-compose/src/lib.rs`](../../typio-engine-compose/src/lib.rs)
-for a concise reference (it is a Rust engine, but the C ABI callback
-shapes are identical for C engines).
+A minimal keyboard engine needs a base vtable and `process_key`. Add
+`init` and `destroy` when it owns state.
 
 Key rules:
 
@@ -80,7 +79,6 @@ static TypioKeyProcessResult my_process_key(TypioKeyboardEngine *engine,
 }
 
 static const TypioEngineInfo my_info = {
-    .struct_size = sizeof(TypioEngineInfo),
     .name = "myengine",
     .display_name = "My Engine",
     .description = "Example keyboard engine",
@@ -103,12 +101,7 @@ static const TypioKeyboardEngineOps my_keyboard_ops = {
     .process_key = my_process_key,
 };
 
-/* Built-ins export info/create directly; no macro needed */
-const TypioEngineInfo *typio_engine_get_info_myengine(void) {
-    return &my_info;
-}
-
-TypioKeyboardEngine *typio_engine_create_myengine(void) {
+static TypioKeyboardEngine *typio_engine_create_myengine(void) {
     return typio_keyboard_engine_new(&my_info, &my_base_ops, &my_keyboard_ops);
 }
 ```
@@ -164,14 +157,14 @@ optional = []
 1. **Unit test** — If the engine has pure logic (e.g. a key parser), add tests under `tests/`.
 2. **Integration test** — Run the host with the engine's manifest directory
    enabled and exercise key sequences with verbose logging.
-3. **Config reload test** — Change the engine's `core.toml` section and trigger reload (SIGHUP or D-Bus) to verify `reload_config` behavior.
+3. **Config reload test** — Change the engine's `core.toml` section and
+   trigger reload through TIP to verify `reload_config` behavior.
 
 ---
 
 ## Checklist
 
-- [ ] Engine implements required ops (`init`, `destroy`, `process_key`).
-- [ ] `struct_size` is `sizeof(TypioEngineInfo)`.
+- [ ] Engine provides a base vtable and implements `process_key`.
 - [ ] `type` is `TYPIO_ENGINE_TYPE_KEYBOARD`.
 - [ ] Sources include only `typio/abi/abi.h` from the `typio/` tree.
 - [ ] `process_key` never blocks.

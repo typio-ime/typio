@@ -370,11 +370,11 @@ mod tests {
     fn config_float_roundtrip() {
         let cfg = typio_config_new();
         let key = CString::new("test.float").unwrap();
-        let ret = typio_config_set_float(cfg, key.as_ptr(), 3.14);
+        let ret = typio_config_set_float(cfg, key.as_ptr(), 3.125);
         assert_eq!(ret, TypioResult::TypioOk);
 
         let got = typio_config_get_float(cfg, key.as_ptr(), 0.0);
-        assert!((got - 3.14).abs() < 0.001);
+        assert!((got - 3.125).abs() < 0.001);
 
         typio_config_free(cfg);
     }

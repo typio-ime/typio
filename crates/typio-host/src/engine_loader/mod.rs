@@ -1,22 +1,10 @@
 //! Engine loader — discovers `typio-engine-*.toml` manifests on disk and
 //! registers the engines they describe with libtypio's [`EngineRegistry`].
 //!
-//! Phase 1 port of `src/engine_loader.c` (678 lines of C). Replaces the
-//! hand-rolled TOML parser, capability-set lookup, and path-resolution
-//! helpers with idiomatic Rust on top of libtypio's native Rust API.
-//!
-//! ## What this module does NOT yet port
-//!
-//! - **Disabled-engine check** (`typio_is_engine_disabled` in C). The C
-//!   version queries `keyboard.disabled` / `voice.disabled` from the
-//!   TypioInstance config; the Rust host has not yet integrated Config,
-//!   so this check is deferred. The wiring point is in
-//!   [`EngineLoader::load_single`] — once Config lands, add a callback
-//!   or a `&Config` reference and short-circuit before registration.
-//! - **Reload/unload** (`typio_engine_loader_reload`,
-//!   `typio_engine_loader_unload`). These are thin wrappers around
-//!   [`EngineRegistry::unregister`] + reload; trivial to add when the
-//!   daemon port reaches the IPC layer that drives them.
+//! It replaces the former hand-rolled C TOML parser, capability-set lookup,
+//! and path-resolution helpers with typed Rust manifest discovery on top of
+//! libtypio's native registry API. Startup and `engine.reload` both use this
+//! loader, so validation and schema probing follow one path.
 //!
 //! ## Architecture
 //!
@@ -44,6 +32,16 @@ use manifest::{EngineManifest, ManifestError, is_manifest_filename};
 pub use caps::{HostCapabilities as Capabilities, NegotiationFailure};
 pub use dirs::{ENV_ENGINE_PATH, SYSTEM_ENGINE_DIR, find_manifest_for, resolve_engine_dirs};
 pub use manifest::{DEFAULT_LANGUAGE, ManifestError as Error, resolve_path_arg};
+
+fn command_is_available(command: &str) -> bool {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
+    })
+}
 
 /// Loader state: a host capability set + a remembered icon theme path.
 ///
@@ -208,8 +206,25 @@ impl EngineLoader {
         // Build argv.
         let argv = manifest.argv(path)?;
 
+        // Preserve ADR-0025 first-wins semantics before a duplicate worker can
+        // replace the original engine's schema during its HELLO probe.
+        if registry.find_index(&manifest.name).is_some() {
+            return Err(LoadError::Skipped(SkipReason::AlreadyRegistered(
+                manifest.name,
+            )));
+        }
+
         // Register via libtypio's native Rust API.
-        let backend = ProcessBackend::new(info.clone(), argv);
+        let should_probe = command_is_available(&argv[0]);
+        let mut backend = ProcessBackend::new(info, argv);
+        // Source-tree tests and manifests for optional packages may point to a
+        // command that is not installed yet. Probe only concrete executables;
+        // normal activation will still report a missing command if selected.
+        if should_probe {
+            backend
+                .probe_schema()
+                .map_err(LoadError::SchemaProbeFailed)?;
+        }
         if let Err(err) = registry.register(backend) {
             match err {
                 typio::core::engine::EngineError::AlreadyExists => {
@@ -306,6 +321,8 @@ pub enum LoadError {
     RegisterFailed(typio::core::engine::EngineError),
     /// `EngineRegistry::set_engine_languages` failed after registration.
     SetLanguagesFailed(typio::core::engine::EngineError),
+    /// The executable produced an invalid or incompatible HELLO/schema.
+    SchemaProbeFailed(typio::core::engine::EngineError),
     /// The manifest was deliberately skipped — see [`SkipReason`].
     Skipped(SkipReason),
 }
@@ -324,6 +341,7 @@ impl std::fmt::Display for LoadError {
             LoadError::SetLanguagesFailed(e) => {
                 write!(f, "registry set_engine_languages failed: {e}")
             }
+            LoadError::SchemaProbeFailed(e) => write!(f, "engine schema probe failed: {e}"),
             LoadError::Skipped(reason) => write!(f, "skipped: {reason:?}"),
         }
     }

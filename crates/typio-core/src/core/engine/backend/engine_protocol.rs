@@ -153,3 +153,67 @@ pub fn write_frame<W: Write>(writer: &mut W, frame: &Frame) -> Result<()> {
         .and_then(|_| writer.flush())
         .map_err(|e| EngineError::Transport(format!("engine-protocol frame write failed: {e}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn header(message_type: u32, major: u16, payload_len: u32) -> [u8; HEADER_LEN] {
+        let mut header = [0u8; HEADER_LEN];
+        header[0..4].copy_from_slice(&FRAME_MAGIC.to_be_bytes());
+        header[4..6].copy_from_slice(&major.to_be_bytes());
+        header[6..8].copy_from_slice(&PROTOCOL_MINOR.to_be_bytes());
+        header[8..12].copy_from_slice(&message_type.to_be_bytes());
+        header[24..28].copy_from_slice(&payload_len.to_be_bytes());
+        header
+    }
+
+    #[test]
+    fn frame_round_trips() {
+        let frame = Frame {
+            message_type: MessageType::Response,
+            flags: 0x10,
+            request_id: 42,
+            payload: b"RESULT\tHANDLED\n".to_vec(),
+        };
+        let mut encoded = Vec::new();
+        write_frame(&mut encoded, &frame).expect("encode frame");
+
+        let decoded = read_frame(&mut Cursor::new(encoded)).expect("decode frame");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn rejects_bad_magic_and_incompatible_major() {
+        let mut bad_magic = header(MessageType::Request as u32, PROTOCOL_MAJOR, 0);
+        bad_magic[0] = 0;
+        assert!(read_frame(&mut Cursor::new(bad_magic)).is_err());
+
+        let bad_major = header(MessageType::Request as u32, PROTOCOL_MAJOR + 1, 0);
+        assert!(read_frame(&mut Cursor::new(bad_major)).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_type_and_oversized_payload_before_allocation() {
+        let unknown = header(99, PROTOCOL_MAJOR, 0);
+        assert!(read_frame(&mut Cursor::new(unknown)).is_err());
+
+        let oversized = header(
+            MessageType::Response as u32,
+            PROTOCOL_MAJOR,
+            (MAX_PAYLOAD_LEN + 1) as u32,
+        );
+        assert!(read_frame(&mut Cursor::new(oversized)).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_payload_and_oversized_write() {
+        let mut truncated = header(MessageType::Response as u32, PROTOCOL_MAJOR, 4).to_vec();
+        truncated.extend_from_slice(b"abc");
+        assert!(read_frame(&mut Cursor::new(truncated)).is_err());
+
+        let oversized = Frame::new(MessageType::Request, 1, vec![0; MAX_PAYLOAD_LEN + 1]);
+        assert!(write_frame(&mut Vec::new(), &oversized).is_err());
+    }
+}

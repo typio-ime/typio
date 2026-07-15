@@ -6,7 +6,7 @@ Typio's configuration is split across files, one per process boundary:
 |------|-------|-------|
 | `$XDG_CONFIG_HOME/typio/core.toml` | libtypio | Keyboard policy, notifications, shortcuts, voice runtime, per-engine settings |
 | `$XDG_CONFIG_HOME/typio/platform.toml` | `typio` | Popup theme, layout, fonts, color overrides |
-| `$XDG_CONFIG_HOME/typio/engines/<name>.toml` (where applicable) | individual engine plugins | Engine-internal data not surfaced via the schema |
+| `$XDG_CONFIG_HOME/typio/engines/<name>.toml` (where applicable) | individual engine workers | Engine-internal data not surfaced via the shared schema |
 
 If `XDG_CONFIG_HOME` is unset, the directory falls back to `~/.config/typio`.
 `$XDG_DATA_HOME/typio` (default `~/.local/share/typio`) holds user data.
@@ -47,10 +47,10 @@ This page documents `core.toml` only. For `wayland.toml` see the
 
 ## Engine-owned sections
 
-Every `[engines.<name>]` block is owned by the corresponding engine plugin,
+Every `[engines.<name>]` block is owned by the corresponding engine worker,
 not by libtypio. Each engine registers its keys, types, defaults, and UI
-metadata via [`typio_config_schema_register*`](host-abi/schema.md) at plugin
-load — the host enumerates them through the same `typio_config_schema_fields`
+metadata through EngineHello during worker discovery. The host enumerates
+them through the same `typio_config_schema_fields`
 API it uses for the static base.
 
 ### Engine-scoped directories
@@ -78,7 +78,7 @@ Stock engines and the keys they currently register (authoritative list in
 
 Out-of-tree engines may add additional sections. Unknown `engines.<name>.*`
 keys are preserved on read and round-trip on write so a config remains valid
-when an engine plugin is temporarily absent.
+when an engine worker is temporarily absent.
 
 ## Path expansion
 

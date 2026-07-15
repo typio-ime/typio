@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: main
+  OPTICS_PINNED_REF: c6870eaa5ec724d55ae41b316e4e4424e9ccf67f
 
 jobs:
   cargo-check-format-lint:
@@ -33,15 +33,17 @@ jobs:
 
       - name: Clone optics (pinned)
         run: |
-          git clone --depth 1 --branch ${{ env.OPTICS_PINNED_REF }} \
+          git clone --filter=blob:none \
             https://github.com/ming2k/optics.git \
-            ${{ github.workspace }}/../../optics
+            ${{ github.workspace }}/../optics
+          git -C ${{ github.workspace }}/../optics checkout --detach \
+            ${{ env.OPTICS_PINNED_REF }}
 
       - name: Build optics
         run: |
-          meson setup ${{ github.workspace }}/../../optics/build \
+          meson setup ${{ github.workspace }}/../optics/build \
             --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
-          meson compile -C ${{ github.workspace }}/../../optics/build
+          meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Cargo fmt
         # At a virtual workspace root, cargo fmt already checks every member.
@@ -50,13 +52,13 @@ jobs:
 
       - name: Cargo clippy
         env:
-          FLUX_BUILD_DIR: ${{ github.workspace }}/../../optics/build
-          FLUX_SOURCE_DIR: ${{ github.workspace }}/../../optics/libs/flux
-          LENS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
-          LENS_SOURCE_DIR: ${{ github.workspace }}/../../optics
-          IRIS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
-          IRIS_SOURCE_DIR: ${{ github.workspace }}/../../optics
-        run: cargo clippy --workspace -- -D warnings
+          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          LENS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   cargo-test:
     name: Cargo build & test
@@ -76,26 +78,40 @@ jobs:
 
       - name: Clone optics (pinned)
         run: |
-          git clone --depth 1 --branch ${{ env.OPTICS_PINNED_REF }} \
+          git clone --filter=blob:none \
             https://github.com/ming2k/optics.git \
-            ${{ github.workspace }}/../../optics
+            ${{ github.workspace }}/../optics
+          git -C ${{ github.workspace }}/../optics checkout --detach \
+            ${{ env.OPTICS_PINNED_REF }}
 
       - name: Build optics
         run: |
-          meson setup ${{ github.workspace }}/../../optics/build \
+          meson setup ${{ github.workspace }}/../optics/build \
             --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
-          meson compile -C ${{ github.workspace }}/../../optics/build
+          meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Cargo test
         env:
-          FLUX_BUILD_DIR: ${{ github.workspace }}/../../optics/build
-          FLUX_SOURCE_DIR: ${{ github.workspace }}/../../optics/libs/flux
-          LENS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
-          LENS_SOURCE_DIR: ${{ github.workspace }}/../../optics
-          IRIS_BUILD_DIR: ${{ github.workspace }}/../../optics/build
-          IRIS_SOURCE_DIR: ${{ github.workspace }}/../../optics
+          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          LENS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
           # typio-vet tests dlopen against the mock host
-          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../../optics/build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../optics/build
         run: |
           cargo build --workspace
           cargo test --workspace
+
+  cargo-audit:
+    name: RustSec audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit locked dependencies
+        run: cargo audit

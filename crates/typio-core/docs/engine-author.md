@@ -8,7 +8,8 @@ out-of-process `typio-engine-<name>` engine process declared by a
 
 An executable engine process that:
 
-- Includes **only** headers from `typio/abi/` (umbrella: `typio/abi/abi.h`).
+- Includes engine headers from `typio/abi/` (umbrella: `typio/abi/abi.h`),
+  plus `typio/schema/config_schema.h` only when publishing config fields.
 - Speaks Typio Engine Protocol on fd 3.
 - May use the C engine ABI internally to implement lifecycle and modality
   operations.
@@ -27,7 +28,9 @@ The engine never talks to Wayland, never schedules paints, never knows about oth
 
 ### 2. Rules you must follow
 
-1. [Contract Layers](dev/contract-layers.md) — engines consume only `typio/abi/`; never include `typio/runtime/` or `typio/schema/`.
+1. [Contract Layers](dev/contract-layers.md) — engines consume `typio/abi/`,
+   may declare fields through `typio/schema/config_schema.h`, and never include
+   `typio/runtime/`.
 2. [Engine Naming Convention](dev/engine-naming-convention.md) — mandatory
    rules for repository, executable, manifest, and runtime names.
 3. [ADR-0003: Plugin Engine ABI — dual-category slots](adr/0003-plugin-engine-abi-dual-category.md) — why keyboard and voice are distinct C types.
@@ -53,7 +56,7 @@ Pick the modality you're building.
 
 After the minimal example runs, look up exact signatures here.
 
-1. [Engine ▸ index](reference/engine/index.md) — catalog and versioning rules (`struct_size`, capability negotiation).
+1. [Engine ▸ index](reference/engine/index.md) — catalog, ABI-version, and capability-negotiation rules.
 2. [Entry points](reference/engine/entry.md) — required exports, define-macros, lifecycle helpers.
 3. [Types](reference/engine/types.md) — `TypioEngineInfo`, `TypioEngine`, `TypioKeyboardEngine`, `TypioVoiceEngine`, capability names.
 4. [Operations](reference/engine/ops.md) — `TypioEngineBaseOps`, `TypioKeyboardEngineOps`, `TypioVoiceEngineOps`.

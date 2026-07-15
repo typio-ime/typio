@@ -21,7 +21,6 @@ Values `1..99` are reserved for future first-class categories. Third-party engin
 
 ```c
 struct TypioEngineInfo {
-    size_t struct_size;                /* sizeof(TypioEngineInfo) at engine build time */
     const char *name;                  /* unique engine identifier */
     const char *display_name;          /* human-readable name */
     const char *description;
@@ -36,8 +35,6 @@ struct TypioEngineInfo {
     const char *const *optional_capabilities;
 };
 ```
-
-Engines must initialise `struct_size = sizeof(TypioEngineInfo)`. The framework reads only the fields the caller knew about, so optional fields can be appended without breaking older engines.
 
 `name` is the runtime identifier matched against config and CLI flags — it must follow the [Engine Naming Convention](../../dev/engine-naming-convention.md). `icon` is validated by the framework against the rules in [Engine Icon Reference](icons.md).
 
@@ -71,7 +68,6 @@ struct TypioEngine {
     void *user_data;
     bool active;
     bool initialized;
-    char *config_path;
     const TypioEngineSurfaceOps *surface;   /* optional */
 };
 
@@ -96,37 +92,24 @@ Field ownership:
 | `instance` | Framework, before `init` | Engines read; never write. |
 | `user_data` | Engine, via `typio_engine_set_user_data` | Engine owns and frees. |
 | `active`, `initialized` | Framework | Engines read only. |
-| `config_path` | Framework, via `typio_engine_set_config_path` | Owned by `TypioEngine`; freed by `typio_engine_free`. |
 | `surface` | Engine, via `typio_engine_set_surface_ops` | Must outlive the engine. |
 
 ## Surface ops types
 
-Engines that expose runtime properties or commands populate these structs and attach them via `typio_engine_set_surface_ops`. See [Operations ▸ Surface operations](ops.md#surface-operations-optional) for the vtable.
+Engines that expose commands populate this struct and attach a
+`TypioEngineSurfaceOps` vtable via `typio_engine_set_surface_ops`. Runtime
+properties belong in the unified config schema, not the command surface.
 
 ```c
-typedef enum {
-    TYPIO_ENGINE_PROP_STRING = 0,   /* free-form string */
-    TYPIO_ENGINE_PROP_ENUM,         /* value must be one of `choices` */
-    TYPIO_ENGINE_PROP_BOOL,         /* value is "true" or "false" */
-} TypioEnginePropertyType;
-
-typedef struct {
-    const char *key;                /* stable identifier, e.g. "schema" */
-    const char *label;              /* human-readable label */
-    TypioEnginePropertyType type;
-    const char *value;              /* current value, in string form */
-    const char *const *choices;     /* NULL-terminated; non-NULL only for ENUM */
-} TypioEngineProperty;
-
 typedef struct {
     const char *id;                 /* stable identifier, e.g. "deploy" */
     const char *label;              /* human-readable label */
 } TypioEngineCommand;
 ```
 
-All strings reachable from a property or command are engine-owned and transient: they must remain valid **until the next call to any control op on the same engine**. The caller serialises or copies before issuing the next call.
-
-`TYPIO_ENGINE_PROP_BOOL` values are the literal strings `"true"` and `"false"`; do not localise.
+Command strings are engine-owned and transient: they must remain valid **until
+the next call to any control op on the same engine**. The worker serialises or
+copies them before issuing the next call.
 
 ## Capability negotiation
 

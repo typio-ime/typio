@@ -400,11 +400,11 @@ impl TestHarness {
         let instance = mock_instance(config);
 
         let base = &mut (*engine).base;
-        if let Some(init) = (*base.base_ops).init {
-            if init(base, instance) != TypioResult::TypioOk {
-                free_instance(instance);
-                return None;
-            }
+        if let Some(init) = (*base.base_ops).init
+            && init(base, instance) != TypioResult::TypioOk
+        {
+            free_instance(instance);
+            return None;
         }
 
         Some(TestHarness {
