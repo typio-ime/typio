@@ -89,7 +89,7 @@ pub mod virtual_keyboard_v1 {
     wayland_scanner::generate_client_code!("../../protocols/virtual-keyboard-unstable-v1.xml");
 }
 
-// ── future protocols (codegen wired, not yet bound by the spike) ─────────
+// ── optional protocols ───────────────────────────────────────────────────
 
 pub mod foreign_toplevel_v1 {
     use wayland_client;

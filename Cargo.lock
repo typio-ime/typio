@@ -457,14 +457,14 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flux"
-version = "0.1.1"
+version = "0.0.1"
 dependencies = [
  "flux-sys",
 ]
 
 [[package]]
 name = "flux-sys"
-version = "0.1.1"
+version = "0.0.1"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "flux-text-sys"
-version = "0.1.1"
+version = "0.0.1"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "iris"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "iris-sys",
  "lens",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "iris-sys"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -663,7 +663,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lens"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "flux",
  "lens-sys",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "lens-sys"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -1519,7 +1519,9 @@ dependencies = [
 
 [[package]]
 name = "wayland-scanner"
-version = "0.31.10"
+version = "0.31.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338e30461b3a2b67d70eb30a6d89f8e0c93a833e07d2ae89085cd070c4a00ac0"
 dependencies = [
  "proc-macro2",
  "quick-xml",

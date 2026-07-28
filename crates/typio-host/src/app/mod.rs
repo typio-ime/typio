@@ -5,6 +5,7 @@
 //! Wayland frontend / tray / IPC surfaces.
 
 mod cli;
+mod event_channel;
 mod event_loop;
 pub(crate) mod font_config;
 mod indicator;
@@ -50,6 +51,7 @@ use crate::input_method::InputMethodFrontend;
 use crate::keyboard::router::KeyboardRouter;
 #[cfg(feature = "wayland")]
 use crate::repeat_timer::{self, RepeatTimer};
+use event_channel::{DaemonEventSender, ReactorWaker};
 #[cfg(feature = "wayland")]
 use one_shot_timer::OneShotTimer;
 
@@ -60,10 +62,10 @@ use one_shot_timer::OneShotTimer;
 /// - the StatusNotifierItem tray action callback (zbus internal thread).
 ///
 /// The receiver is owned by [`App`] and drained once per reactor step by the
-/// main loop. This keeps every mutation of `App` state on the
-/// event-loop thread — the alternative (`AtomicBool` flags for each
-/// cause) loses type information and forces the loop to do untyped
-/// "refresh everything" work.
+/// main loop. A paired eventfd wakes an idle poll for every successful send.
+/// This keeps every mutation of `App` state on the event-loop thread — the
+/// alternative (`AtomicBool` flags for each cause) loses type information and
+/// forces the loop to do untyped "refresh everything" work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DaemonEvent {
     /// Cleanly stop the daemon. Causes the main loop to exit.
@@ -135,13 +137,18 @@ pub struct App {
     #[cfg(feature = "wayland")]
     voice_pending_banner: Option<indicator::VoiceBanner>,
     config_watcher: Option<ConfigWatcher>,
-    /// Sender half of the daemon event channel. Cloned into the IPC
-    /// stop callback and the tray action handler.
-    event_tx: std::sync::mpsc::Sender<DaemonEvent>,
+    /// Sender half of the daemon event channel. Cloned into the IPC stop
+    /// callback and the tray action handler; every send also writes
+    /// `event_waker`.
+    event_tx: DaemonEventSender,
     /// Receiver half of the daemon event channel. Drained once per reactor step
     /// by the main loop; never shared with another thread (`Receiver` is
     /// `!Sync`).
     event_rx: Option<std::sync::mpsc::Receiver<DaemonEvent>>,
+    /// Pollable counterpart to `event_rx`. Every cross-thread event and
+    /// handled Unix signal writes this eventfd so an idle reactor wakes
+    /// without a periodic timeout.
+    event_waker: ReactorWaker,
     /// Observed `DaemonEvent::Restart` during the last drain. Consumed
     /// by [`Self::finish`] to decide whether to `execv` after exit.
     saw_restart: bool,
@@ -184,7 +191,8 @@ impl App {
             .map(CString::new)
             .collect::<Result<_, _>>()
             .map_err(|_| "argument contains NUL".to_string())?;
-        let (event_tx, event_rx) = std::sync::mpsc::channel::<DaemonEvent>();
+        let (event_tx, event_rx, event_waker) = event_channel::channel()
+            .map_err(|error| format!("failed to create daemon eventfd: {error}"))?;
         Ok(Self {
             argv,
             options,
@@ -219,6 +227,7 @@ impl App {
             config_watcher: None,
             event_tx,
             event_rx: Some(event_rx),
+            event_waker,
             saw_restart: false,
         })
     }
@@ -535,7 +544,10 @@ impl App {
             return 1;
         }
 
-        signals::install_signal_handlers();
+        if let Err(error) = signals::install_signal_handlers(&self.event_waker) {
+            tracing::error!(target: "typio.lifecycle", %error, "failed to install signal handlers");
+            return 1;
+        }
 
         let socket_path = self
             .options
@@ -605,7 +617,7 @@ impl App {
 
         #[cfg(feature = "wayland")]
         if self.frontend.is_some() && self.router.is_some() && self.repeat_timer.is_some() {
-            return self.run_with_wayland(&ipc_bus);
+            return self.run_with_wayland(Some(&ipc_bus));
         }
 
         self.run_with_uds(&ipc_bus)
@@ -613,16 +625,24 @@ impl App {
 
     fn run_with_uds(&mut self, ipc_bus: &Rc<RefCell<IpcBus>>) -> i32 {
         let uds_fd = ipc_bus.borrow().epoll_fd();
-        let mut pollfd = libc::pollfd {
-            fd: uds_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut pollfds = [
+            libc::pollfd {
+                fd: uds_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: self.event_waker.fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
 
         while !self.drain_events() {
-            ipc_bus.borrow_mut().dispatch();
-            pollfd.revents = 0;
-            let rc = unsafe { libc::poll(&mut pollfd, 1, 100) };
+            for pollfd in &mut pollfds {
+                pollfd.revents = 0;
+            }
+            let rc = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, -1) };
             if rc < 0 {
                 let e = std::io::Error::last_os_error();
                 if e.raw_os_error() == Some(libc::EINTR) {
@@ -630,6 +650,12 @@ impl App {
                 }
                 tracing::error!(target: "typio.lifecycle", error = %e, "poll failed");
                 return 1;
+            }
+            if pollfds[1].revents & libc::POLLIN != 0 {
+                continue;
+            }
+            if pollfds[0].revents & libc::POLLIN != 0 {
+                ipc_bus.borrow_mut().dispatch();
             }
         }
 
@@ -706,13 +732,26 @@ impl App {
         tracing::info!(target: "typio.lifecycle", "running without UDS");
 
         #[cfg(feature = "wayland")]
-        if let Some(ref mut frontend) = self.frontend {
-            let _ = frontend.run();
-            return 0;
+        if self.frontend.is_some() && self.router.is_some() && self.repeat_timer.is_some() {
+            return self.run_with_wayland(None);
         }
 
+        let mut pollfd = libc::pollfd {
+            fd: self.event_waker.fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
         while !self.drain_events() {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            pollfd.revents = 0;
+            let rc = unsafe { libc::poll(&mut pollfd, 1, -1) };
+            if rc < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                tracing::error!(target: "typio.lifecycle", %error, "poll failed");
+                return 1;
+            }
         }
         0
     }
@@ -726,6 +765,11 @@ impl App {
     /// - `StateRefresh` triggers a controller + tray + IPC re-sync via
     ///   [`Self::refresh_state_surfaces`].
     fn drain_events(&mut self) -> bool {
+        if let Err(error) = self.event_waker.drain() {
+            tracing::error!(target: "typio.lifecycle", %error, "failed to drain daemon eventfd");
+            return true;
+        }
+
         // Apply any SIGUSR1/SIGUSR2 log-level change on the loop thread (the
         // filter reload is not async-signal-safe, so the handler only flags).
         crate::diagnostics::apply_pending_level_signals();
@@ -845,12 +889,23 @@ fn arm_repeat(timer: &mut RepeatTimer, compositor_info: Option<(i32, i32)>, mods
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
     use std::sync::Mutex;
-    use std::sync::atomic::Ordering;
 
     /// Serialises tests that touch the shared signal flags so they do not
     /// race with each other when `cargo test` runs them in parallel.
     static SIGNAL_FLAG_LOCK: Mutex<()> = Mutex::new(());
+
+    fn poll_readable(fd: libc::c_int, timeout_ms: i32) -> bool {
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        assert!(ready >= 0, "poll failed: {}", io::Error::last_os_error());
+        ready == 1 && pollfd.revents & libc::POLLIN != 0
+    }
 
     #[test]
     fn daemon_events_drive_drain_results() {
@@ -862,7 +917,7 @@ mod tests {
         // Build a minimal App with just the event channel wired. Other
         // fields are empty; drain_events does not touch them unless an
         // event triggers StateRefresh (which we don't send here).
-        let (tx, rx) = std::sync::mpsc::channel::<DaemonEvent>();
+        let (tx, rx, event_waker) = event_channel::channel().unwrap();
         let mut app = App {
             argv: vec![],
             options: AppOptions {
@@ -903,6 +958,7 @@ mod tests {
             config_watcher: None,
             event_tx: tx,
             event_rx: Some(rx),
+            event_waker,
             saw_restart: false,
         };
 
@@ -912,7 +968,9 @@ mod tests {
 
         // Shutdown via channel.
         let _ = app.event_tx.send(DaemonEvent::Shutdown);
+        assert!(poll_readable(app.event_waker.fd(), 0));
         assert!(app.drain_events());
+        assert!(!poll_readable(app.event_waker.fd(), 0));
         assert!(!app.saw_restart);
 
         // Restart sets both saw_restart and should_exit.
@@ -920,12 +978,20 @@ mod tests {
         assert!(app.drain_events());
         assert!(app.saw_restart);
 
-        // Signal flag still drives exit (async-signal-safe path).
+        // A handler running on a background thread wakes the main-thread
+        // poll, reproducing the delivery pattern that previously left the
+        // daemon stuck indefinitely after SIGTERM.
         app.saw_restart = false;
-        signals::SHUTDOWN_FROM_SIGNAL.store(true, Ordering::SeqCst);
+        signals::set_reactor_wake_fd_for_test(app.event_waker.fd());
+        std::thread::spawn(|| signals::invoke_signal_handler_for_test(libc::SIGTERM))
+            .join()
+            .unwrap();
+        assert!(poll_readable(app.event_waker.fd(), 1_000));
         assert!(app.drain_events());
+        assert!(!poll_readable(app.event_waker.fd(), 0));
         assert!(!app.saw_restart); // signal path is Shutdown-only
 
+        signals::set_reactor_wake_fd_for_test(-1);
         signals::reset_shutdown_flag();
     }
 }

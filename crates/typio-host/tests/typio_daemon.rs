@@ -156,6 +156,20 @@ fn send_signal(pid: u32, sig: &str) {
     assert!(status.success(), "kill -{sig} {pid} failed");
 }
 
+fn wait_for_exit(child: &mut Child, reason: &str) -> std::process::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "typio did not exit within 5s after {reason}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn sigusr_adjusts_log_level_at_runtime() {
     // Default invocation → floor at `info`. The stderr log lands next to the
@@ -188,6 +202,15 @@ fn sigusr_adjusts_log_level_at_runtime() {
 }
 
 #[test]
+fn sigterm_stops_idle_daemon() {
+    let (mut guard, _) = spawn_typio(&[]);
+    send_signal(guard.child.id(), "TERM");
+
+    let exit_status = wait_for_exit(&mut guard.child, "SIGTERM");
+    assert!(exit_status.success(), "typio exited with {exit_status}");
+}
+
+#[test]
 fn daemon_starts_and_stops_cleanly_headless() {
     let (mut guard, socket) = spawn_typio(&[]);
     let mut stream = UnixStream::connect(&socket).unwrap();
@@ -212,15 +235,6 @@ fn daemon_starts_and_stops_cleanly_headless() {
     assert!(stop["result"].is_object());
 
     // The daemon should exit soon after the stop callback fires.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let exit_status = loop {
-        if let Some(status) = guard.child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() > deadline {
-            panic!("typio did not exit after daemon.stop");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let exit_status = wait_for_exit(&mut guard.child, "daemon.stop");
     assert!(exit_status.success(), "typio exited with {exit_status}");
 }

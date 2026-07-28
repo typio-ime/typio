@@ -18,9 +18,9 @@ use super::reactor::{PollSource, PollSourceFds, PollSources, PollTimeout};
 
 impl App {
     /// The Wayland main loop. Returns the daemon exit code.
-    pub(super) fn run_with_wayland(&mut self, ipc_bus: &Rc<RefCell<IpcBus>>) -> i32 {
+    pub(super) fn run_with_wayland(&mut self, ipc_bus: Option<&Rc<RefCell<IpcBus>>>) -> i32 {
         let wl_fd = self.frontend.as_mut().unwrap().fd();
-        let uds_fd = ipc_bus.borrow().epoll_fd();
+        let uds_fd = ipc_bus.map(|ipc| ipc.borrow().epoll_fd()).unwrap_or(-1);
         let repeat_fd = self.repeat_timer.as_mut().unwrap().fd();
 
         let (inotify_fd, cfg_timer_fd) = self
@@ -56,6 +56,7 @@ impl App {
             indicator_timer: indicator_fd,
             voice_timer: voice_status_fd,
             voice_session: voice_session_fd,
+            reactor_wake: self.event_waker.fd(),
         });
 
         while !self.drain_events() {
@@ -128,6 +129,14 @@ impl App {
                 }
             };
 
+            // A Unix signal or cross-thread DaemonEvent must take priority
+            // over ordinary Wayland work. Continuing drops `read_guard`
+            // (cancelling the prepared Wayland read), then the loop-head
+            // drain consumes the eventfd, flags, and typed event queue.
+            if ready.readable(PollSource::ReactorWake) {
+                continue;
+            }
+
             // 4. Read and dispatch new Wayland events, or cancel the prepared read.
             if ready.readable(PollSource::Wayland) {
                 let frontend = self.frontend.as_mut().unwrap();
@@ -157,7 +166,9 @@ impl App {
             // after input events, but in the same step that observed
             // readiness instead of deferring client work to the next step.
             if ready.readable(PollSource::Uds) {
-                ipc_bus.borrow_mut().dispatch();
+                if let Some(ipc_bus) = ipc_bus {
+                    ipc_bus.borrow_mut().dispatch();
+                }
             }
 
             // 4b. Diagnose compositor requests that never got a response

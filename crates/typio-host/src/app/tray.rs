@@ -19,7 +19,7 @@ use crate::tray_menu::{EngineDesc, RegistrySnapshot};
 #[cfg(feature = "systray")]
 use crate::tray_sni::{MenuAction, Tray, TrayAction};
 
-use super::DaemonEvent;
+use super::{DaemonEvent, DaemonEventSender};
 
 /// Wire the tray's action-handler callback to libtypio registry mutators.
 /// Each menu action maps to either an immediate registry mutation
@@ -30,7 +30,7 @@ use super::DaemonEvent;
 pub(super) fn install_tray_action_handler(
     tray: &Tray,
     instance: *mut TypioInstance,
-    event_tx: std::sync::mpsc::Sender<DaemonEvent>,
+    event_tx: DaemonEventSender,
 ) {
     // Cast to usize so the closure is Send; reconstruct inside each arm.
     let instance_ptr = instance as usize;

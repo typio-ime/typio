@@ -3,8 +3,8 @@
 //!
 //! [`InputMethodState`] binds the globals the daemon needs (`wl_seat`,
 //! `zwp_input_method_manager_v2`, `zwp_virtual_keyboard_manager_v1`,
-//! `wl_shm`, `wp_viewporter`) and implements `Dispatch` for every protocol
-//! object it binds. It owns:
+//! `wl_shm`, `wp_viewporter`, `wp_fractional_scale_manager_v1`) and implements
+//! `Dispatch` for every protocol object it binds. It owns:
 //!
 //! - the input-method lifecycle proxy + serial-commit tracking;
 //! - the keyboard grab + virtual keyboard bridge;
@@ -37,6 +37,8 @@ use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
 use crate::panel_present_gate::PresentationRecord;
 use crate::panel_scheduler::PanelScheduleState;
+use crate::protocols::fractional_scale_v1::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use crate::protocols::fractional_scale_v1::wp_fractional_scale_v1::{self, WpFractionalScaleV1};
 use crate::protocols::input_method_v2::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
 };
@@ -223,6 +225,13 @@ pub struct InputMethodState {
     /// bounded shrink hysteresis avoids both resize churn and permanent peaks.
     #[allow(dead_code)]
     panel_viewport: Option<WpViewport>,
+    /// Fractional-scale global used to request a preferred scale for the panel.
+    #[allow(dead_code)]
+    fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
+    /// Fractional-scale add-on for `popup_surface_obj`. When present, its
+    /// 120ths-based scale supersedes the integer core-surface hint.
+    #[allow(dead_code)]
+    panel_fractional_scale: Option<WpFractionalScaleV1>,
     /// `wl_shm` global — the shared-memory buffer factory. Used by the
     /// CPU-rendered Panel path to create host-managed `wl_buffer`s
     /// (replaces the Vulkan WSI swapchain; see `panel_shm`).
@@ -355,6 +364,20 @@ impl InputMethodState {
     /// that still requires repainting the current candidates.
     pub fn invalidate_panel_presentation(&mut self) {
         self.panel_presentation.invalidate();
+    }
+
+    fn update_panel_scale(&mut self, new_scale: f32) {
+        if !new_scale.is_finite()
+            || new_scale <= 0.0
+            || (self.buffer_scale - new_scale).abs() < f32::EPSILON
+        {
+            return;
+        }
+        self.buffer_scale = new_scale;
+        self.invalidate_panel_presentation();
+        if !self.composition.candidates.is_empty() {
+            self.mark_panel_dirty();
+        }
     }
 
     /// The bound `wl_shm` global, if the compositor advertises it.
@@ -753,6 +776,38 @@ impl InputMethodFrontend {
             .as_ref()
             .map(|vp| vp.get_viewport(&popup_surface_obj, &qh, ()));
 
+        // Fractional-scale and viewporter work as a pair: the former selects
+        // the physical render density and the latter keeps the popup's
+        // surface-local size in logical pixels.
+        let fractional_scale_manager: Option<WpFractionalScaleManagerV1> =
+            globals.bind(&qh, 1..=1, ()).ok();
+        let panel_fractional_scale = match (
+            fractional_scale_manager.as_ref(),
+            panel_viewport.as_ref(),
+        ) {
+            (Some(manager), Some(_)) => {
+                tracing::info!(
+                    target: "typio.wayland.scale",
+                    "fractional output scaling active for the candidate panel"
+                );
+                Some(manager.get_fractional_scale(&popup_surface_obj, &qh, ()))
+            }
+            (Some(_), None) => {
+                tracing::warn!(
+                    target: "typio.wayland.scale",
+                    "compositor advertises fractional scale without viewporter; using integer surface scale"
+                );
+                None
+            }
+            (None, _) => {
+                tracing::debug!(
+                    target: "typio.wayland.scale",
+                    "compositor lacks fractional scale; using integer surface scale"
+                );
+                None
+            }
+        };
+
         let input_method = im_manager.get_input_method(&seat, &qh, ());
 
         // Keyboard grab is created lazily by the focus controller when an
@@ -779,6 +834,8 @@ impl InputMethodFrontend {
             popup_surface,
             viewporter,
             panel_viewport,
+            fractional_scale_manager,
+            panel_fractional_scale,
             shm,
             shm_release_registry: crate::panel_shm::new_release_registry(),
             text_input_rect: None,
@@ -1205,6 +1262,34 @@ impl Dispatch<WpViewport, ()> for InputMethodState {
     }
 }
 
+impl Dispatch<WpFractionalScaleManagerV1, ()> for InputMethodState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpFractionalScaleManagerV1,
+        _event: <WpFractionalScaleManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, ()> for InputMethodState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event;
+        if let Some(new_scale) = fractional_scale_factor(scale) {
+            state.update_panel_scale(new_scale);
+        }
+    }
+}
+
 impl Dispatch<wl_surface::WlSurface, ()> for InputMethodState {
     fn event(
         state: &mut Self,
@@ -1216,17 +1301,19 @@ impl Dispatch<wl_surface::WlSurface, ()> for InputMethodState {
     ) {
         use wayland_client::protocol::wl_surface::Event;
         if let Event::PreferredBufferScale { factor } = event {
-            let new_scale = factor as f32;
-            if (state.buffer_scale - new_scale).abs() >= f32::EPSILON {
-                state.buffer_scale = new_scale;
-                state.invalidate_panel_presentation();
-                if !state.composition.candidates.is_empty() {
-                    state.mark_panel_dirty();
-                }
+            // Fractional-scale requires wl_surface.buffer_scale to remain 1
+            // and provides a more precise render density than this integer
+            // core event.
+            if state.panel_fractional_scale.is_none() {
+                state.update_panel_scale(factor as f32);
+                proxy.set_buffer_scale(factor);
             }
-            proxy.set_buffer_scale(factor);
         }
     }
+}
+
+fn fractional_scale_factor(scale_120: u32) -> Option<f32> {
+    (scale_120 > 0).then_some(scale_120 as f32 / 120.0)
 }
 
 impl Dispatch<ZwpInputPopupSurfaceV2, ()> for InputMethodState {
@@ -1415,6 +1502,14 @@ mod tests {
     fn lifecycle_event_is_debug() {
         assert!(format!("{:?}", LifecycleEvent::Activated).contains("Activated"));
         assert!(format!("{:?}", LifecycleEvent::Done { serial: 42 }).contains("42"));
+    }
+
+    #[test]
+    fn fractional_scale_wire_value_converts_from_120ths() {
+        assert_eq!(fractional_scale_factor(0), None);
+        assert_eq!(fractional_scale_factor(120), Some(1.0));
+        assert_eq!(fractional_scale_factor(150), Some(1.25));
+        assert_eq!(fractional_scale_factor(240), Some(2.0));
     }
 
     #[test]

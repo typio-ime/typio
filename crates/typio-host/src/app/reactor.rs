@@ -18,9 +18,10 @@ pub(super) enum PollSource {
     IndicatorTimer = 5,
     VoiceTimer = 6,
     VoiceSession = 7,
+    ReactorWake = 8,
 }
 
-const SOURCE_COUNT: usize = 8;
+const SOURCE_COUNT: usize = 9;
 
 /// Named descriptor snapshot used to construct the fixed poll set.
 pub(super) struct PollSourceFds {
@@ -32,6 +33,7 @@ pub(super) struct PollSourceFds {
     pub indicator_timer: i32,
     pub voice_timer: i32,
     pub voice_session: i32,
+    pub reactor_wake: i32,
 }
 
 /// Readiness snapshot returned by one `poll(2)` call.
@@ -67,6 +69,7 @@ impl PollSources {
                 pollfd(fds.indicator_timer),
                 pollfd(fds.voice_timer),
                 pollfd(fds.voice_session),
+                pollfd(fds.reactor_wake),
             ],
         }
     }
@@ -143,9 +146,11 @@ mod tests {
         let mut revents = [0; SOURCE_COUNT];
         revents[PollSource::VoiceSession as usize] = libc::POLLIN;
         revents[PollSource::Wayland as usize] = libc::POLLHUP;
+        revents[PollSource::ReactorWake as usize] = libc::POLLIN;
         let ready = ReadySet { revents };
 
         assert!(ready.readable(PollSource::VoiceSession));
+        assert!(ready.readable(PollSource::ReactorWake));
         assert!(!ready.readable(PollSource::ConfigTimer));
         assert!(ready.disconnected(PollSource::Wayland));
     }

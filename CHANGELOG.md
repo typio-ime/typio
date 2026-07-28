@@ -143,6 +143,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sharp candidate UI on scaled Wayland outputs.** The panel now consumes
+  `wp_fractional_scale_v1` hints and rasterizes its text and status banners at
+  the compositor's preferred output scale instead of letting the compositor
+  enlarge a 1× buffer.
+- **Idle daemon now exits promptly on signals and tray actions.** The Wayland
+  reactor now polls a shared `eventfd` for `SIGINT`/`SIGTERM`, runtime
+  `SIGUSR1`/`SIGUSR2` log-level changes, and cross-thread tray or engine-state
+  events. A signal delivered to a zbus worker can no longer leave the main
+  thread blocked forever in `poll(2)`, which previously let timed-out test
+  daemons survive and register duplicate Typio tray icons. UDS-only and
+  UDS-bind-failure modes use the same wakeup path without periodic polling.
+
 - **Native worker ABI validation.** The shared C worker harness now validates
   `typio_engine_abi_version()` before reading schema metadata or constructing
   an engine, rejecting incompatible binaries before any vtable call.

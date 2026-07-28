@@ -122,6 +122,10 @@ At runtime an engine package requires:
 - A host binary that discovers manifests and starts workers from the
   configured `engine_dirs`.
 
+For development without a system install, build `typio-core` directly and
+point the engine build at the in-tree `.pc` file — see
+[Developer Setup](../dev/setup.md#build-c-engines-against-the-in-tree-libtypio).
+
 Workers can be protocol-smoke-tested directly, but they do not attach to the
 desktop or commit text without a host.
 

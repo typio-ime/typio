@@ -3,14 +3,15 @@
 //! Split out of `mod.rs` so the daemon lifecycle file owns *what happens
 //! on a signal* (drain, refresh, exit) rather than *how the kernel
 //! delivers it*. The trampolines here are intentionally tiny: they do
-//! the minimum async-signal-safe work (set a flag, send an mpsc message)
-//! and let the main loop react on its own thread.
+//! the minimum async-signal-safe work (set a flag and write an eventfd) and
+//! let the main loop react on its own thread.
 
 use std::ffi::c_void;
+use std::io;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use super::DaemonEvent;
+use super::{DaemonEvent, DaemonEventSender, ReactorWaker};
 
 /// Async-signal-safe shutdown flag.
 ///
@@ -26,14 +27,20 @@ pub(super) static SHUTDOWN_FROM_SIGNAL: AtomicBool = AtomicBool::new(false);
 /// daemon per process. The `Mutex` makes `&Sender` safely shareable
 /// across the engine communication thread (where out-of-process engine
 /// responses fire the callback) and the main loop thread.
-static MODE_CALLBACK_TX: OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<DaemonEvent>>> =
-    OnceLock::new();
+static MODE_CALLBACK_TX: OnceLock<std::sync::Mutex<DaemonEventSender>> = OnceLock::new();
 
-/// Install the sender used by [`mode_changed_trampoline`]. Called once
-/// from [`crate::app::App::init`] after the daemon event channel is
-/// wired. Subsequent calls are no-ops (the first sender wins), matching
-/// the singleton nature of the trampoline.
-pub(super) fn set_mode_callback_tx(tx: std::sync::mpsc::Sender<DaemonEvent>) {
+/// Raw eventfd used only by the async signal handler.
+///
+/// `App` owns the descriptor through [`ReactorWaker`]. The daemon is a
+/// process singleton, so the descriptor remains valid from handler
+/// installation until `execv` or process exit.
+static REACTOR_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Install the wakeable sender used by [`mode_changed_trampoline`]. Called
+/// once from [`crate::app::App::init`] after the daemon event channel is
+/// wired. Subsequent calls are no-ops (the first sender wins), matching the
+/// singleton nature of the trampoline.
+pub(super) fn set_mode_callback_tx(tx: DaemonEventSender) {
     let _ = MODE_CALLBACK_TX.set(std::sync::Mutex::new(tx));
 }
 
@@ -41,7 +48,7 @@ pub(super) fn set_mode_callback_tx(tx: std::sync::mpsc::Sender<DaemonEvent>) {
 /// main loop's per-step drain to translate a signal into the same exit
 /// path as `DaemonEvent::Shutdown`.
 pub(super) fn take_shutdown_requested() -> bool {
-    SHUTDOWN_FROM_SIGNAL.swap(false, Ordering::Relaxed)
+    SHUTDOWN_FROM_SIGNAL.swap(false, Ordering::AcqRel)
 }
 
 /// Reset the shutdown flag. Used by tests that touch the signal path.
@@ -50,20 +57,31 @@ pub(super) fn reset_shutdown_flag() {
     SHUTDOWN_FROM_SIGNAL.store(false, Ordering::SeqCst);
 }
 
-extern "C" fn signal_handler(_sig: libc::c_int) {
-    SHUTDOWN_FROM_SIGNAL.store(true, Ordering::SeqCst);
+extern "C" fn signal_handler(sig: libc::c_int) {
+    match sig {
+        libc::SIGINT | libc::SIGTERM => {
+            SHUTDOWN_FROM_SIGNAL.store(true, Ordering::SeqCst);
+        }
+        libc::SIGUSR1 => crate::diagnostics::request_raise_level(),
+        libc::SIGUSR2 => crate::diagnostics::request_reset_level(),
+        _ => return,
+    }
+    wake_reactor_from_signal();
 }
 
-/// `SIGUSR1`: raise the running log level one step (`info`→`debug`→`trace`).
-/// Only flags the request — the non-signal-safe filter reload happens on the
-/// main loop via [`crate::diagnostics::apply_pending_level_signals`].
-extern "C" fn raise_log_level_handler(_sig: libc::c_int) {
-    crate::diagnostics::request_raise_level();
-}
-
-/// `SIGUSR2`: reset the running log level to the startup level.
-extern "C" fn reset_log_level_handler(_sig: libc::c_int) {
-    crate::diagnostics::request_reset_level();
+/// Wake the main reactor using only async-signal-safe operations.
+fn wake_reactor_from_signal() {
+    let fd = REACTOR_WAKE_FD.load(Ordering::Acquire);
+    if fd < 0 {
+        return;
+    }
+    let value = 1u64.to_ne_bytes();
+    unsafe {
+        // `write(2)` is async-signal-safe. A nonblocking eventfd either
+        // accepts the full eight-byte counter or returns EAGAIN because it
+        // is already readable; both outcomes satisfy the wakeup contract.
+        let _ = libc::write(fd, value.as_ptr().cast::<libc::c_void>(), value.len());
+    }
 }
 
 /// C trampoline for `TypioKeyboardModeChangedCallback`. Fires when an
@@ -89,23 +107,36 @@ pub(super) extern "C" fn mode_changed_trampoline(
     }
 }
 
-pub(super) fn install_signal_handlers() {
-    unsafe {
-        libc::signal(
-            libc::SIGINT,
-            signal_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGTERM,
-            signal_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGUSR1,
-            raise_log_level_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGUSR2,
-            reset_log_level_handler as *const () as libc::sighandler_t,
-        );
+pub(super) fn install_signal_handlers(waker: &ReactorWaker) -> io::Result<()> {
+    REACTOR_WAKE_FD.store(waker.fd(), Ordering::Release);
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2] {
+        install_signal_handler(signal)?;
     }
+    Ok(())
+}
+
+fn install_signal_handler(signal: libc::c_int) -> io::Result<()> {
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = signal_handler as *const () as libc::sighandler_t;
+    // Preserve unrelated blocking I/O on whichever process thread receives
+    // the signal. The eventfd independently wakes the main reactor, so it
+    // does not rely on interrupting that thread's `poll(2)` call.
+    action.sa_flags = libc::SA_RESTART;
+    unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+        if libc::sigaction(signal, &action, std::ptr::null_mut()) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn set_reactor_wake_fd_for_test(fd: libc::c_int) {
+    REACTOR_WAKE_FD.store(fd, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(super) fn invoke_signal_handler_for_test(signal: libc::c_int) {
+    signal_handler(signal);
 }
