@@ -143,6 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Correct input-method `done` diagnostics.** Typio no longer treats
+  compositor `done` events as acknowledgements of `commit(serial)` requests.
+  The event applies updated text-input state, so a compositor that correctly
+  sends no new state after a preedit update no longer triggers a false timeout
+  warning or an unnecessary reactor deadline.
 - **Sharp candidate UI on scaled Wayland outputs.** The panel now consumes
   `wp_fractional_scale_v1` hints and rasterizes its text and status banners at
   the compositor's preferred output scale instead of letting the compositor

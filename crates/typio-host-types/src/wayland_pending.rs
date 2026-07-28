@@ -1,10 +1,9 @@
 //! Pending Wayland request tracking.
 //!
-//! Three protocol request/response pairs the host depends on are tracked here
+//! Two protocol request/response pairs the host depends on are tracked here
 //! so that a compositor which never answers is *named* in the logs — the
 //! diagnostic that separates "our bug" from "the compositor did not send X":
 //!
-//! - `commit(serial)`  →  `done` event (the input-method serial handshake)
 //! - `grab_keyboard`   →  `keymap` event (grab keymap delivery)
 //! - anchor probe      →  `text_input_rectangle` event (caret-rect delivery)
 //!
@@ -15,24 +14,19 @@
 //! in-flight deadline feeds the event-loop poll reducer so the warn fires
 //! promptly instead of at the next unrelated wake-up.
 //!
-//! Beyond timeout detection, the two low-frequency pairs (`grab`→`keymap`,
-//! probe→`rect`) also report the *measured* response latency at `debug` level
-//! on success. This is the data that calibrates the thresholds above — if a
-//! healthy compositor answers in ~50 ms, the multi-second timeouts are clearly
-//! generous; if it takes ~800 ms, the timeouts may need tightening. The
-//! high-frequency `commit`→`done` pair measures but does not log, to avoid
-//! flooding (every candidate update commits).
+//! Beyond timeout detection, both pairs also report the *measured* response
+//! latency at `debug` level on success. This data calibrates the thresholds:
+//! if a healthy compositor answers in ~50 ms, the multi-second timeouts are
+//! clearly generous; if it takes ~800 ms, the timeouts may need tightening. The
+//! input-method `done` event is intentionally not tracked here: it applies
+//! compositor-to-input-method state and is not an acknowledgement of
+//! `commit(serial)`.
 //!
 //! These are *diagnostic* thresholds, not correctness gates. Wayland carries
 //! no real-time guarantee, so the values are deliberately generous and only a
 //! missing response that crosses them is noteworthy.
 
 use std::time::{Duration, Instant};
-
-/// No `done` after this long means the compositor is not replying to the
-/// input-method serial handshake. 2 s is well beyond any healthy compositor,
-/// which acks within a frame (~16 ms).
-pub const COMMIT_DONE_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// No `keymap` after this long means the grab was created but the compositor
 /// never delivered its keymap, so the IM will receive no keys. 3 s covers the
@@ -97,31 +91,17 @@ impl PendingSlot {
     }
 }
 
-/// Tracks the three protocol request/response pairs the host relies on.
+/// Tracks the two protocol request/response pairs the host relies on.
 ///
 /// Owned by [`crate::input_method::InputMethodState`] and ticked once per
 /// main-loop iteration.
 #[derive(Default)]
 pub struct PendingRequestTracker {
-    commit_done: PendingSlot,
     grab_keymap: PendingSlot,
     probe_rect: PendingSlot,
 }
 
 impl PendingRequestTracker {
-    /// A `commit(serial)` was just sent; expect a `done` event.
-    pub fn note_commit_sent(&mut self, now: Instant) {
-        self.commit_done.note_sent(now);
-    }
-
-    /// A `done` event arrived, resolving any outstanding commit. The measured
-    /// latency is discarded: commits fire on every candidate update, so logging
-    /// per response would flood. The slot is still measured so a stall remains
-    /// detectable via [`PendingRequestTracker::check_timeouts`].
-    pub fn note_done_received(&mut self, now: Instant) {
-        self.commit_done.note_resolved(now);
-    }
-
     /// `grab_keyboard` was just sent; expect a `keymap` event.
     pub fn note_grab_sent(&mut self, now: Instant) {
         self.grab_keymap.note_sent(now);
@@ -165,8 +145,6 @@ impl PendingRequestTracker {
     /// `None` when no request is pending.
     pub fn min_deadline_ms(&self, now: Instant) -> Option<i32> {
         [
-            self.commit_done
-                .deadline_remaining_ms(COMMIT_DONE_TIMEOUT, now),
             self.grab_keymap
                 .deadline_remaining_ms(GRAB_KEYMAP_TIMEOUT, now),
             self.probe_rect
@@ -179,16 +157,6 @@ impl PendingRequestTracker {
 
     /// Emit one warn per stalled episode. Call this every main-loop tick.
     pub fn check_timeouts(&mut self, now: Instant) {
-        if self.commit_done.check_timed_out(COMMIT_DONE_TIMEOUT, now) {
-            tracing::warn!(
-                target: "typio.wayland.frontend",
-                timeout_ms = COMMIT_DONE_TIMEOUT.as_millis() as u64,
-                "commit(serial) sent but no done event within the timeout — \
-                 the compositor is not replying to the input-method serial \
-                 handshake; if this persists the compositor, not typio, is \
-                 the likely cause"
-            );
-        }
         if self.grab_keymap.check_timed_out(GRAB_KEYMAP_TIMEOUT, now) {
             tracing::warn!(
                 target: "typio.wayland.grab",
@@ -209,5 +177,27 @@ impl PendingRequestTracker {
                  compositor's popup-surface handling"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_actual_request_response_pairs_reduce_the_poll_deadline() {
+        let now = Instant::now();
+        let mut tracker = PendingRequestTracker::default();
+
+        assert_eq!(tracker.min_deadline_ms(now), None);
+
+        tracker.note_grab_sent(now);
+        assert_eq!(
+            tracker.min_deadline_ms(now),
+            Some(GRAB_KEYMAP_TIMEOUT.as_millis() as i32)
+        );
+
+        tracker.note_keymap_received(now);
+        assert_eq!(tracker.min_deadline_ms(now), None);
     }
 }

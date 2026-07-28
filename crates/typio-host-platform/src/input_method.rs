@@ -303,8 +303,8 @@ pub struct InputMethodState {
     /// "do not repeat".
     pub compositor_repeat_info: Option<(i32, i32)>,
     /// Tracks in-flight Wayland requests awaiting a compositor response
-    /// (`commit`→`done`, `grab_keyboard`→`keymap`, probe→`text_input_rectangle`).
-    /// Diagnoses "compositor did not send X" stalls; see [`crate::wayland_pending`].
+    /// (`grab_keyboard`→`keymap` and probe→`text_input_rectangle`). Diagnoses
+    /// "compositor did not send X" stalls; see [`crate::wayland_pending`].
     pub wayland_pending: crate::wayland_pending::PendingRequestTracker,
 }
 
@@ -464,7 +464,6 @@ impl InputMethodState {
             return;
         }
         self.input_method.commit(self.serial);
-        self.wayland_pending.note_commit_sent(Instant::now());
     }
 
     /// Forward a key to the focused app via the virtual keyboard.
@@ -550,7 +549,6 @@ impl InputMethodState {
                 .set_preedit_string(text.to_string(), cursor as i32, cursor as i32);
         }
         self.input_method.commit(self.serial);
-        self.wayland_pending.note_commit_sent(Instant::now());
     }
 
     /// Load an XKB keymap from a compositor-provided file descriptor.
@@ -1204,7 +1202,6 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 state.fire(LifecycleEvent::Done {
                     serial: state.serial,
                 });
-                state.wayland_pending.note_done_received(Instant::now());
             }
             Event::Unavailable => {
                 state.stopped = true;
