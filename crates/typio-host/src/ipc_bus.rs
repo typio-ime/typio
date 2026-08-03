@@ -2,9 +2,9 @@
 //! state changes to subscribed clients.
 //!
 //! Port of `src/ipc/ipc_bus.c`. The C module couples UDS framing, request
-//! dispatch, and libtypio state mutation in one file. This Rust port keeps the
+//! dispatch, and runtime state mutation in one file. This Rust port keeps the
 //! already-ported [`UdsServer`] and [`StatusService`] separate and only adds
-//! the thin gluing layer plus a libtypio-backed [`ServiceBackend`] impl.
+//! the thin gluing layer plus a typio-core-backed [`ServiceBackend`] impl.
 //!
 //! ## Responsibilities
 //!
@@ -13,21 +13,20 @@
 //!   back to the server.
 //! - Provide [`IpcBus::emit`] so a [`StateController`](crate::state_controller)
 //!   listener can push notifications to subscribed UDS clients.
-//! - Implement [`ServiceBackend`] for a raw [`TypioInstance`] pointer so the
-//!   generic dispatch service can drive the live framework state.
+//! - Implement [`ServiceBackend`] for an owned shared [`TypioInstance`] so the
+//!   generic dispatch service can drive live runtime state.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::ffi::{CStr, CString};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
-use std::ptr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
 use crate::ipc::framing::{Id, Request, Response, StandardError};
+use crate::runtime::SharedInstance;
 use crate::service::{
     ConfigEntry, ConfigField, ConfigGetOutcome, ConfigSource, CycleLanguageOutcome, EngineCommand,
     EngineKind, FieldType, InvokeOutcome, RuntimeState, ServiceBackend, SvcError,
@@ -135,44 +134,37 @@ impl IpcBus {
     }
 }
 
-// ── libtypio-backed ServiceBackend ───────────────────────────────────────────
+// ── typio-core-backed ServiceBackend ─────────────────────────────────────────
 
-/// A [`ServiceBackend`] that drives a live [`TypioInstance`] through its public
-/// C ABI (and the small Rust-native registry accessor where available).
+/// A [`ServiceBackend`] that drives the main-loop-owned Typio runtime.
 pub struct TypioBackend {
-    instance: *mut typio::TypioInstance,
+    instance: SharedInstance,
 }
 
 impl TypioBackend {
-    /// The instance pointer must remain valid for the lifetime of the backend.
-    pub fn new(instance: *mut typio::TypioInstance) -> Self {
+    /// Share the daemon runtime with the synchronous UDS service.
+    pub fn new(instance: SharedInstance) -> Self {
         Self { instance }
     }
 
-    fn instance(&self) -> Option<&typio::TypioInstance> {
-        unsafe { self.instance.as_ref() }
+    fn with_registry<R>(
+        &self,
+        operation: impl FnOnce(&typio::core::registry::EngineRegistry) -> R,
+    ) -> Option<R> {
+        let instance = self.instance.borrow();
+        instance
+            .registry_rust()
+            .map(|registry| operation(&registry))
     }
 
-    fn instance_mut(&mut self) -> Option<&mut typio::TypioInstance> {
-        unsafe { self.instance.as_mut() }
-    }
-
-    fn registry_ptr(&self) -> *mut typio::c_api::registry::TypioRegistry {
-        if self.instance.is_null() {
-            return ptr::null_mut();
-        }
-        typio::instance::typio_instance_get_registry(self.instance)
-    }
-
-    fn config_ptr(&self) -> *mut typio::config::Config {
-        if self.instance.is_null() {
-            return ptr::null_mut();
-        }
-        typio::instance::typio_instance_get_config(self.instance)
-    }
-
-    fn registry(&self) -> Option<&typio::core::registry::EngineRegistry> {
-        self.instance().and_then(|i| i.registry_rust())
+    fn with_registry_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut typio::core::registry::EngineRegistry) -> R,
+    ) -> Option<R> {
+        let instance = self.instance.borrow();
+        instance
+            .registry_rust_mut()
+            .map(|mut registry| operation(&mut registry))
     }
 }
 
@@ -180,7 +172,8 @@ impl ServiceBackend for TypioBackend {
     // ── config ──
 
     fn config_get(&self, key: &str) -> Option<ConfigGetOutcome> {
-        let cfg = unsafe { self.config_ptr().as_ref() }?;
+        let instance = self.instance.borrow();
+        let cfg = instance.config_rust()?;
         let schema = schema_field(key);
         let current = cfg.value(key);
         if schema.is_none() && current.is_none() {
@@ -202,14 +195,10 @@ impl ServiceBackend for TypioBackend {
     }
 
     fn config_set(&mut self, key: &str, value_str: &str) -> Option<Result<(), SvcError>> {
-        let cfg = self.config_ptr();
-        if cfg.is_null() {
-            return None;
-        }
+        let mut instance = self.instance.borrow_mut();
+        let cfg = instance.config_rust_mut()?;
         let schema = schema_field(key);
-        let current_type = unsafe { cfg.as_ref() }
-            .and_then(|cfg| cfg.value(key))
-            .and_then(config_value_type);
+        let current_type = cfg.value(key).and_then(config_value_type);
         let field_type = match (schema.as_ref().map(|field| field.field_type), current_type) {
             // Preserve list-valued user configuration even though old static
             // schemas represented `languages.enabled` as a string.
@@ -225,38 +214,27 @@ impl ServiceBackend for TypioBackend {
     }
 
     fn config_unset(&mut self, key: &str) -> Option<Result<(), SvcError>> {
-        let cfg = self.config_ptr();
-        if cfg.is_null() {
-            return None;
-        }
-        let Ok(key_c) = CString::new(key) else {
-            return Some(Err(SvcError));
-        };
+        let mut instance = self.instance.borrow_mut();
+        let cfg = instance.config_rust_mut()?;
         let has_schema = schema_field(key).is_some();
-        match typio::config::typio_config_remove(cfg, key_c.as_ptr()) {
-            typio::TypioResult::TypioOk => {
-                typio::config_schema::typio_config_apply_defaults(cfg);
-                Some(Ok(()))
-            }
-            typio::TypioResult::TypioErrorNotFound if has_schema => Some(Ok(())),
-            typio::TypioResult::TypioErrorNotFound => Some(Err(SvcError)),
-            _ => Some(Err(SvcError)),
+        if cfg.remove(key) {
+            typio::config_schema::apply_defaults(cfg);
+            Some(Ok(()))
+        } else if has_schema {
+            Some(Ok(()))
+        } else {
+            Some(Err(SvcError))
         }
     }
 
     fn config_list(&self, prefix: &str) -> Option<Vec<ConfigEntry>> {
-        let cfg = unsafe { self.config_ptr().as_ref() }?;
+        let instance = self.instance.borrow();
+        let cfg = instance.config_rust()?;
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
-        let mut field_count = 0usize;
-        let fields = typio::config_schema::typio_config_schema_fields(&mut field_count);
-        for i in 0..field_count {
-            let Some(raw) = (unsafe { fields.add(i).as_ref() }) else {
-                continue;
-            };
-            let Some(field) = config_field_from_raw(raw) else {
-                continue;
-            };
+        for schema in typio::config_schema::fields() {
+            let schema_field = SchemaField::from_owned(&schema);
+            let field = schema_field.descriptor(schema.key.clone());
             let key = field.key.clone();
             if !prefix.is_empty() && !key.starts_with(prefix) {
                 continue;
@@ -267,7 +245,7 @@ impl ServiceBackend for TypioBackend {
                     config_value_type(value).unwrap_or(field.field_type),
                 )
             } else {
-                schema_default(&SchemaField::from_raw(raw)?)?
+                schema_default(&schema_field)?
             };
             let mut field = field;
             field.field_type = field_type;
@@ -305,118 +283,77 @@ impl ServiceBackend for TypioBackend {
     }
 
     fn config_show_text(&self) -> String {
-        if self.instance.is_null() {
-            return String::new();
-        }
-        let text = typio::instance::typio_instance_get_config_text(self.instance);
-        if text.is_null() {
-            return String::new();
-        }
-        let s = unsafe { CStr::from_ptr(text) }
-            .to_string_lossy()
-            .into_owned();
-        typio::string::typio_free_string(text);
-        s
+        self.instance.borrow().config_text().unwrap_or_default()
     }
 
     fn config_reload(&mut self) -> Result<(), SvcError> {
-        if self.instance.is_null() {
-            return Err(SvcError);
-        }
-        match typio::instance::typio_instance_reload_config(self.instance) {
-            typio::TypioResult::TypioOk => Ok(()),
-            _ => Err(SvcError),
-        }
+        self.instance
+            .borrow_mut()
+            .reload_config_rust()
+            .map_err(|_| SvcError)
     }
 
     fn save_config(&mut self) -> Result<(), SvcError> {
-        if self.instance.is_null() {
-            return Err(SvcError);
-        }
-        match typio::instance::typio_instance_save_config(self.instance) {
-            typio::TypioResult::TypioOk => Ok(()),
-            _ => Err(SvcError),
-        }
+        self.instance
+            .borrow()
+            .save_config_rust()
+            .map_err(|_| SvcError)
     }
 
     fn notify_engine_config(&mut self, engine: &str, key: &str, value: &str) {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return;
-        }
-        let (Ok(engine_c), Ok(key_c), Ok(value_c)) = (c_str(engine), c_str(key), c_str(value))
-        else {
-            return;
-        };
-        typio::c_api::registry::typio_registry_notify_config_change(
-            reg,
-            engine_c.as_ptr(),
-            key_c.as_ptr(),
-            value_c.as_ptr(),
-        );
-        if self.engine_info(engine) == Some(EngineKind::Voice) {
-            let session = typio::instance::typio_instance_get_voice_session(self.instance);
-            if !session.is_null() {
-                typio::voice::session::typio_voice_session_reload_engine(session);
-            }
-        }
+        let _ =
+            self.with_registry_mut(|registry| registry.notify_config_change(engine, key, value));
     }
 
     // ── registry ──
 
     fn registry_present(&self) -> bool {
-        self.registry().is_some()
+        self.with_registry(|_| ()).is_some()
     }
 
     fn list_keyboards(&self) -> Vec<String> {
-        self.registry()
-            .map(|r| r.list_keyboards().into_iter().map(str::to_string).collect())
+        self.with_registry(|r| r.list_keyboards().into_iter().map(str::to_string).collect())
             .unwrap_or_default()
     }
 
     fn list_voices(&self) -> Vec<String> {
-        self.registry()
-            .map(|r| r.list_voices().into_iter().map(str::to_string).collect())
+        self.with_registry(|r| r.list_voices().into_iter().map(str::to_string).collect())
             .unwrap_or_default()
     }
 
     fn list_languages(&self) -> Vec<String> {
-        self.registry()
-            .map(|r| r.known_languages())
+        self.with_registry(|r| r.known_languages())
             .unwrap_or_default()
     }
 
     fn engine_info(&self, name: &str) -> Option<EngineKind> {
-        self.registry()
-            .and_then(|r| r.engine_info(name))
-            .map(|info| match info.engine_type {
+        self.with_registry(|r| {
+            r.engine_info(name).map(|info| match info.engine_type {
                 typio::core::engine::EngineType::Keyboard => EngineKind::Keyboard,
                 typio::core::engine::EngineType::Voice => EngineKind::Voice,
             })
+        })
+        .flatten()
     }
 
     fn engine_display_name(&self, name: &str) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.engine_info(name))
-            .map(|info| info.display_name.clone())
+        self.with_registry(|r| r.engine_info(name).map(|info| info.display_name.clone()))
+            .flatten()
     }
 
     fn active_keyboard(&self) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.active_keyboard_name())
-            .map(str::to_string)
+        self.with_registry(|r| r.active_keyboard_name().map(str::to_string))
+            .flatten()
     }
 
     fn active_voice(&self) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.active_voice_name())
-            .map(str::to_string)
+        self.with_registry(|r| r.active_voice_name().map(str::to_string))
+            .flatten()
     }
 
     fn active_language(&self) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.active_language())
-            .map(str::to_string)
+        self.with_registry(|r| r.active_language().map(str::to_string))
+            .flatten()
     }
 
     fn set_active_keyboard(&mut self, name: &str) -> Result<(), SvcError> {
@@ -428,15 +365,10 @@ impl ServiceBackend for TypioBackend {
     }
 
     fn set_active_language(&mut self, tag: &str) -> Result<(), SvcError> {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return Err(SvcError);
-        }
-        let tag_c = c_str(tag)?;
-        match typio::c_api::registry::typio_registry_set_active_language(reg, tag_c.as_ptr()) {
-            typio::TypioResult::TypioOk => Ok(()),
-            _ => Err(SvcError),
-        }
+        self.instance
+            .borrow_mut()
+            .activate_language(tag)
+            .map_err(|_| SvcError)
     }
 
     fn cycle_keyboard(&mut self, forward: bool) -> Result<(), SvcError> {
@@ -448,75 +380,38 @@ impl ServiceBackend for TypioBackend {
     }
 
     fn cycle_language(&mut self, forward: bool) -> CycleLanguageOutcome {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return CycleLanguageOutcome::Failed;
-        }
-        let result = if forward {
-            typio::c_api::registry::typio_registry_next_language(reg)
+        let direction = if forward {
+            typio::core::registry::SwitchDirection::Next
         } else {
-            typio::c_api::registry::typio_registry_prev_language(reg)
+            typio::core::registry::SwitchDirection::Previous
         };
+        let result = { self.instance.borrow_mut().cycle_language(direction) };
         match result {
-            typio::TypioResult::TypioOk => CycleLanguageOutcome::Ok(self.active_language()),
-            typio::TypioResult::TypioErrorNotFound => CycleLanguageOutcome::NoLanguages,
-            _ => CycleLanguageOutcome::Failed,
+            Ok(()) => CycleLanguageOutcome::Ok(self.active_language()),
+            Err(typio::core::engine::EngineError::NotFound) => CycleLanguageOutcome::NoLanguages,
+            Err(_) => CycleLanguageOutcome::Failed,
         }
     }
 
     fn list_commands(&self, name: &str) -> Vec<EngineCommand> {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return Vec::new();
-        }
-        let Ok(name_c) = c_str(name) else {
-            return Vec::new();
-        };
-        let mut count: usize = 0;
-        let commands =
-            typio::c_api::registry::typio_registry_list_commands(reg, name_c.as_ptr(), &mut count);
-        if commands.is_null() || count == 0 {
-            return Vec::new();
-        }
-        let mut out = Vec::with_capacity(count);
-        for i in 0..count {
-            let cmd = unsafe { &*commands.add(i) };
-            let id = if cmd.id.is_null() {
-                String::new()
-            } else {
-                unsafe { CStr::from_ptr(cmd.id) }
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            let label = if cmd.label.is_null() {
-                String::new()
-            } else {
-                unsafe { CStr::from_ptr(cmd.label) }
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            out.push(EngineCommand { id, label });
-        }
-        typio::c_api::registry::typio_engine_command_list_free(commands, count);
-        out
+        self.with_registry_mut(|registry| registry.list_commands(name))
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|command| EngineCommand {
+                id: command.id,
+                label: command.label,
+            })
+            .collect()
     }
 
     fn invoke_command(&mut self, name: &str, cmd: &str) -> InvokeOutcome {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return InvokeOutcome::Failed;
-        }
-        let (Ok(name_c), Ok(cmd_c)) = (c_str(name), c_str(cmd)) else {
-            return InvokeOutcome::Failed;
-        };
-        match typio::c_api::registry::typio_registry_invoke_command(
-            reg,
-            name_c.as_ptr(),
-            cmd_c.as_ptr(),
-        ) {
-            typio::TypioResult::TypioOk => InvokeOutcome::Ok,
-            typio::TypioResult::TypioErrorNotFound => InvokeOutcome::NotFound,
-            typio::TypioResult::TypioErrorEngineNotAvailable => InvokeOutcome::NotSupported,
+        match self.with_registry_mut(|registry| registry.invoke_command(name, cmd)) {
+            Some(Ok(())) => InvokeOutcome::Ok,
+            Some(Err(typio::core::engine::EngineError::NotFound)) => InvokeOutcome::NotFound,
+            Some(Err(typio::core::engine::EngineError::NotSupported)) => {
+                InvokeOutcome::NotSupported
+            }
             _ => InvokeOutcome::Failed,
         }
     }
@@ -525,31 +420,22 @@ impl ServiceBackend for TypioBackend {
     //
     fn engine_load(&mut self, path: &str) -> Result<(), SvcError> {
         let path = canonical_manifest_path(Path::new(path), true)?;
-        let registry = self
-            .instance_mut()
-            .and_then(typio::TypioInstance::registry_rust_mut)
-            .ok_or(SvcError)?;
+        let instance = self.instance.borrow();
+        let mut registry = instance.registry_rust_mut().ok_or(SvcError)?;
         crate::engine_loader::EngineLoader::with_voice()
-            .load_single(registry, &path)
+            .load_single(&mut registry, &path)
             .map(|_| ())
             .map_err(|_| SvcError)
     }
 
     fn engine_unload(&mut self, name: &str) -> Result<(), SvcError> {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return Err(SvcError);
-        }
-        let name_c = c_str(name)?;
-        match typio::c_api::registry::typio_registry_unload(reg, name_c.as_ptr()) {
-            typio::TypioResult::TypioOk => Ok(()),
-            typio::TypioResult::TypioErrorNotFound => Err(SvcError),
-            _ => Err(SvcError),
-        }
+        self.with_registry_mut(|registry| registry.unregister(name))
+            .ok_or(SvcError)?
+            .map_err(|_| SvcError)
     }
 
     fn engine_reload(&mut self, name: &str, path: Option<&str>) -> Result<(), SvcError> {
-        let instance = self.instance_mut().ok_or(SvcError)?;
+        let instance = self.instance.borrow();
         let engine_dirs: Vec<PathBuf> = instance.engine_dirs_rust().map(PathBuf::from).collect();
         let path = match path {
             Some(path) => canonical_manifest_path(Path::new(path), true)?,
@@ -576,7 +462,7 @@ impl ServiceBackend for TypioBackend {
             return Err(SvcError);
         }
 
-        let registry = instance.registry_rust_mut().ok_or(SvcError)?;
+        let mut registry = instance.registry_rust_mut().ok_or(SvcError)?;
         let was_active_keyboard = registry.active_keyboard_name() == Some(name);
         let was_active_voice = registry.active_voice_name() == Some(name);
         if registry.engine_info(name).is_none() {
@@ -585,7 +471,7 @@ impl ServiceBackend for TypioBackend {
 
         registry.unregister(name).map_err(|_| SvcError)?;
         let loaded = crate::engine_loader::EngineLoader::with_voice()
-            .load_single(registry, &path)
+            .load_single(&mut registry, &path)
             .map_err(|_| SvcError)?;
 
         if was_active_keyboard {
@@ -623,37 +509,32 @@ fn canonical_manifest_path(path: &Path, require_absolute: bool) -> Result<PathBu
 
 impl TypioBackend {
     fn set_active_engine(&self, name: &str, voice: bool) -> Result<(), SvcError> {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return Err(SvcError);
-        }
-        let name_c = c_str(name)?;
-        let result = if voice {
-            typio::c_api::registry::typio_registry_set_active_voice(reg, name_c.as_ptr())
-        } else {
-            typio::c_api::registry::typio_registry_set_active_keyboard(reg, name_c.as_ptr())
-        };
-        match result {
-            typio::TypioResult::TypioOk => Ok(()),
-            _ => Err(SvcError),
-        }
+        self.with_registry_mut(|registry| {
+            if voice {
+                registry.activate_voice(name)
+            } else {
+                registry.activate_keyboard(name)
+            }
+        })
+        .ok_or(SvcError)?
+        .map_err(|_| SvcError)
     }
 
     fn cycle_engine(&self, forward: bool, voice: bool) -> Result<(), SvcError> {
-        let reg = self.registry_ptr();
-        if reg.is_null() {
-            return Err(SvcError);
-        }
-        let result = match (forward, voice) {
-            (true, false) => typio::c_api::registry::typio_registry_next_keyboard(reg),
-            (false, false) => typio::c_api::registry::typio_registry_prev_keyboard(reg),
-            (true, true) => typio::c_api::registry::typio_registry_next_voice(reg),
-            (false, true) => typio::c_api::registry::typio_registry_prev_voice(reg),
+        let direction = if forward {
+            typio::core::registry::SwitchDirection::Next
+        } else {
+            typio::core::registry::SwitchDirection::Previous
         };
-        match result {
-            typio::TypioResult::TypioOk => Ok(()),
-            _ => Err(SvcError),
-        }
+        self.with_registry_mut(|registry| {
+            if voice {
+                registry.switch_voice(direction)
+            } else {
+                registry.switch_keyboard(direction)
+            }
+        })
+        .ok_or(SvcError)?
+        .map_err(|_| SvcError)
     }
 }
 
@@ -661,62 +542,51 @@ impl TypioBackend {
 
 /// A [`RegistryView`] backed by the live [`TypioInstance`].
 pub struct TypioRegistryView {
-    instance: *mut typio::TypioInstance,
+    instance: SharedInstance,
 }
 
 impl TypioRegistryView {
-    /// The instance pointer must remain valid for the lifetime of the view.
-    pub fn new(instance: *mut typio::TypioInstance) -> Self {
+    /// Share the live main-loop runtime.
+    pub fn new(instance: SharedInstance) -> Self {
         Self { instance }
     }
 
-    fn registry(&self) -> Option<&typio::core::registry::EngineRegistry> {
-        unsafe { self.instance.as_ref() }.and_then(|i| i.registry_rust())
+    fn with_registry<R>(
+        &self,
+        operation: impl FnOnce(&typio::core::registry::EngineRegistry) -> R,
+    ) -> Option<R> {
+        let instance = self.instance.borrow();
+        instance
+            .registry_rust()
+            .map(|registry| operation(&registry))
     }
 
     fn config_string(&self, key: &str) -> Option<String> {
-        if self.instance.is_null() {
-            return None;
-        }
-        let cfg = typio::instance::typio_instance_get_config(self.instance);
-        if cfg.is_null() {
-            return None;
-        }
-        let key_c = c_str(key).ok()?;
-        let value = typio::config::typio_config_get_string(cfg, key_c.as_ptr(), ptr::null());
-        if value.is_null() {
-            return None;
-        }
-        let s = unsafe { CStr::from_ptr(value) }
-            .to_string_lossy()
-            .into_owned();
+        let instance = self.instance.borrow();
+        let s = instance.config_rust()?.string(key, "").to_string();
         if s.is_empty() { None } else { Some(s) }
     }
 }
 
 impl RegistryView for TypioRegistryView {
     fn active_keyboard(&self) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.active_keyboard_name())
-            .map(str::to_string)
+        self.with_registry(|r| r.active_keyboard_name().map(str::to_string))
+            .flatten()
     }
 
     fn active_language(&self) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.active_language())
-            .map(str::to_string)
+        self.with_registry(|r| r.active_language().map(str::to_string))
+            .flatten()
     }
 
     fn active_voice(&self) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.active_voice_name())
-            .map(str::to_string)
+        self.with_registry(|r| r.active_voice_name().map(str::to_string))
+            .flatten()
     }
 
     fn engine_display_name(&self, name: &str) -> Option<String> {
-        self.registry()
-            .and_then(|r| r.engine_info(name))
-            .map(|info| info.display_name.clone())
+        self.with_registry(|r| r.engine_info(name).map(|info| info.display_name.clone()))
+            .flatten()
     }
 
     fn config_icon(&self, key: &str) -> Option<String> {
@@ -725,10 +595,6 @@ impl RegistryView for TypioRegistryView {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn c_str(s: &str) -> Result<CString, SvcError> {
-    CString::new(s).map_err(|_| SvcError)
-}
 
 fn parse_tip_request(json: &str) -> Result<(Request, i64), StandardError> {
     let value: Value = serde_json::from_str(json).map_err(|_| StandardError::ParseError)?;
@@ -755,57 +621,28 @@ struct SchemaField {
 }
 
 impl SchemaField {
-    fn from_raw(raw: &typio::types::TypioConfigField) -> Option<Self> {
-        use typio::types::TypioFieldType;
-
-        let c_string = |ptr: *const std::ffi::c_char| {
-            (!ptr.is_null()).then(|| {
-                unsafe { CStr::from_ptr(ptr) }
-                    .to_string_lossy()
-                    .into_owned()
-            })
-        };
-        let (field_type, default) = match raw.type_ {
-            TypioFieldType::TypioFieldString => {
-                let ptr = unsafe { raw.def.s };
-                (
-                    FieldType::String,
-                    Value::String(c_string(ptr).unwrap_or_default()),
-                )
-            }
-            TypioFieldType::TypioFieldInt => {
-                (FieldType::Int, Value::Number(unsafe { raw.def.i }.into()))
-            }
-            TypioFieldType::TypioFieldBool => (FieldType::Bool, Value::Bool(unsafe { raw.def.b })),
-            TypioFieldType::TypioFieldFloat => (
+    fn from_owned(raw: &typio::config_schema::ConfigSchemaField) -> Self {
+        use typio::config_schema::ConfigDefault;
+        let (field_type, default) = match &raw.default {
+            ConfigDefault::String(value) => (FieldType::String, Value::String(value.clone())),
+            ConfigDefault::Integer(value) => (FieldType::Int, Value::Number((*value).into())),
+            ConfigDefault::Boolean(value) => (FieldType::Bool, Value::Bool(*value)),
+            ConfigDefault::Float(value) => (
                 FieldType::Float,
-                serde_json::Number::from_f64(unsafe { raw.def.f })
+                serde_json::Number::from_f64(*value)
                     .map(Value::Number)
                     .unwrap_or(Value::Null),
             ),
         };
-        let choices = if raw.ui_options.is_null() {
-            None
-        } else {
-            let mut values = Vec::new();
-            let mut cursor = raw.ui_options;
-            unsafe {
-                while !(*cursor).is_null() {
-                    values.push(CStr::from_ptr(*cursor).to_string_lossy().into_owned());
-                    cursor = cursor.add(1);
-                }
-            }
-            Some(values)
-        };
-        Some(Self {
+        Self {
             field_type,
             default,
-            label: c_string(raw.ui_label),
-            section: c_string(raw.ui_section),
-            choices,
-            min: raw.ui_min,
-            max: raw.ui_max,
-        })
+            label: raw.label.clone(),
+            section: raw.section.clone(),
+            choices: (!raw.options.is_empty()).then(|| raw.options.clone()),
+            min: raw.minimum,
+            max: raw.maximum,
+        }
     }
 
     fn descriptor(&self, key: String) -> ConfigField {
@@ -820,19 +657,7 @@ impl SchemaField {
 }
 
 fn schema_field(key: &str) -> Option<SchemaField> {
-    let key = CString::new(key).ok()?;
-    let raw = typio::config_schema::typio_config_schema_find(key.as_ptr());
-    unsafe { raw.as_ref() }.and_then(SchemaField::from_raw)
-}
-
-fn config_field_from_raw(raw: &typio::types::TypioConfigField) -> Option<ConfigField> {
-    if raw.key.is_null() {
-        return None;
-    }
-    let key = unsafe { CStr::from_ptr(raw.key) }
-        .to_string_lossy()
-        .into_owned();
-    SchemaField::from_raw(raw).map(|field| field.descriptor(key))
+    typio::config_schema::find(key).map(|field| SchemaField::from_owned(&field))
 }
 
 fn schema_default(field: &SchemaField) -> Option<(Value, FieldType)> {
@@ -854,7 +679,7 @@ fn config_value_type(value: &typio::config::ConfigValue) -> Option<FieldType> {
 fn config_value_to_json(value: &typio::config::ConfigValue) -> Value {
     use typio::config::ConfigValue;
     match value {
-        ConfigValue::String(value) => Value::String(value.to_string_lossy().into_owned()),
+        ConfigValue::String(value) => Value::String(value.clone()),
         ConfigValue::Int(value) => Value::Number((*value).into()),
         ConfigValue::Bool(value) => Value::Bool(*value),
         ConfigValue::Float(value) => serde_json::Number::from_f64(*value)
@@ -892,22 +717,20 @@ fn parse_string_list(raw: &str) -> Result<Vec<String>, ()> {
 }
 
 fn set_config_value(
-    config: *mut typio::config::Config,
+    config: &mut typio::config::Config,
     key: &str,
     raw: &str,
     field_type: FieldType,
     schema: Option<&SchemaField>,
 ) -> Result<(), ()> {
-    let key = CString::new(key).map_err(|_| ())?;
-    let result = match field_type {
+    match field_type {
         FieldType::String => {
             if let Some(choices) = schema.and_then(|field| field.choices.as_ref())
                 && !choices.iter().any(|choice| choice == raw)
             {
                 return Err(());
             }
-            let value = CString::new(raw).map_err(|_| ())?;
-            typio::config::typio_config_set_string(config, key.as_ptr(), value.as_ptr())
+            config.set_string(key, raw);
         }
         FieldType::Int => {
             let value = raw.trim().parse::<i32>().map_err(|_| ())?;
@@ -917,7 +740,7 @@ fn set_config_value(
             {
                 return Err(());
             }
-            typio::config::typio_config_set_int(config, key.as_ptr(), value)
+            config.set(key, typio::config::ConfigValue::Int(value));
         }
         FieldType::Bool => {
             let value = match raw.trim() {
@@ -925,45 +748,35 @@ fn set_config_value(
                 "false" | "0" => false,
                 _ => return Err(()),
             };
-            typio::config::typio_config_set_bool(config, key.as_ptr(), value)
+            config.set(key, typio::config::ConfigValue::Bool(value));
         }
         FieldType::Float => {
             let value = raw.trim().parse::<f64>().map_err(|_| ())?;
             if !value.is_finite() {
                 return Err(());
             }
-            typio::config::typio_config_set_float(config, key.as_ptr(), value)
+            config.set(key, typio::config::ConfigValue::Float(value));
         }
         FieldType::Array => {
-            let values: Vec<CString> = parse_string_list(raw)?
-                .into_iter()
-                .map(CString::new)
-                .collect::<Result<_, _>>()
-                .map_err(|_| ())?;
-            let pointers: Vec<*const std::ffi::c_char> =
-                values.iter().map(|value| value.as_ptr()).collect();
-            typio::config::typio_config_set_string_array(
-                config,
-                key.as_ptr(),
-                pointers.as_ptr(),
-                pointers.len(),
-            )
+            let values = parse_string_list(raw)?;
+            config.set(
+                key,
+                typio::config::ConfigValue::Array(
+                    values
+                        .into_iter()
+                        .map(typio::config::ConfigValue::String)
+                        .collect(),
+                ),
+            );
         }
-    };
-    (result == typio::TypioResult::TypioOk)
-        .then_some(())
-        .ok_or(())
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn c_str_rejects_nul() {
-        assert!(c_str("foo\0bar").is_err());
-    }
 
     #[test]
     fn string_list_parser_accepts_csv_and_json() {
@@ -1002,7 +815,8 @@ mod tests {
         let mut instance =
             typio::TypioInstance::new_rust(Some(path), Some(path), Some(path), Vec::new());
         instance.init_rust().unwrap();
-        let mut backend = TypioBackend::new(instance.as_mut());
+        let instance = Rc::new(RefCell::new(instance));
+        let mut backend = TypioBackend::new(instance);
 
         match backend.config_get("notifications.enable").unwrap() {
             ConfigGetOutcome::Found {
@@ -1056,7 +870,8 @@ mod tests {
         let mut instance =
             typio::TypioInstance::new_rust(Some(path), Some(path), Some(path), Vec::new());
         instance.init_rust().unwrap();
-        let backend = TypioBackend::new(instance.as_mut());
+        let instance = Rc::new(RefCell::new(instance));
+        let backend = TypioBackend::new(instance);
 
         match backend.config_get("languages.enabled").unwrap() {
             ConfigGetOutcome::Found {
@@ -1098,7 +913,8 @@ languages = ["und"]
             vec![path.to_string()],
         );
         instance.init_rust().unwrap();
-        let mut backend = TypioBackend::new(instance.as_mut());
+        let instance = Rc::new(RefCell::new(instance));
+        let mut backend = TypioBackend::new(instance);
 
         assert!(backend.engine_load("relative.toml").is_err());
         assert!(backend.engine_load(manifest.to_str().unwrap()).is_ok());

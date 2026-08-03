@@ -17,10 +17,9 @@ wayland-scanner = { workspace = true, optional = true }
 wayland-backend = { workspace = true, optional = true }
 bitflags.workspace = true
 typio-core.workspace = true
-typio-abi = { workspace = true }
+typio-engine-manifest.workspace = true
 typio-host-types = { workspace = true }
 typio-host-platform = { workspace = true, optional = true }
-toml = "0.8"
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true

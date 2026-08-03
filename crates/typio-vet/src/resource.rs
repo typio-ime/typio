@@ -1,23 +1,19 @@
-//! Packaged-resource checks: the assets that must ship alongside the native
-//! engine artifact.
+//! Packaged-resource checks for a manifest-declared engine process.
 //!
-//! Today this is the freedesktop icon contract. `TypioEngineInfo.icon` reports
-//! an *icon name* (not a path); the engine package is expected to provide a
+//! Today this is the freedesktop icon contract. The manifest reports an *icon
+//! name* (not a path); the engine package is expected to provide a
 //! matching SVG under `data/icons/hicolor/{scalable,symbolic}/apps/`. The host
 //! resolves the name against the icon theme at runtime, so a mismatch here is
 //! invisible until a user sees a blank tray icon.
 
-use std::ffi::{CStr, c_char};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use typio_abi::TypioEngineInfo;
 
 use crate::check::{CheckCategory, CheckResult};
 
 const RES: CheckCategory = CheckCategory::Resource;
 
-/// Locate the package root for a native engine artifact, looking for the
+/// Locate the package root for an engine manifest, looking for the
 /// `data/icons` (source layout) or `icons/hicolor` (bundled-next-to-artifact
 /// layout) tree by walking up from the artifact's directory.
 pub fn discover_package(artifact_path: &Path) -> Option<PathBuf> {
@@ -33,22 +29,9 @@ pub fn discover_package(artifact_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Run resource checks for an engine given its info and (optionally) the
-/// package root. With no package root, file-level checks are skipped with a
-/// warning rather than failing.
-///
-/// # Safety
-/// `info` must be a valid pointer (or null) returned by the engine.
-pub unsafe fn resource_checks(
-    info: *const TypioEngineInfo,
-    pkg: Option<&Path>,
-) -> Vec<CheckResult> {
-    let icon_name = if info.is_null() {
-        None
-    } else {
-        cstr((*info).icon)
-    };
-    check_icon(icon_name.as_deref(), pkg)
+/// Run resource checks for a manifest icon and optional package root.
+pub fn resource_checks(icon_name: Option<&str>, pkg: Option<&Path>) -> Vec<CheckResult> {
+    check_icon(icon_name, pkg)
 }
 
 fn check_icon(icon_name: Option<&str>, pkg: Option<&Path>) -> Vec<CheckResult> {
@@ -60,7 +43,7 @@ fn check_icon(icon_name: Option<&str>, pkg: Option<&Path>) -> Vec<CheckResult> {
             out.push(CheckResult::warn(
                 RES,
                 "icon_name",
-                "no icon declared in TypioEngineInfo",
+                "no icon declared in the engine manifest",
             ));
             return out;
         }
@@ -176,16 +159,6 @@ fn collect_svgs(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
-}
-
-fn cstr(p: *const c_char) -> Option<String> {
-    if p.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(p) }
-        .to_str()
-        .ok()
-        .map(|s| s.to_owned())
 }
 
 fn rel(root: &Path, path: &Path) -> String {

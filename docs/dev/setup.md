@@ -27,10 +27,11 @@ cargo test -p typio-host
 
 Typio links `libflux` straight out of the `optics/flux` Meson build
 tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
-is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `libtypio`,
-`typio-abi`, `typio-vet`, `typio-client`, `typioctl`, and `typio-settings` are
-Cargo workspace members in this repository, so framework, ABI, client, GUI,
-CLI, and host changes build together.
+is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `typio-core`,
+`typio-engine-protocol`, `typio-engine-manifest`, `typio-vet`, `typio-client`,
+`typioctl`, and `typio-settings` are Cargo workspace members in this
+repository, so runtime, engine-contract, client, GUI, CLI, and host changes
+build together.
 
 The shipping daemon is the Rust `typio` binary from `crates/typio-host`.
 
@@ -72,9 +73,9 @@ projects/
     └── bindings/iris-rs/, bindings/lens-rs/
 ```
 
-Typio resolves its framework, ABI, vet, command-line, and settings crates from
-local workspace paths. Native optics libraries are sibling dependencies found
-through pkg-config by their `-sys` crates.
+Typio resolves its runtime, engine-protocol, manifest, vet, command-line, and
+settings crates from local workspace paths. Native optics libraries are
+sibling dependencies found through pkg-config by their `-sys` crates.
 
 ## flux (C library)
 
@@ -152,11 +153,13 @@ export IRIS_SOURCE_DIR="$PWD/../optics"
 cargo run -p typio-settings
 ```
 
-Build the framework and ABI tooling explicitly when touching engine contracts:
+Build the runtime and engine-contract tooling explicitly when touching engine
+contracts:
 
 ```bash
-cargo check -p typio-abi
 cargo check -p typio-core
+cargo check -p typio-engine-protocol
+cargo check -p typio-engine-manifest
 cargo check -p typio-vet
 ```
 
@@ -188,19 +191,13 @@ recurse. Manifest locations differ per engine — see the table below:
 
 ```bash
 ./target/debug/typio -v \
-  --engine-dir ../typio-engines/typio-engine-compose \
-  --engine-dir ../typio-engines/typio-engine-rime/build \
-  --engine-dir ../typio-engines/typio-engine-mozc/build \
-  --engine-dir ../typio-engines/typio-engine-sherpa/build
+  --engine-dir ../typio-engines/typio-engine-compose
 ```
 
 Equivalently, set the colon-separated `$TYPIO_ENGINE_PATH` once:
 
 ```bash
-export TYPIO_ENGINE_PATH="$PWD/../typio-engines/typio-engine-compose:\
-$PWD/../typio-engines/typio-engine-rime/build:\
-$PWD/../typio-engines/typio-engine-mozc/build:\
-$PWD/../typio-engines/typio-engine-sherpa/build"
+export TYPIO_ENGINE_PATH="$PWD/../typio-engines/typio-engine-compose"
 ./target/debug/typio -v
 ```
 
@@ -216,40 +213,39 @@ convert keystrokes with; without a voice engine the voice push-to-talk path has
 nothing to transcribe with. Build an engine and pass its manifest directory to
 exercise input conversion or voice input.
 
-The keyboard engines that ship as siblings under `typio-engines/`:
+The engine repositories live under the sibling `typio-engines/` umbrella.
+Protocol compatibility is per engine revision, not implied by directory
+presence:
 
-| Engine | Build system | Manifest path | Languages |
-|---|---|---|---|
-| `typio-engine-compose` | Cargo | `typio-engine-compose/typio-engine-compose.toml` | Latin with compose-key picker |
-| `typio-engine-rime` | Meson (needs `librime`, `libcurl`) | `typio-engine-rime/build/typio-engine-rime.toml` | Chinese (zh) |
-| `typio-engine-mozc` | Meson (needs Mozc depot) | `typio-engine-mozc/build/typio-engine-mozc.toml` | Japanese (ja) |
+| Engine | Modality | Current compatibility |
+|---|---|---|
+| `typio-engine-compose` | Keyboard | Protocol-native; supported |
+| `typio-engine-rime` | Keyboard | ABI-based revision requires migration |
+| `typio-engine-mozc` | Keyboard | ABI-based revision requires migration |
+| `typio-engine-sherpa` | Voice | ABI-based revision requires migration |
+| `typio-engine-whisper` | Voice | ABI-based revision requires migration |
 
-The voice engines that ship as siblings under `typio-engines/`:
-
-| Engine | Build system | Manifest path | Languages |
-|---|---|---|---|
-| `typio-engine-sherpa` | Meson (needs `sherpa-onnx`, `libcurl`) | `typio-engine-sherpa/build/typio-engine-sherpa.toml` | Multilingual (mul) |
-| `typio-engine-whisper` | Meson (needs whisper.cpp) | `typio-engine-whisper/build/typio-engine-whisper.toml` | Multilingual (mul) |
-
-Build the Cargo engine with `cargo build --release` and the Meson engines
-with `meson setup build && meson compile -C build` from their own roots,
-e.g.:
+Build the protocol-native Cargo engine from the Typio checkout:
 
 ```bash
 cargo build --release --manifest-path ../typio-engines/typio-engine-compose/Cargo.toml
-meson setup ../typio-engines/typio-engine-rime/build ../typio-engines/typio-engine-rime       # first time
-meson compile -C ../typio-engines/typio-engine-rime/build
-meson setup ../typio-engines/typio-engine-sherpa/build ../typio-engines/typio-engine-sherpa   # first time
-meson compile -C ../typio-engines/typio-engine-sherpa/build
 ```
 
-Then point the daemon at the directory that contains the manifest (note the
-`/build` suffix for Meson engines):
+Engine executables speak Typio Engine Protocol over their inherited fd 3.
+They do not link `typio-core` or a Typio shared library. Rust engines should
+depend on `typio-engine-protocol`; non-Rust engines implement the documented
+framing and messages directly or use an engine-local source adapter.
+
+The current C/C++ sibling revisions still link the retired ABI and therefore
+cannot be loaded by this runtime. Their migration belongs in their respective
+repositories: remove the shared-library dependency, compile a direct worker
+executable, and validate its manifest with `typio-vet`. Typio deliberately
+does not ship an ABI compatibility layer.
+
+Then point the daemon at the directory that contains the manifest:
 
 ```bash
 ./target/debug/typio -v --engine-dir ../typio-engines/typio-engine-compose
-./target/debug/typio -v --engine-dir ../typio-engines/typio-engine-rime/build
-./target/debug/typio -v --engine-dir ../typio-engines/typio-engine-sherpa/build
 ```
 
 ## Run Tests
@@ -259,7 +255,8 @@ Run the Cargo suite:
 ```bash
 cargo test -p typio-host
 cargo test -p typioctl
-cargo test -p typio-client -p typio-settings
+cargo test -p typio-core -p typio-engine-protocol -p typio-engine-manifest
+cargo test -p typio-vet -p typio-client -p typio-settings
 ```
 
 Run one test:

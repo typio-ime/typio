@@ -2,7 +2,7 @@
 //! labels, and the tray/indicator status-icon resolution chain (ADR-0031/33).
 //!
 //! Port of the *pure* slice of `src/state/controller.c`. The registry exposes
-//! only the raw BCP-47 tag; libtypio has no language-display API, so the host
+//! only the raw BCP-47 tag; typio-core has no language-display API, so the host
 //! owns this presentation table. Everything here is pure over its inputs —
 //! no `TypioInstance`, no registry, no config object — so it is unit-testable
 //! without fixtures. The stateful `TypioStateController` (listeners, snapshot,
@@ -186,7 +186,7 @@ impl ResolvedIcon {
 ///
 /// `cfg_icon` is a caller-provided lookup mapping a full config key (e.g.
 /// `"languages.zh.icon"`) to its value — keeping this function pure and
-/// independent of the libtypio config object.
+/// independent of the typio-core config object.
 pub type ConfigIconProvider<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 pub fn resolve_language_icon(

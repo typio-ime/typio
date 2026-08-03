@@ -9,7 +9,6 @@ description = "Wayland/Flux platform integration for typio-host"
 links = "typio_host_platform"
 
 [dependencies]
-typio-core.workspace = true
 typio-host-types = { workspace = true }
 wayland-client = { workspace = true }
 wayland-scanner = { workspace = true }

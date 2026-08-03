@@ -25,7 +25,7 @@ TIP v1 protocol over the UDS socket at `$XDG_RUNTIME_DIR/typio/daemon.sock`.
 | `engine set <name> <key> <value>` | `config.set` | Triggers `on_config_change` on the engine. |
 | `engine do <name> <command>` | `engine.invoke` | Runs a registered engine command. |
 | `engine setup [name]` | `engine.setup` | One-click setup for an engine. No name lists available setups. |
-| `engine load <path>` | `engine.load` | Load an engine plugin from a specific `.so` path. |
+| `engine load <path>` | `engine.load` | Load an engine from a specific manifest path. |
 | `engine unload <name>` | `engine.unload` | Unload an engine by name. |
 | `engine reload <name> [--path <p>]` | `engine.reload` | Reload an engine. With `--path`, loads from that path; otherwise rescans engine_dirs. |
 
@@ -77,7 +77,7 @@ typioctl engine set rime schema luna_pinyin
 typioctl engine do rime deploy
 
 # Reload rime engine during development (from build directory)
-typioctl engine reload rime --path ./build/libtypio_engine_rime.so
+typioctl engine reload rime --path ./build/typio-engine-rime.toml
 
 # Unload and reload rime from the standard engine directories
 typioctl engine unload rime

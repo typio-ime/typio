@@ -1,6 +1,0 @@
-# Build directories
-/build/
-build-*/
-
-# Meson subproject artifacts
-subprojects/.wraplock

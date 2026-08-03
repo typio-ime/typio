@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 authors = ["Typio Contributors"]
 license = "MIT"
-description = "Conformance vetting tool for Typio engine plugins (ABI, behavior, and packaged resources)"
+description = "Black-box conformance tool for Typio engine processes"
 
 [lib]
 name = "typio_vet"
@@ -15,4 +15,6 @@ path = "src/bin/typio-vet.rs"
 
 [dependencies]
 libc = "0.2"
-typio-abi = { workspace = true }
+tempfile = "3"
+typio-engine-manifest.workspace = true
+typio-engine-protocol.workspace = true

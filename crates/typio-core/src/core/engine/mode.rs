@@ -2,8 +2,7 @@
 
 /// Capabilities advertised by an engine.
 ///
-/// Capabilities are negotiated by name (snake_case strings) — see
-/// `typio/abi/types.h` for the standard set.  Required capabilities cause
+/// Capabilities are negotiated by snake_case names in EngineHello. Required capabilities cause
 /// the host to refuse loading if unsupported; optional capabilities are
 /// best-effort.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

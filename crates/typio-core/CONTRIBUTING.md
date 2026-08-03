@@ -1,46 +1,17 @@
-# Contributing
+# Contributing to typio-core
 
-Thank you for your interest in improving Typio.
+`typio-core` is maintained inside the Typio workspace. Follow the repository
+[contribution guide](../../CONTRIBUTING.md),
+[developer setup](../../docs/dev/setup.md), and
+[testing guide](../../docs/dev/testing.md).
 
-Every change should keep three things aligned:
-
-- code
-- tests
-- docs
-
-If one of those changes and the others do not, the patch is incomplete.
-
-## Quick start
+For runtime or engine-contract changes, run:
 
 ```bash
-cargo build
-cargo test
+cargo test -p typio-core -p typio-engine-protocol \
+  -p typio-engine-manifest -p typio-vet
 ```
 
-For a sanitised build (changes touching memory or lifetime boundaries):
-
-```bash
-RUSTFLAGS="-Zsanitizer=address" cargo +nightly test
-```
-
-## Developer documentation
-
-- [Developer Setup](docs/dev/setup.md)
-- [Testing](docs/dev/testing.md)
-- [Code Style](docs/dev/code-style.md)
-- [Project Layout](docs/dev/project-layout.md)
-- [Maintenance Manual](docs/dev/maintenance.md)
-
-## Pull Request Checklist
-
-- [ ] Build succeeds from a clean tree (`cargo build`)
-- [ ] `cargo test` passes
-- [ ] Sanitizer builds pass if the change touches memory or lifetime boundaries
-- [ ] User-facing behavior is documented
-- [ ] Any new engine or runtime assumptions are written down
-- [ ] `CHANGELOG.md` is updated
-- [ ] If architectural change: ADR added
-
-## Questions?
-
-Open an issue or discussion on the project repository.
+Changes to the daemon/engine boundary must update the typed protocol crate,
+the protocol reference, the runnable worker example, and `typio-vet` in the
+same change. Do not add a dynamic-loader, header, or binary-layout shortcut.

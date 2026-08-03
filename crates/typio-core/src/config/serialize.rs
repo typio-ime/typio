@@ -24,13 +24,7 @@ fn write_escaped_string(f: &mut dyn Write, s: &str) -> std::io::Result<()> {
 
 fn write_value(f: &mut dyn Write, v: &ConfigValue) -> std::io::Result<()> {
     match v {
-        ConfigValue::String(s) => {
-            if let Ok(s_str) = s.to_str() {
-                write_escaped_string(f, s_str)
-            } else {
-                f.write_all(b"\"\"")
-            }
-        }
+        ConfigValue::String(s) => write_escaped_string(f, s),
         ConfigValue::Int(i) => write!(f, "{}", i),
         ConfigValue::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
         ConfigValue::Float(v) => write!(f, "{}", v),

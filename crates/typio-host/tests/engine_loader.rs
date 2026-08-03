@@ -1,6 +1,6 @@
 //! Integration test: feed the Rust engine_loader a copy of every real
 //! `typio-engine-*.toml` shipped by the sibling engine repos, and verify
-//! each parses, validates, and registers successfully into libtypio's
+//! each parses, validates, and registers successfully into typio-core's
 //! native `EngineRegistry`.
 //!
 //! This is the smoke test that catches drift between the manifest format
@@ -79,7 +79,7 @@ fn all_real_manifests_parse_and_validate() {
 }
 
 #[test]
-fn all_real_manifests_register_into_libtypio() {
+fn all_real_manifests_register_into_typio_core() {
     let mut loader = EngineLoader::new();
     // All engine repos ship `voice` type only for whisper; voice caps are
     // required for that one. Add them so the manifest isn't refused.

@@ -1,423 +1,185 @@
-//! Input context — Rust implementation of input_context.c
-//!
-//! Manages per-client input state: preedit, candidates, focus,
-//! surrounding text, and property storage.
+//! Owned per-client input context.
 
-mod callbacks;
-mod content;
-mod focus;
+use crate::core::engine::{Composition, ContextOutput, EngineError, EngineMode, InputContext};
+use crate::core::registry::EngineRegistry;
+use crate::instance::{RuntimeState, TypioInstance};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use callbacks::*;
-pub use content::*;
-pub use focus::*;
+static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-use crate::TypioInstance;
-use crate::types::{
-    TypioCandidate, TypioCommitCallback, TypioComposition, TypioCompositionCallback,
-    TypioDeleteSurroundingCallback, TypioPreedit, TypioPreeditSegment,
-};
-use std::ffi::{CStr, CString, c_char, c_void};
-use std::ptr;
-
-/// Internal candidate-list storage. Not part of the public C ABI — the
-/// public surface is `TypioComposition` and `typio_input_context_set_composition`.
-#[repr(C)]
-pub(crate) struct CandidatesState {
-    pub candidates: *mut TypioCandidate,
-    pub count: usize,
-    pub page: i32,
-    pub page_size: i32,
-    pub total: i32,
-    pub selected: i32,
-    pub has_prev: bool,
-    pub has_next: bool,
-    pub content_signature: u64,
-    pub host_managed_selection: u32,
+/// Ordered host-facing output emitted by a context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextEvent {
+    /// Commit text.
+    Commit(String),
+    /// Replace the composition atomically.
+    Composition(Composition),
+    /// Delete UTF-8 bytes around the client cursor.
+    DeleteSurrounding {
+        /// Bytes before the cursor.
+        before: u32,
+        /// Bytes after the cursor.
+        after: u32,
+    },
 }
 
-pub(crate) struct PropertyEntry {
-    key: String,
-    value: *mut c_void,
-    free_func: Option<extern "C" fn(*mut c_void)>,
-}
-
-/// Per-client input context: preedit, candidates, focus, and property storage.
-#[repr(C)]
+/// Input state associated with one focused application context.
 pub struct TypioInputContext {
-    pub(crate) instance: *mut TypioInstance,
-    pub(crate) focused: bool,
-    pub(crate) capabilities: u32,
-
-    pub(crate) preedit: TypioPreedit,
-    pub(crate) preedit_segments: Vec<TypioPreeditSegment>,
-
-    pub(crate) candidates: CandidatesState,
-    pub(crate) candidate_items: Vec<TypioCandidate>,
-
-    pub(crate) surrounding_text: Option<CString>,
-    pub(crate) surrounding_cursor: i32,
-    pub(crate) surrounding_anchor: i32,
-
-    pub(crate) commit_callback: Option<TypioCommitCallback>,
-    pub(crate) commit_user_data: *mut c_void,
-    pub(crate) composition_callback: Option<TypioCompositionCallback>,
-    pub(crate) composition_user_data: *mut c_void,
-    pub(crate) delete_surrounding_callback: Option<TypioDeleteSurroundingCallback>,
-    pub(crate) delete_surrounding_user_data: *mut c_void,
-    pub(crate) revision: u64,
-
-    pub(crate) user_data: *mut c_void,
-    pub(crate) properties: Vec<PropertyEntry>,
+    registry: Rc<RefCell<EngineRegistry>>,
+    runtime: Rc<RefCell<RuntimeState>>,
+    focused: bool,
+    surrounding_text: String,
+    surrounding_cursor: i32,
+    surrounding_anchor: i32,
+    composition: Composition,
+    engine_context: InputContext,
+    pending_events: Vec<ContextEvent>,
 }
 
 impl TypioInputContext {
-    pub(crate) fn new(instance: *mut TypioInstance) -> Self {
-        TypioInputContext {
-            instance,
+    /// Create an owned context attached to an initialized runtime.
+    pub fn new_rust(instance: &TypioInstance) -> Box<Self> {
+        Box::new(Self {
+            registry: instance.registry.clone(),
+            runtime: instance.runtime.clone(),
             focused: false,
-            capabilities: 0,
-
-            preedit: TypioPreedit {
-                segments: ptr::null_mut(),
-                segment_count: 0,
-                cursor_pos: 0,
-            },
-            preedit_segments: Vec::new(),
-
-            candidates: CandidatesState {
-                candidates: ptr::null_mut(),
-                count: 0,
-                page: 0,
-                page_size: 10,
-                total: 0,
-                selected: -1,
-                has_prev: false,
-                has_next: false,
-                content_signature: 0,
-                host_managed_selection: 0,
-            },
-            candidate_items: Vec::new(),
-
-            surrounding_text: None,
+            surrounding_text: String::new(),
             surrounding_cursor: 0,
             surrounding_anchor: 0,
+            composition: Composition::default(),
+            engine_context: InputContext::new(
+                NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed).max(1),
+            ),
+            pending_events: Vec::new(),
+        })
+    }
 
-            commit_callback: None,
-            commit_user_data: ptr::null_mut(),
-            composition_callback: None,
-            composition_user_data: ptr::null_mut(),
-            delete_surrounding_callback: None,
-            delete_surrounding_user_data: ptr::null_mut(),
-            revision: 0,
+    /// Notify the active keyboard that focus was gained.
+    pub fn focus_in(&mut self) {
+        if self.focused {
+            return;
+        }
+        self.focused = true;
+        self.registry
+            .borrow_mut()
+            .focus_in_active_keyboard(&mut self.engine_context);
+        self.reconcile_mode(false);
+        self.apply_engine_outputs();
+    }
 
-            user_data: ptr::null_mut(),
-            properties: Vec::new(),
+    /// Notify the active keyboard that focus was lost.
+    pub fn focus_out(&mut self) {
+        if !self.focused {
+            return;
+        }
+        self.registry
+            .borrow_mut()
+            .focus_out_active_keyboard(&mut self.engine_context);
+        self.apply_engine_outputs();
+        self.focused = false;
+    }
+
+    /// Whether this context currently owns focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Clear composition and reset the active keyboard context.
+    pub fn reset(&mut self) {
+        self.composition = Composition::default();
+        self.pending_events
+            .push(ContextEvent::Composition(self.composition.clone()));
+        self.registry
+            .borrow_mut()
+            .reset_active_keyboard(&mut self.engine_context);
+        self.reconcile_mode(false);
+        self.apply_engine_outputs();
+    }
+
+    /// Update surrounding UTF-8 text.
+    pub fn set_surrounding(&mut self, text: &str, cursor: i32, anchor: i32) {
+        self.surrounding_text.clear();
+        self.surrounding_text.push_str(text);
+        self.surrounding_cursor = cursor;
+        self.surrounding_anchor = anchor;
+    }
+
+    /// Update the locally highlighted candidate.
+    pub fn set_candidate_selection(&mut self, selected: usize) -> crate::core::engine::Result<()> {
+        if selected >= self.composition.candidates.len() {
+            return Err(EngineError::InvalidArgument);
+        }
+        self.composition.selected = selected as i32;
+        Ok(())
+    }
+
+    /// Ask the active engine to commit a candidate.
+    pub fn commit_candidate(&mut self, index: i32) -> crate::core::engine::Result<()> {
+        let result = self
+            .registry
+            .borrow_mut()
+            .commit_candidate_active_keyboard(&mut self.engine_context, index);
+        self.apply_engine_outputs();
+        result
+    }
+
+    /// Restore an active keyboard mode for this context.
+    pub fn set_active_mode(&mut self, mode_id: &str) -> crate::core::engine::Result<()> {
+        let result = self
+            .registry
+            .borrow_mut()
+            .set_active_mode_keyboard(&mut self.engine_context, mode_id);
+        self.reconcile_mode(false);
+        self.apply_engine_outputs();
+        result
+    }
+
+    /// Forward a typed key event and report whether the engine consumed it.
+    pub fn process_key(&mut self, event: &crate::core::engine::KeyEvent) -> bool {
+        let result = self
+            .registry
+            .borrow_mut()
+            .process_key_active_keyboard(&mut self.engine_context, event);
+        self.reconcile_mode(true);
+        self.apply_engine_outputs();
+        result != crate::core::engine::KeyProcessResult::NotHandled
+    }
+
+    /// Drain ordered output for the embedding host.
+    pub fn drain_events(&mut self) -> impl Iterator<Item = ContextEvent> + '_ {
+        self.pending_events.drain(..)
+    }
+
+    fn reconcile_mode(&mut self, announce: bool) {
+        let mode: Option<EngineMode> = self
+            .registry
+            .borrow_mut()
+            .take_active_keyboard_changed_mode();
+        if let Some(mode) = mode {
+            self.runtime.borrow_mut().observe_mode(mode, announce);
         }
     }
 
-    /// Bump the revision and fire the composition callback with the current
-    /// preedit + candidate state as one atomic snapshot.
-    pub(crate) fn emit_composition(&mut self, ctx: *mut TypioInputContext) {
-        self.revision = self.revision.wrapping_add(1);
-        let cb = match self.composition_callback {
-            Some(cb) => cb,
-            None => return,
-        };
-        let ud = self.composition_user_data;
-        let comp = TypioComposition {
-            struct_size: std::mem::size_of::<TypioComposition>(),
-            segments: self.preedit.segments as *const TypioPreeditSegment,
-            segment_count: self.preedit.segment_count,
-            cursor_pos: self.preedit.cursor_pos,
-            candidates: self.candidates.candidates as *const TypioCandidate,
-            candidate_count: self.candidates.count,
-            page: self.candidates.page,
-            page_size: self.candidates.page_size,
-            total: self.candidates.total,
-            selected: self.candidates.selected,
-            has_prev: self.candidates.has_prev,
-            has_next: self.candidates.has_next,
-            content_signature: self.candidates.content_signature,
-            revision: self.revision,
-            host_managed_selection: self.candidates.host_managed_selection,
-        };
-        cb(ctx.cast(), &comp, ud);
-    }
-
-    pub(crate) fn clear_preedit_silent(&mut self) {
-        for seg in &self.preedit_segments {
-            if !seg.text.is_null() {
-                unsafe { drop(CString::from_raw(seg.text as *mut c_char)) };
+    fn apply_engine_outputs(&mut self) {
+        for output in self.engine_context.drain_outputs() {
+            match output {
+                ContextOutput::Commit(text) => {
+                    self.registry.borrow_mut().notify_keyboard_commit();
+                    self.pending_events.push(ContextEvent::Commit(text));
+                }
+                ContextOutput::Clear => {
+                    self.composition = Composition::default();
+                    self.pending_events
+                        .push(ContextEvent::Composition(self.composition.clone()));
+                }
+                ContextOutput::Composition(composition) => {
+                    self.composition = composition.clone();
+                    self.pending_events
+                        .push(ContextEvent::Composition(composition));
+                }
             }
         }
-        self.preedit_segments.clear();
-        self.preedit.segment_count = 0;
-        self.preedit.cursor_pos = 0;
-        self.preedit.segments = ptr::null_mut();
-    }
-
-    pub(crate) fn clear_candidates_silent(&mut self) {
-        for cand in &self.candidate_items {
-            if !cand.text.is_null() {
-                unsafe { drop(CString::from_raw(cand.text as *mut c_char)) };
-            }
-            if !cand.comment.is_null() {
-                unsafe { drop(CString::from_raw(cand.comment as *mut c_char)) };
-            }
-            if !cand.label.is_null() {
-                unsafe { drop(CString::from_raw(cand.label as *mut c_char)) };
-            }
-        }
-        self.candidate_items.clear();
-        self.candidates.count = 0;
-        self.candidates.page = 0;
-        self.candidates.total = 0;
-        self.candidates.selected = -1;
-        self.candidates.has_prev = false;
-        self.candidates.has_next = false;
-        self.candidates.content_signature = 0;
-        self.candidates.candidates = ptr::null_mut();
-    }
-}
-
-impl Drop for TypioInputContext {
-    fn drop(&mut self) {
-        for prop in &self.properties {
-            if let Some(free_fn) = prop.free_func
-                && !prop.value.is_null()
-            {
-                free_fn(prop.value);
-            }
-        }
-        self.properties.clear();
-        self.clear_preedit_silent();
-        self.clear_candidates_silent();
-    }
-}
-
-const TYPIO_CANDIDATE_SIGNATURE_OFFSET: u64 = 1469598103934665603;
-const TYPIO_CANDIDATE_SIGNATURE_PRIME: u64 = 1099511628211;
-
-pub(super) fn signature_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(TYPIO_CANDIDATE_SIGNATURE_PRIME);
-    }
-    hash
-}
-
-pub(super) fn signature_string(mut hash: u64, text: *const c_char) -> u64 {
-    let bytes = if text.is_null() {
-        b"".as_slice()
-    } else {
-        unsafe { CStr::from_ptr(text) }.to_bytes()
-    };
-    hash = signature_bytes(hash, bytes);
-    hash ^= 0xff;
-    hash = hash.wrapping_mul(TYPIO_CANDIDATE_SIGNATURE_PRIME);
-    hash
-}
-
-pub(super) fn candidate_signature(list: &CandidatesState) -> u64 {
-    let mut hash = TYPIO_CANDIDATE_SIGNATURE_OFFSET;
-
-    hash = signature_bytes(hash, &list.count.to_ne_bytes());
-    hash = signature_bytes(hash, &list.page.to_ne_bytes());
-    hash = signature_bytes(hash, &list.page_size.to_ne_bytes());
-    hash = signature_bytes(hash, &list.total.to_ne_bytes());
-    hash = signature_bytes(hash, &[list.has_prev as u8]);
-    hash = signature_bytes(hash, &[list.has_next as u8]);
-
-    let slice = if list.count > 0 && !list.candidates.is_null() {
-        unsafe { std::slice::from_raw_parts(list.candidates, list.count) }
-    } else {
-        &[]
-    };
-
-    for cand in slice {
-        hash = signature_string(hash, cand.text);
-        hash = signature_string(hash, cand.comment);
-        hash = signature_string(hash, cand.label);
-    }
-    hash
-}
-
-/// Create a new input context associated with the given instance.
-///
-/// Returns a pointer that must be freed with `typio_input_context_free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_input_context_new(instance: *mut TypioInstance) -> *mut TypioInputContext {
-    let ctx = Box::new(TypioInputContext::new(instance));
-    Box::into_raw(ctx)
-}
-
-/// Free an input context and all owned resources.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_input_context_free(ctx: *mut TypioInputContext) {
-    if !ctx.is_null() {
-        unsafe { drop(Box::from_raw(ctx)) };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::instance;
-    use crate::types::TypioResult;
-    use std::ffi::{CStr, CString};
-    use std::ptr;
-
-    #[test]
-    fn context_new_and_free() {
-        let inst = instance::typio_instance_new();
-        let ctx = typio_input_context_new(inst);
-        assert!(!ctx.is_null());
-        typio_input_context_free(ctx);
-        instance::typio_instance_free(inst);
-    }
-
-    #[test]
-    fn context_focus_in_out() {
-        let inst = instance::typio_instance_new();
-        instance::typio_instance_init(inst);
-        let ctx = typio_input_context_new(inst);
-        assert!(!ctx.is_null());
-
-        typio_input_context_focus_in(ctx);
-        assert!(unsafe { (*ctx).focused });
-
-        typio_input_context_focus_out(ctx);
-        assert!(!unsafe { (*ctx).focused });
-
-        typio_input_context_free(ctx);
-        instance::typio_instance_free(inst);
-    }
-
-    #[test]
-    fn context_commit_and_clear() {
-        use std::sync::Mutex;
-
-        let inst = instance::typio_instance_new();
-        instance::typio_instance_init(inst);
-        let ctx = typio_input_context_new(inst);
-
-        // Capture committed text from the callback into a Mutex-protected slot.
-        // The inner wrapper is a plain `Send` newtype around the raw pointer;
-        // `static mut` would be UB-prone and is rejected by edition-2024 rules.
-        // Safety of the pointed-to bytes is local to this single-threaded test.
-        struct Captured(*const c_char);
-        unsafe impl Send for Captured {}
-        static LAST_COMMIT: Mutex<Captured> = Mutex::new(Captured(ptr::null()));
-        extern "C" fn capture_commit(
-            _ctx: *mut typio_abi::TypioInputContext,
-            text: *const c_char,
-            _ud: *mut c_void,
-        ) {
-            LAST_COMMIT.lock().unwrap().0 = unsafe { libc::strdup(text) };
-        }
-        unsafe {
-            (*ctx).commit_callback = Some(capture_commit);
-        }
-
-        let text = CString::new("hello").unwrap();
-        typio_input_context_commit(ctx, text.as_ptr());
-
-        let captured = LAST_COMMIT.lock().unwrap().0;
-        unsafe {
-            assert!(!captured.is_null());
-            let s = CStr::from_ptr(captured).to_str().unwrap();
-            assert_eq!(s, "hello");
-            libc::free(captured as *mut c_void);
-            LAST_COMMIT.lock().unwrap().0 = ptr::null();
-        }
-
-        typio_input_context_free(ctx);
-        instance::typio_instance_free(inst);
-    }
-
-    #[test]
-    fn context_set_candidate_selection_updates_only_selected() {
-        let inst = instance::typio_instance_new();
-        let ctx = typio_input_context_new(inst);
-
-        let alpha = CString::new("alpha").unwrap();
-        let beta = CString::new("beta").unwrap();
-        let mut candidates = [
-            TypioCandidate {
-                text: alpha.as_ptr(),
-                comment: ptr::null(),
-                label: ptr::null(),
-            },
-            TypioCandidate {
-                text: beta.as_ptr(),
-                comment: ptr::null(),
-                label: ptr::null(),
-            },
-        ];
-        let comp = TypioComposition {
-            struct_size: std::mem::size_of::<TypioComposition>(),
-            segments: ptr::null(),
-            segment_count: 0,
-            cursor_pos: 0,
-            candidates: candidates.as_mut_ptr(),
-            candidate_count: candidates.len(),
-            page: 0,
-            page_size: 2,
-            total: 2,
-            selected: 0,
-            has_prev: false,
-            has_next: false,
-            content_signature: 0,
-            host_managed_selection: 0,
-            revision: 0,
-        };
-
-        typio_input_context_set_composition(ctx, &comp);
-        let signature = unsafe { (*ctx).candidates.content_signature };
-
-        assert_eq!(
-            typio_input_context_set_candidate_selection(ctx, 1),
-            TypioResult::TypioOk
-        );
-        unsafe {
-            assert_eq!((*ctx).candidates.selected, 1);
-            assert_eq!((*ctx).candidates.content_signature, signature);
-            assert_eq!((*ctx).candidates.count, 2);
-        }
-        assert_eq!(
-            typio_input_context_set_candidate_selection(ctx, 2),
-            TypioResult::TypioErrorInvalidArgument
-        );
-
-        typio_input_context_free(ctx);
-        instance::typio_instance_free(inst);
-    }
-
-    #[test]
-    fn context_surrounding_text() {
-        let inst = instance::typio_instance_new();
-        let ctx = typio_input_context_new(inst);
-
-        let text = CString::new("hello world").unwrap();
-        typio_input_context_set_surrounding(ctx, text.as_ptr(), 5, 5);
-
-        let mut out_text: *const c_char = ptr::null();
-        let mut out_cursor: i32 = 0;
-        let mut out_anchor: i32 = 0;
-        let ok = typio_input_context_get_surrounding(
-            ctx,
-            &mut out_text,
-            &mut out_cursor,
-            &mut out_anchor,
-        );
-        assert!(ok);
-        assert!(!out_text.is_null());
-        let s = unsafe { CStr::from_ptr(out_text) }.to_str().unwrap();
-        assert_eq!(s, "hello world");
-        assert_eq!(out_cursor, 5);
-        assert_eq!(out_anchor, 5);
-
-        typio_input_context_free(ctx);
-        instance::typio_instance_free(inst);
     }
 }

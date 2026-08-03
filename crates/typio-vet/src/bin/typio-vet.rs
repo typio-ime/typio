@@ -1,245 +1,197 @@
-//! `typio-vet` — load a native Typio C ABI engine artifact and vet it across
-//! ABI, behavior, and packaged resources.
+//! Command-line black-box conformance gate for Typio engine processes.
 
-// This CLI loads native engine artifacts with dlopen/dlsym. The Rust 2024
-// edition migration keeps that FFI boundary intact.
-#![allow(unsafe_op_in_unsafe_fn)]
-
-use std::ffi::{CStr, CString, c_void};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use typio_vet::{
-    CheckCategory, CheckResult, CheckStatus, Summary, TypioEngineInfo, TypioEngineType,
-    TypioKeyboardEngine, TypioVoiceEngine, resource, scenario,
+    CheckCategory, CheckResult, CheckStatus, Summary, VetReport, resource, vet_manifest,
 };
 
 const USAGE: &str = "\
-Usage: typio-vet <engine-abi.so> [options]
+Usage: typio-vet <typio-engine-*.toml> [options]
 
-Vet a native Typio C ABI engine artifact: ABI surface, runtime behavior, and
-packaged resources. Exits non-zero only if a check FAILs (warnings do not
-block). This CLI loads the artifact inside the vet process; it does not vet
-manifest-declared engine worker executables.
+Start the manifest-declared engine in an isolated process and verify its
+Engine Protocol handshake, runtime behavior, and packaged resources. Warnings
+do not fail the gate.
 
 Options:
     --package <dir>    Package root for resource checks (auto-detected otherwise)
-    --only <dims>      Comma-separated dimensions: abi, behavior, resource
+    --only <dims>      Comma-separated: protocol, behavior, resource
     --check <name>     Run/report only the named check
-    --list             List the dimensions and exit
+    --list             List dimensions and exit
     --help, -h         Show this message
 
 Examples:
-    typio-vet ../typio-engine-basic/target/debug/libtypio_engine_basic.so
-    typio-vet ./libtypio_engine_rime.so --only abi,resource
-    typio-vet ./libtypio_engine_whisper.so --package ../typio-engine-whisper";
+    typio-vet ../typio-engine-compose/typio-engine-compose.toml
+    typio-vet ./typio-engine-rime.toml --only protocol,resource";
 
 struct Args {
-    artifact_path: String,
+    manifest_path: PathBuf,
     package: Option<PathBuf>,
     only: Option<Vec<CheckCategory>>,
     check: Option<String>,
 }
 
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().collect();
-
-    if argv.iter().any(|a| a == "--help" || a == "-h") {
+    let argv = std::env::args().collect::<Vec<_>>();
+    if argv
+        .iter()
+        .any(|argument| argument == "--help" || argument == "-h")
+    {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if argv.iter().any(|a| a == "--list") {
+    if argv.iter().any(|argument| argument == "--list") {
         println!("Vetting dimensions:");
-        println!("  abi       TypioEngineInfo, struct sizes, vtable completeness");
-        println!("  behavior  invariants observed by driving the engine");
-        println!("  resource  packaged assets (freedesktop icons)");
+        println!("  protocol  manifest, frames, handshake, identity, schema");
+        println!("  behavior  lifecycle and modality operations over IPC");
+        println!("  resource  packaged assets such as freedesktop icons");
         return ExitCode::SUCCESS;
     }
 
     let args = match parse_args(&argv) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("error: {e}\n");
-            eprintln!("{USAGE}");
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("error: {error}\n\n{USAGE}");
             return ExitCode::FAILURE;
         }
     };
-
-    match run(&args) {
+    match run(args) {
         Ok(summary) if summary.is_failure() => ExitCode::FAILURE,
         Ok(_) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(error) => {
+            eprintln!("error: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
-    let mut artifact_path = None;
+    let mut manifest_path = None;
     let mut package = None;
     let mut only = None;
     let mut check = None;
-
-    let mut i = 1;
-    while i < argv.len() {
-        match argv[i].as_str() {
+    let mut index = 1;
+    while index < argv.len() {
+        match argv[index].as_str() {
             "--package" => {
-                i += 1;
+                index += 1;
                 package = Some(PathBuf::from(
-                    argv.get(i).ok_or("--package needs a directory")?,
+                    argv.get(index).ok_or("--package needs a directory")?,
                 ));
             }
             "--only" => {
-                i += 1;
-                let spec = argv.get(i).ok_or("--only needs a value")?;
-                let mut cats = Vec::new();
-                for part in spec.split(',') {
-                    cats.push(match part.trim() {
-                        "abi" => CheckCategory::Abi,
+                index += 1;
+                let value = argv.get(index).ok_or("--only needs a value")?;
+                let mut categories = Vec::new();
+                for part in value.split(',') {
+                    categories.push(match part.trim() {
+                        "protocol" => CheckCategory::Protocol,
                         "behavior" => CheckCategory::Behavior,
                         "resource" => CheckCategory::Resource,
                         other => return Err(format!("unknown dimension '{other}'")),
                     });
                 }
-                only = Some(cats);
+                only = Some(categories);
             }
             "--check" => {
-                i += 1;
-                check = Some(argv.get(i).ok_or("--check needs a name")?.clone());
+                index += 1;
+                check = Some(argv.get(index).ok_or("--check needs a name")?.clone());
             }
-            other if other.starts_with('-') => return Err(format!("unknown option '{other}'")),
-            other => {
-                if artifact_path.is_some() {
-                    return Err(format!("unexpected argument '{other}'"));
+            option if option.starts_with('-') => {
+                return Err(format!("unknown option '{option}'"));
+            }
+            path => {
+                if manifest_path.is_some() {
+                    return Err(format!("unexpected argument '{path}'"));
                 }
-                artifact_path = Some(other.to_string());
+                manifest_path = Some(PathBuf::from(path));
             }
         }
-        i += 1;
+        index += 1;
     }
-
     Ok(Args {
-        artifact_path: artifact_path.ok_or("missing <engine-abi.so>")?,
+        manifest_path: manifest_path.ok_or("missing <typio-engine-*.toml>")?,
         package,
         only,
         check,
     })
 }
 
-fn run(args: &Args) -> Result<Summary, String> {
-    let artifact_path = Path::new(&args.artifact_path);
-    let pkg = args
+fn run(args: Args) -> Result<Summary, String> {
+    let mut report = vet_manifest(&args.manifest_path, args.package.as_deref())
+        .map_err(|error| error.to_string())?;
+    filter_results(&mut report, args.only.as_deref(), args.check.as_deref())?;
+
+    let package = args
         .package
-        .clone()
-        .or_else(|| resource::discover_package(artifact_path));
+        .or_else(|| resource::discover_package(&args.manifest_path));
+    println!(
+        "typio-vet: {} (name={}, type={})",
+        report.manifest_path.display(),
+        report.manifest.name,
+        report.manifest.engine_type
+    );
+    println!(
+        "           package: {}",
+        package
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<not found> (resource checks limited)".to_string())
+    );
 
-    unsafe {
-        let c_path = CString::new(args.artifact_path.as_str()).map_err(|_| "path contains NUL")?;
-        let handle = libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL);
-        if handle.is_null() {
-            let err = CStr::from_ptr(libc::dlerror()).to_string_lossy();
-            return Err(format!("failed to load {}: {err}", args.artifact_path));
-        }
-
-        let get_info = dlsym::<unsafe extern "C" fn() -> *const TypioEngineInfo>(
-            handle,
-            b"typio_engine_get_info\0",
-        )
-        .ok_or("missing export 'typio_engine_get_info'")?;
-
-        let info = get_info();
-        if info.is_null() || (*info).name.is_null() {
-            return Err("TypioEngineInfo is null or malformed".to_string());
-        }
-        let name = CStr::from_ptr((*info).name).to_string_lossy();
-        let kind = (*info).type_;
-
-        println!(
-            "typio-vet: {} (name={name}, type={kind:?})",
-            args.artifact_path
-        );
-        if let Some(p) = &pkg {
-            println!("           package: {}", p.display());
-        } else {
-            println!("           package: <not found> (resource asset checks limited)");
-        }
-
-        let mut results = match kind {
-            TypioEngineType::TypioEngineTypeKeyboard => {
-                let create = dlsym::<unsafe extern "C" fn() -> *mut TypioKeyboardEngine>(
-                    handle,
-                    b"typio_keyboard_engine_create\0",
-                )
-                .ok_or("missing export 'typio_keyboard_engine_create'")?;
-                let mut r = scenario::keyboard_checks(create);
-                r.extend(resource::resource_checks(info, pkg.as_deref()));
-                r
-            }
-            TypioEngineType::TypioEngineTypeVoice => {
-                let create = dlsym::<unsafe extern "C" fn() -> *mut TypioVoiceEngine>(
-                    handle,
-                    b"typio_voice_engine_create\0",
-                )
-                .ok_or("missing export 'typio_voice_engine_create'")?;
-                let mut r = scenario::voice_checks(create);
-                r.extend(resource::resource_checks(info, pkg.as_deref()));
-                r
-            }
-            other => return Err(format!("unsupported engine type {other:?}")),
-        };
-
-        if let Some(cats) = &args.only {
-            results.retain(|r| cats.contains(&r.category));
-        }
-        if let Some(name) = &args.check {
-            results.retain(|r| r.name == name);
-            if results.is_empty() {
-                return Err(format!("no check named '{name}'"));
-            }
-        }
-
-        let summary = Summary::of(&results);
-        report(&results, summary);
-        Ok(summary)
-    }
+    let summary = report.summary();
+    report_results(&report.results, summary);
+    Ok(summary)
 }
 
-unsafe fn dlsym<T>(handle: *mut c_void, name: &[u8]) -> Option<T> {
-    let sym = libc::dlsym(handle, name.as_ptr() as *const i8);
-    if sym.is_null() {
-        return None;
+fn filter_results(
+    report: &mut VetReport,
+    only: Option<&[CheckCategory]>,
+    check: Option<&str>,
+) -> Result<(), String> {
+    if let Some(categories) = only {
+        report
+            .results
+            .retain(|result| categories.contains(&result.category));
     }
-    Some(std::mem::transmute_copy(&sym))
+    if let Some(name) = check {
+        report.results.retain(|result| result.name == name);
+        if report.results.is_empty() {
+            return Err(format!("no check named '{name}'"));
+        }
+    }
+    Ok(())
 }
 
-fn report(results: &[CheckResult], summary: Summary) {
+fn report_results(results: &[CheckResult], summary: Summary) {
     let width = results
         .iter()
-        .map(|r| r.name.len())
+        .map(|result| result.name.len())
         .max()
         .unwrap_or(20)
         .max(12);
-
-    for cat in [
-        CheckCategory::Abi,
+    for category in [
+        CheckCategory::Protocol,
         CheckCategory::Behavior,
         CheckCategory::Resource,
     ] {
-        let group: Vec<&CheckResult> = results.iter().filter(|r| r.category == cat).collect();
+        let group = results
+            .iter()
+            .filter(|result| result.category == category)
+            .collect::<Vec<_>>();
         if group.is_empty() {
             continue;
         }
-        println!("\n  {}", cat.label());
-        for r in group {
-            let dots = ".".repeat((width + 4).saturating_sub(r.name.len()));
-            println!("    {} {} {}", r.name, dots, marker(r.status));
-            if !r.detail.is_empty() {
-                println!("        -> {}", r.detail);
+        println!("\n  {}", category.label());
+        for result in group {
+            let dots = ".".repeat((width + 4).saturating_sub(result.name.len()));
+            println!("    {} {} {}", result.name, dots, marker(result.status));
+            if !result.detail.is_empty() {
+                println!("        -> {}", result.detail);
             }
         }
     }
-
     println!(
         "\n{} passed, {} warnings, {} failed",
         summary.passed, summary.warned, summary.failed

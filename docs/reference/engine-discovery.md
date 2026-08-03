@@ -50,14 +50,15 @@
 | Manifest value | `protocol = "typio-engine-protocol"` |
 | Transport | Private fd 3 channel passed to the engine process |
 | Maximum frame payload | 8 MiB |
-| Cold-start handshake timeout | 60 seconds |
+| EngineHello / HostHello handshake timeout | 5 seconds |
 | Key and availability timeout | 100 milliseconds |
-| Init, config-reload, and command-invoke timeout | 5 seconds |
+| Initialization timeout | 60 seconds |
+| Config-reload and command-invoke timeout | 5 seconds |
 | Voice `process-audio` timeout | 120 seconds |
 | Other request timeout | 500 milliseconds |
 | Standard output | Logs only |
 | Standard error | Logs only |
-| Host registration | `typio_registry_register_engine_process` |
+| Host registration | Typed `EngineRegistry` process backend |
 | Engine process model | One executable per engine package |
 | Installed executable location | `<prefix>/<libexecdir>/typio/engines/` |
 | Installed manifest location | `<prefix>/<datadir>/typio/engines/` |

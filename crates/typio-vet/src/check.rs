@@ -5,11 +5,11 @@ use std::fmt;
 /// Which dimension of the engine contract a check belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckCategory {
-    /// Structural / ABI surface: `TypioEngineInfo`, struct sizes, vtables.
-    Abi,
-    /// Runtime behavior observed by driving the engine through the mock host.
+    /// Frame, handshake, and typed message conformance.
+    Protocol,
+    /// Runtime behavior observed by driving the isolated engine process.
     Behavior,
-    /// Packaged assets that ship alongside the native engine artifact (icons,
+    /// Packaged assets that ship alongside the engine process (icons,
     /// etc.).
     Resource,
 }
@@ -17,7 +17,7 @@ pub enum CheckCategory {
 impl CheckCategory {
     pub fn label(self) -> &'static str {
         match self {
-            CheckCategory::Abi => "ABI",
+            CheckCategory::Protocol => "Protocol",
             CheckCategory::Behavior => "Behavior",
             CheckCategory::Resource => "Resource",
         }

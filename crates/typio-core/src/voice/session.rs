@@ -1,577 +1,217 @@
-//! Voice session — state machine, threading, audio buffering.
+//! Rust-native voice session state machine.
 //!
-//! Replaces `voice_session.c`.  All business logic is now Rust-native;
-//! only the backend inference calls cross the FFI boundary.
+//! Audio capture is injected through [`AudioSource`]. The session owns its
+//! buffer and inference lifecycle, while a process-engine handle is supplied
+//! at recording start so no registry pointer crosses a thread boundary.
 
 use crate::core::engine::backend::process::VoiceProcessHandle;
-use crate::instance::TypioInstance;
-use crate::types::TypioVoiceSession;
 use crate::voice::audio::{INITIAL_BUFFER_SAMPLES, MAX_BUFFER_SAMPLES, prepare_audio};
-use crate::voice::types::{
-    TypioVoiceSessionEvent, TypioVoiceSessionEventCallback, TypioVoiceSessionEventType, VoiceState,
-};
+use crate::voice::types::{VoiceEvent, VoiceState};
 use nix::sys::eventfd::{EfdFlags, EventFd};
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
-/// Shared voice session state. Thread-safe via interior mutability.
+/// Frontend-provided microphone capture.
+pub trait AudioSource: Send {
+    /// Start capture and push decoded 16 kHz mono samples into `sink`.
+    fn start(&mut self, sink: AudioSink) -> bool;
+    /// Stop capture and wait until no producer can use the sink any longer.
+    fn stop(&mut self);
+}
+
+/// Cloneable, thread-safe destination handed to an [`AudioSource`].
+#[derive(Clone)]
+pub struct AudioSink {
+    session: Weak<VoiceSession>,
+}
+
+impl AudioSink {
+    /// Append samples while the session is recording.
+    pub fn feed(&self, samples: &[f32]) {
+        if let Some(session) = self.session.upgrade() {
+            session.feed_audio(samples);
+        }
+    }
+}
+
+/// Shared voice recording and inference state.
 pub struct VoiceSession {
-    pub(crate) _instance: AtomicPtr<TypioInstance>,
-    pub(crate) audio_source: AtomicPtr<TypioAudioSource>,
-    pub(crate) state: Mutex<VoiceState>,
-    pub(crate) reload_pending: AtomicBool,
-    pub(crate) audio_truncated: AtomicBool,
-    pub(crate) audio_buffer: Mutex<Vec<f32>>,
-    pub(crate) inference_target: Mutex<Option<VoiceProcessHandle>>,
-    pub(crate) infer_handle: Mutex<Option<thread::JoinHandle<Option<String>>>>,
-    pub(crate) event_fd: Mutex<Option<nix::sys::eventfd::EventFd>>,
-    pub(crate) _result: Mutex<Option<String>>,
-    pub(crate) callback: Mutex<Option<TypioVoiceSessionEventCallback>>,
-    pub(crate) callback_user_data: AtomicPtr<c_void>,
-    pub(crate) auto_start_on_load: AtomicBool,
+    source: Mutex<Box<dyn AudioSource>>,
+    state: Mutex<VoiceState>,
+    audio_truncated: AtomicBool,
+    audio_buffer: Mutex<Vec<f32>>,
+    inference_target: Mutex<Option<VoiceProcessHandle>>,
+    infer_handle: Mutex<Option<thread::JoinHandle<Option<String>>>>,
+    event_fd: Arc<EventFd>,
+    events: Mutex<VecDeque<VoiceEvent>>,
 }
 
-// SAFETY: VoiceSession is designed to be shared across threads.
-// The raw pointers inside are only accessed under Mutex or AtomicPtr.
-unsafe impl Send for VoiceSession {}
-unsafe impl Sync for VoiceSession {}
-
-/// Audio source abstraction (injected by frontend).
-#[repr(C)]
-pub struct TypioAudioSource {
-    /// Operation vtable.
-    pub ops: *const TypioAudioSourceOps,
-}
-
-/// Audio source operation vtable.
-#[repr(C)]
-pub struct TypioAudioSourceOps {
-    /// Start capturing audio.
-    pub start: Option<extern "C" fn(*mut TypioAudioSource) -> bool>,
-    /// Stop capturing audio.
-    pub stop: Option<extern "C" fn(*mut TypioAudioSource)>,
-    /// Free the audio source.
-    pub free: Option<extern "C" fn(*mut TypioAudioSource)>,
-    /// Return a pollable file descriptor, or -1.
-    pub get_fd: Option<extern "C" fn(*mut TypioAudioSource) -> i32>,
-    /// Dispatch pending audio data.
-    pub dispatch: Option<extern "C" fn(*mut TypioAudioSource)>,
-}
-
-/* ── C ABI ─────────────────────────────────────────────────────────────── */
-
-/// Create a new voice session associated with the given instance.
-///
-/// Returns a pointer that must be freed with `typio_voice_session_free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_new(instance: *mut TypioInstance) -> *mut TypioVoiceSession {
-    if instance.is_null() {
-        return std::ptr::null_mut();
+impl VoiceSession {
+    /// Create a pollable session around a frontend audio source.
+    pub fn new(source: Box<dyn AudioSource>) -> std::io::Result<Arc<Self>> {
+        let event_fd =
+            EventFd::from_value_and_flags(0, EfdFlags::EFD_CLOEXEC | EfdFlags::EFD_NONBLOCK)
+                .map_err(std::io::Error::from)?;
+        Ok(Arc::new(Self {
+            source: Mutex::new(source),
+            state: Mutex::new(VoiceState::Idle),
+            audio_truncated: AtomicBool::new(false),
+            audio_buffer: Mutex::new(Vec::with_capacity(INITIAL_BUFFER_SAMPLES)),
+            inference_target: Mutex::new(None),
+            infer_handle: Mutex::new(None),
+            event_fd: Arc::new(event_fd),
+            events: Mutex::new(VecDeque::new()),
+        }))
     }
-    let event_fd =
-        match EventFd::from_value_and_flags(0, EfdFlags::EFD_CLOEXEC | EfdFlags::EFD_NONBLOCK) {
-            Ok(efd) => efd,
-            Err(_) => {
-                log::error!("Failed to create eventfd");
-                return std::ptr::null_mut();
-            }
+
+    /// Begin capture using an owned snapshot of the active voice worker.
+    pub fn start(self: &Arc<Self>, target: VoiceProcessHandle) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if *state != VoiceState::Idle {
+            return false;
+        }
+        self.audio_buffer.lock().unwrap().clear();
+        self.audio_truncated.store(false, Ordering::Release);
+        *self.inference_target.lock().unwrap() = Some(target);
+        *state = VoiceState::Recording;
+
+        let sink = AudioSink {
+            session: Arc::downgrade(self),
         };
-
-    let session = Arc::new(VoiceSession {
-        _instance: AtomicPtr::new(instance),
-        audio_source: AtomicPtr::new(std::ptr::null_mut()),
-        state: Mutex::new(VoiceState::Idle),
-        reload_pending: AtomicBool::new(false),
-        audio_truncated: AtomicBool::new(false),
-        audio_buffer: Mutex::new(Vec::with_capacity(INITIAL_BUFFER_SAMPLES)),
-        inference_target: Mutex::new(None),
-        infer_handle: Mutex::new(None),
-        event_fd: Mutex::new(Some(event_fd)),
-        _result: Mutex::new(None),
-        callback: Mutex::new(None),
-        callback_user_data: AtomicPtr::new(std::ptr::null_mut()),
-        auto_start_on_load: AtomicBool::new(false),
-    });
-
-    let raw = Arc::into_raw(session) as *mut TypioVoiceSession;
-    unsafe {
-        (*instance).voice_session = crate::wrappers::VoiceSessionPtr(raw);
-    }
-    raw
-}
-
-/// Free a voice session and all associated resources.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_free(session: *mut TypioVoiceSession) {
-    if session.is_null() {
-        return;
-    }
-    let session = unsafe { Arc::from_raw(session as *const VoiceSession) };
-    let instance = session._instance.load(Ordering::SeqCst);
-    if !instance.is_null()
-        && unsafe { (*instance).voice_session.0 } == session.as_ref() as *const _ as *mut _
-    {
-        unsafe {
-            (*instance).voice_session = crate::wrappers::VoiceSessionPtr(std::ptr::null_mut());
+        if !self.source.lock().unwrap().start(sink) {
+            *self.inference_target.lock().unwrap() = None;
+            *state = VoiceState::Idle;
+            return false;
         }
-    }
-    // Stop audio source.
-    let source = session.audio_source.load(Ordering::SeqCst);
-    if !source.is_null() {
-        unsafe {
-            let ops = &*(*source).ops;
-            if let Some(stop_fn) = ops.stop {
-                stop_fn(source);
-            }
-            if let Some(free_fn) = ops.free {
-                free_fn(source);
-            }
-        }
-    }
-    // Wait for inference thread if running.
-    let mut infer = session.infer_handle.lock().unwrap();
-    if let Some(handle) = infer.take() {
-        let _ = handle.join();
-    }
-    let _ = session.event_fd.lock().unwrap().take();
-}
-
-/// Attach an audio source to the voice session.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_set_audio_source(
-    session: *mut TypioVoiceSession,
-    source: *mut TypioAudioSource,
-) {
-    if session.is_null() {
-        return;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    let old = session.audio_source.swap(source, Ordering::SeqCst);
-    if old.is_null() || old == source {
-        return;
-    }
-    unsafe {
-        let ops = &*(*old).ops;
-        if let Some(stop_fn) = ops.stop {
-            stop_fn(old);
-        }
-        if let Some(free_fn) = ops.free {
-            free_fn(old);
-        }
-    }
-}
-
-/// Set the event callback and user data for voice session notifications.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_set_callback(
-    session: *mut TypioVoiceSession,
-    callback: TypioVoiceSessionEventCallback,
-    user_data: *mut c_void,
-) {
-    if session.is_null() {
-        return;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    *session.callback.lock().unwrap() = Some(callback);
-    session
-        .callback_user_data
-        .store(user_data, Ordering::SeqCst);
-}
-
-/// Start voice recording.
-///
-/// Returns true if recording began successfully.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_start(session: *mut TypioVoiceSession) -> bool {
-    if session.is_null() {
-        return false;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-
-    let mut state = session.state.lock().unwrap();
-
-    if *state == VoiceState::Loading {
-        return true;
-    }
-
-    if *state != VoiceState::Idle {
-        return false;
-    }
-
-    let source = session.audio_source.load(Ordering::SeqCst);
-    if source.is_null() {
-        return false;
-    }
-
-    let Some(target) = snapshot_voice_target(session) else {
-        return false;
-    };
-
-    let started = unsafe {
-        let ops = &*(*source).ops;
-        if let Some(start_fn) = ops.start {
-            start_fn(source)
-        } else {
-            false
-        }
-    };
-
-    if !started {
-        return false;
-    }
-
-    session.audio_buffer.lock().unwrap().clear();
-    session.audio_truncated.store(false, Ordering::SeqCst);
-    *session.inference_target.lock().unwrap() = Some(target);
-    *state = VoiceState::Recording;
-    drop(state);
-    session.fire_state_change(VoiceState::Recording);
-    true
-}
-
-/// Stop voice recording and launch inference.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_stop(session: *mut TypioVoiceSession) {
-    if session.is_null() {
-        return;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-
-    let mut state = session.state.lock().unwrap();
-
-    if *state == VoiceState::Loading {
-        session.auto_start_on_load.store(false, Ordering::SeqCst);
-        *state = VoiceState::Idle;
         drop(state);
-        session.fire_state_change(VoiceState::Idle);
-        return;
+        self.push_event(VoiceEvent::StateChange(VoiceState::Recording));
+        true
     }
 
-    if *state != VoiceState::Recording {
-        drop(state);
-        return;
-    }
-
-    *state = VoiceState::Processing;
-    let sample_count = session.audio_buffer.lock().unwrap().len();
-    let target = session.inference_target.lock().unwrap().take();
-    let audio_truncated = session.audio_truncated.swap(false, Ordering::SeqCst);
-    drop(state);
-
-    let source = session.audio_source.load(Ordering::SeqCst);
-    if !source.is_null() {
-        unsafe {
-            let ops = &*(*source).ops;
-            if let Some(stop_fn) = ops.stop {
-                stop_fn(source);
-            }
-        }
-    }
-
-    log::info!(
-        "Voice recording stopped, starting inference ({} samples)",
-        sample_count
-    );
-    if audio_truncated {
-        log::warn!("Voice recording exceeded 60 seconds; trailing audio was discarded");
-    }
-    session.fire_state_change(VoiceState::Processing);
-
-    // Launch inference thread.
-    let session_arc = unsafe { Arc::from_raw(session as *const VoiceSession) };
-    // Leak the Arc back so the C side keeps ownership; the thread clones its own Arc.
-    let _ = Arc::into_raw(session_arc.clone());
-
-    let handle = thread::spawn(move || {
-        let mut audio = {
-            let mut buf = session_arc.audio_buffer.lock().unwrap();
-            std::mem::take(&mut *buf)
-        };
-        let audio = prepare_audio(&mut audio);
-        let result = if audio.is_empty() {
-            log::warn!("Voice inference: no audio captured or usable");
-            None
-        } else {
-            run_voice_inference(target, audio)
-        };
-
-        // Wake the event loop so dispatch() joins this thread and delivers the
-        // result. Without this signal the session stays stuck in Processing and
-        // the indicator never clears.
-        let fd = session_arc
-            .event_fd
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|efd| efd.as_raw_fd())
-            .unwrap_or(-1);
-        if fd >= 0 {
-            let val: u64 = 1;
-            unsafe {
-                let _ = libc::write(fd, &val as *const _ as *const libc::c_void, 8);
-            }
-        }
-
-        result
-    });
-
-    *session.infer_handle.lock().unwrap() = Some(handle);
-}
-
-/// Inference body extracted so the closure body stays small and readable.
-fn snapshot_voice_target(session: &VoiceSession) -> Option<VoiceProcessHandle> {
-    let instance = session._instance.load(Ordering::SeqCst);
-    if instance.is_null() {
-        return None;
-    }
-    let registry = unsafe { (*instance).registry.0 };
-    if registry.is_null() {
-        return None;
-    }
-    unsafe { (*registry).inner.snapshot_active_voice() }
-}
-
-fn run_voice_inference(target: Option<VoiceProcessHandle>, audio: Vec<f32>) -> Option<String> {
-    let target = target?;
-    log::info!("Voice inference: processing {} samples", audio.len());
-    target.process_audio(&audio)
-}
-
-/// Return the eventfd for polling, or -1 if unavailable.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_get_fd(session: *mut TypioVoiceSession) -> i32 {
-    if session.is_null() {
-        return -1;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    session
-        .event_fd
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|efd| efd.as_raw_fd())
-        .unwrap_or(-1)
-}
-
-/// Dispatch pending voice session events (inference completion, async load).
-///
-/// Must be called from the event loop when the session fd becomes readable.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_dispatch(session: *mut TypioVoiceSession) {
-    if session.is_null() {
-        return;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-
-    // Read and clear eventfd.
-    let mut buf = [0u8; 8];
-    let event_fd = session
-        .event_fd
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|efd| efd.as_raw_fd())
-        .unwrap_or(-1);
-    if event_fd >= 0 {
-        unsafe {
-            let _ = libc::read(event_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
-        }
-    }
-
-    // Handle async model load completion.
-    // Legacy direct voice-engine path removed; no engine is loaded locally.
-    {
-        let state = session.state.lock().unwrap();
-        if *state == VoiceState::Loading {
-            session.auto_start_on_load.store(false, Ordering::SeqCst);
-            drop(state);
-
-            *session.state.lock().unwrap() = VoiceState::Idle;
-            let event = TypioVoiceSessionEvent {
-                type_: TypioVoiceSessionEventType::Error,
-                state: VoiceState::Idle,
-                text: std::ptr::null_mut(),
-                error: c"Voice model failed to load".as_ptr(),
-            };
-            session.fire_event(event);
+    /// Stop capture and start inference on a worker thread.
+    pub fn stop(&self) {
+        let mut state = self.state.lock().unwrap();
+        if *state != VoiceState::Recording {
             return;
         }
-    }
-
-    // Join inference thread.
-    let text = {
-        let mut infer = session.infer_handle.lock().unwrap();
-        if let Some(handle) = infer.take() {
-            handle.join().unwrap_or_default()
-        } else {
-            None
-        }
-    };
-
-    let mut state = session.state.lock().unwrap();
-    *state = VoiceState::Idle;
-    let reload_pending = session.reload_pending.load(Ordering::SeqCst);
-    session.reload_pending.store(false, Ordering::SeqCst);
-    drop(state);
-
-    if reload_pending {
-        do_reload_engine(session);
-    }
-
-    if let Some(text) = text.filter(|t| !t.is_empty()) {
-        let filtered = filter_tags(&text);
-        let trimmed = filtered.trim().to_string();
-        if !trimmed.is_empty() {
-            log::debug!("Voice inference completed ({} UTF-8 bytes)", trimmed.len());
-        }
-        let c_text = CString::new(trimmed).unwrap_or_else(|_| CString::new("").unwrap());
-        let event = TypioVoiceSessionEvent {
-            type_: TypioVoiceSessionEventType::Result,
-            state: VoiceState::Idle,
-            text: c_text.into_raw(),
-            error: std::ptr::null(),
-        };
-        session.fire_event(event);
-        session.fire_state_change(VoiceState::Idle);
-    } else {
-        session.fire_state_change(VoiceState::Idle);
-    }
-}
-
-/// Return true if a voice engine is active, ready, and an audio source is attached.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_is_available(session: *const TypioVoiceSession) -> bool {
-    if session.is_null() {
-        return false;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    let instance = session._instance.load(Ordering::SeqCst);
-    if instance.is_null() {
-        return false;
-    }
-    let registry = unsafe { (*instance).registry.0 };
-    if registry.is_null() {
-        return false;
-    }
-    let has_source = !session.audio_source.load(Ordering::SeqCst).is_null();
-    has_source && unsafe { (*registry).inner.recovering_active_voice_is_ready() }
-}
-
-/// Return a static error message explaining why voice is unavailable.
-///
-/// Returns an empty string if voice is available. Caller must NOT free the
-/// returned pointer.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_get_unavail_reason(
-    session: *const TypioVoiceSession,
-) -> *const c_char {
-    if session.is_null() {
-        return c"voice session not created".as_ptr();
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    let instance = session._instance.load(Ordering::SeqCst);
-    if instance.is_null() {
-        return c"no instance".as_ptr();
-    }
-    let registry = unsafe { (*instance).registry.0 };
-    if registry.is_null() {
-        return c"no registry".as_ptr();
-    }
-    if session.audio_source.load(Ordering::SeqCst).is_null() {
-        return c"no audio source".as_ptr();
-    }
-    if !unsafe { (*registry).inner.recovering_active_voice_is_ready() } {
-        return c"voice engine not ready (model not loaded)".as_ptr();
-    }
-    c"".as_ptr()
-}
-
-fn do_reload_engine(session: &VoiceSession) {
-    let instance = session._instance.load(Ordering::SeqCst);
-    if instance.is_null() {
-        return;
-    }
-    let registry = unsafe { (*instance).registry.0 };
-    if registry.is_null() {
-        return;
-    }
-    unsafe {
-        let r = (*registry)
-            .inner
-            .with_active_voice_mut(|v| v.reload_config());
-        log::info!("Voice engine reload result: {:?}", r);
-    }
-}
-
-/// Request a reload of the active voice engine config.
-///
-/// If the session is busy, the reload is deferred until idle.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_reload_engine(session: *mut TypioVoiceSession) {
-    if session.is_null() {
-        return;
-    }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    let state = session.state.lock().unwrap();
-    if *state != VoiceState::Idle {
-        session.reload_pending.store(true, Ordering::SeqCst);
+        *state = VoiceState::Processing;
         drop(state);
-        log::info!("Voice reload deferred: session busy");
-        return;
+
+        self.source.lock().unwrap().stop();
+        let mut audio = std::mem::take(&mut *self.audio_buffer.lock().unwrap());
+        let target = self.inference_target.lock().unwrap().take();
+        let sample_count = audio.len();
+        let truncated = self.audio_truncated.swap(false, Ordering::AcqRel);
+        log::info!(
+            "Voice recording stopped, starting inference ({} samples)",
+            sample_count
+        );
+        if truncated {
+            log::warn!("Voice recording exceeded 60 seconds; trailing audio was discarded");
+        }
+        self.push_event(VoiceEvent::StateChange(VoiceState::Processing));
+
+        let event_fd = self.event_fd.clone();
+        let handle = thread::spawn(move || {
+            let audio = prepare_audio(&mut audio);
+            let result = if audio.is_empty() {
+                log::warn!("Voice inference: no audio captured or usable");
+                None
+            } else {
+                target.and_then(|worker| {
+                    log::info!("Voice inference: processing {} samples", audio.len());
+                    worker.process_audio(&audio)
+                })
+            };
+            let value: u64 = 1;
+            unsafe {
+                let _ = libc::write(
+                    event_fd.as_raw_fd(),
+                    &value as *const _ as *const libc::c_void,
+                    std::mem::size_of::<u64>(),
+                );
+            }
+            result
+        });
+        *self.infer_handle.lock().unwrap() = Some(handle);
     }
-    drop(state);
-    do_reload_engine(session);
+
+    /// Pollable eventfd which signals inference completion.
+    pub fn fd(&self) -> i32 {
+        self.event_fd.as_raw_fd()
+    }
+
+    /// Consume a completion signal, join inference, and enqueue owned events.
+    pub fn dispatch(&self) {
+        let mut value = 0u64;
+        unsafe {
+            let _ = libc::read(
+                self.event_fd.as_raw_fd(),
+                &mut value as *mut _ as *mut libc::c_void,
+                std::mem::size_of::<u64>(),
+            );
+        }
+        let result =
+            self.infer_handle
+                .lock()
+                .unwrap()
+                .take()
+                .and_then(|handle| match handle.join() {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.push_event(VoiceEvent::Error(
+                            "voice inference thread panicked".into(),
+                        ));
+                        None
+                    }
+                });
+        *self.state.lock().unwrap() = VoiceState::Idle;
+        if let Some(text) = result {
+            let filtered = filter_tags(&text);
+            let trimmed = filtered.trim();
+            if !trimmed.is_empty() {
+                self.push_event(VoiceEvent::Result(trimmed.to_string()));
+            }
+        }
+        self.push_event(VoiceEvent::StateChange(VoiceState::Idle));
+    }
+
+    /// Drain state, result, and error events in production order.
+    pub fn drain_events(&self) -> Vec<VoiceEvent> {
+        self.events.lock().unwrap().drain(..).collect()
+    }
+
+    fn push_event(&self, event: VoiceEvent) {
+        self.events.lock().unwrap().push_back(event);
+    }
+
+    fn feed_audio(&self, samples: &[f32]) {
+        if samples.is_empty() || *self.state.lock().unwrap() != VoiceState::Recording {
+            return;
+        }
+        if append_audio_bounded(&mut self.audio_buffer.lock().unwrap(), samples) {
+            self.audio_truncated.store(true, Ordering::Release);
+        }
+    }
 }
 
-/// Feed audio samples into the session buffer while recording.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_session_feed_audio(
-    session: *mut TypioVoiceSession,
-    samples: *const f32,
-    count: usize,
-) {
-    if session.is_null() || samples.is_null() || count == 0 {
-        return;
+impl Drop for VoiceSession {
+    fn drop(&mut self) {
+        self.source.get_mut().unwrap().stop();
+        if let Some(handle) = self.infer_handle.get_mut().unwrap().take() {
+            let _ = handle.join();
+        }
     }
-    let session = unsafe { &*(session as *const VoiceSession) };
-    let state = session.state.lock().unwrap();
-    if *state != VoiceState::Recording {
-        drop(state);
-        return;
-    }
-    let slice = unsafe { std::slice::from_raw_parts(samples, count) };
-    let mut buf = session.audio_buffer.lock().unwrap();
-    if append_audio_bounded(&mut buf, slice) {
-        session.audio_truncated.store(true, Ordering::SeqCst);
-    }
-    drop(buf);
-    drop(state);
 }
 
-fn append_audio_bounded(buf: &mut Vec<f32>, samples: &[f32]) -> bool {
-    let remaining = MAX_BUFFER_SAMPLES.saturating_sub(buf.len());
+fn append_audio_bounded(buffer: &mut Vec<f32>, samples: &[f32]) -> bool {
+    let remaining = MAX_BUFFER_SAMPLES.saturating_sub(buffer.len());
     let accepted = remaining.min(samples.len());
-    buf.extend_from_slice(&samples[..accepted]);
+    buffer.extend_from_slice(&samples[..accepted]);
     accepted < samples.len()
-}
-
-/// Remove bracketed tags (e.g. `[tag]`) from text in place.
-#[unsafe(no_mangle)]
-pub extern "C" fn typio_voice_filter_tags_inplace(text: *mut c_char) {
-    if text.is_null() {
-        return;
-    }
-    unsafe {
-        let s = CStr::from_ptr(text).to_string_lossy().into_owned();
-        let filtered = filter_tags(&s);
-        let bytes = filtered.as_bytes();
-        let len = bytes.len();
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), text as *mut u8, len);
-        *text.add(len) = 0;
-    }
 }
 
 fn filter_tags(text: &str) -> String {
@@ -589,7 +229,6 @@ fn filter_tags(text: &str) -> String {
                 }
             }
             if closed {
-                // Skip spaces after tag.
                 while chars.peek() == Some(&' ') {
                     chars.next();
                 }
@@ -626,9 +265,9 @@ mod tests {
 
     #[test]
     fn audio_append_is_bounded() {
-        let mut buf = vec![0.0; MAX_BUFFER_SAMPLES - 1];
-        assert!(append_audio_bounded(&mut buf, &[1.0, 2.0]));
-        assert_eq!(buf.len(), MAX_BUFFER_SAMPLES);
-        assert_eq!(buf[MAX_BUFFER_SAMPLES - 1], 1.0);
+        let mut buffer = vec![0.0; MAX_BUFFER_SAMPLES - 1];
+        assert!(append_audio_bounded(&mut buffer, &[1.0, 2.0]));
+        assert_eq!(buffer.len(), MAX_BUFFER_SAMPLES);
+        assert_eq!(buffer[MAX_BUFFER_SAMPLES - 1], 1.0);
     }
 }

@@ -12,8 +12,8 @@ It embeds the workspace `typio-core` crate and provides the platform adapter lay
 the Wayland text-input/input-method v2 client, virtual-keyboard bridge,
 the candidate Panel (CPU-rendered over `wl_shm`; see `docs/adr/0040-cpu-canvas-render-shm-buffers.md`), the UDS control socket,
 the StatusNotifierItem tray, and PipeWire voice capture. It translates
-Wayland events into typio-core abstractions and drives typio-core's callbacks
-back onto the compositor. (The old D-Bus status interface was removed in
+Wayland events into owned typio-core values and applies core output events
+back to the compositor. (The old D-Bus status interface was removed in
 ADR-0008; the tray speaks SNI over D-Bus via zbus when the `systray`
 Cargo feature is enabled.)
 
@@ -25,9 +25,9 @@ paths.
 ## Building
 
 Requires Wayland, xkbcommon, fontconfig/harfbuzz/freetype, PipeWire for voice
-capture, and the optics graphics stack. `typio-core`, `typio-abi`,
-`typio-vet`, `typioctl`, and `typio-settings` are workspace crates in this
-repository.
+capture, and the optics graphics stack. `typio-core`,
+`typio-engine-protocol`, `typio-engine-manifest`, `typio-vet`, `typioctl`,
+and `typio-settings` are workspace crates in this repository.
 
 The host build is Cargo. `flux` is still a native C library, so build the
 sibling flux checkout first until flux has its own Cargo-native library
@@ -88,10 +88,19 @@ journalctl --user -u typio -f
 ```
 
 Engines are discovered from the system engine directory
-`<prefix>/<datadir>/typio/engines`. Build a sibling engine such as
-[compose](../typio-engines/typio-engine-compose) (`cargo build --release`) or
-[rime](../typio-engines/typio-engine-rime) (`meson setup build && meson compile -C build`)
-and install its `typio-engine-*.toml` into that directory. For development
-and testing, pass `--engine-dir DIR` or set `TYPIO_ENGINE_PATH`.
+`<prefix>/<datadir>/typio/engines`. The protocol-native
+[compose](../typio-engines/typio-engine-compose) engine builds with
+`cargo build --release`; install its manifest into that directory. For
+development and testing, pass `--engine-dir DIR` or set `TYPIO_ENGINE_PATH`.
+
+Every engine is an isolated worker process. The daemon gives it a private fd 3
+channel and speaks the typed Typio Engine Protocol; no engine is loaded as a
+shared library and no host or engine C ABI is part of the architecture. TIP,
+the UDS JSON-RPC protocol used by `typioctl` and `typio-settings`, is a separate
+external client interface. See [ADR-0046](docs/adr/0046-engine-protocol-only-runtime.md).
+
+Older C/C++ sibling-engine revisions that link the retired Typio ABI are not
+compatible with this runtime. They must be migrated to self-contained protocol
+workers; the daemon intentionally provides no compatibility shim.
 
 Control it from a separate terminal with the [typioctl](crates/typioctl) client.

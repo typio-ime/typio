@@ -1,70 +1,16 @@
-# Contract layers
+# Retired contract layers
 
-The public headers under `include/typio/` are partitioned by audience and
-stability promise. This file is the authoritative reference for which
-header belongs in which layer and who is allowed to consume it.
+The former installed C header layers (`typio/abi`, `typio/runtime`, and
+`typio/schema`) were removed by
+[ADR-0046](../../../../docs/adr/0046-engine-protocol-only-runtime.md).
 
-| Layer        | Path                       | Audience                  |
-|--------------|----------------------------|---------------------------|
-| `abi/`       | `typio/abi/*.h`            | Engine worker implementations |
-| `schema/`    | `typio/schema/*.h`         | Hosts and engine schema declarations |
-| `runtime/`   | `typio/runtime/*.h`        | Hosts embedding libtypio  |
+The current boundaries are:
 
-Cross-process control surfaces (UDS, D-Bus) are host concerns and live in
-the relevant host repository — see [ADR-0007](../adr/0007-ipc-ownership-host-and-engine-backend-deferred.md).
-
-## Rules
-
-1. Engine runtime implementations consume headers from `typio/abi/`. The
-   convenience umbrella `typio/abi/abi.h` is the recommended single include
-   for native C implementations. A worker that publishes configuration may
-   additionally include `typio/schema/config_schema.h` to declare its static
-   `TypioConfigField` table; it must not include `typio/runtime/` host APIs.
-
-2. Hosts (`typio`, future platform hosts, and the
-   control panel) consume anything from `typio/` and link `libtypio.so`.
-   The convenience umbrella for hosts is `typio/typio.h`, which pulls in
-   the engine ABI plus the runtime layer (`runtime/instance.h`,
-   `runtime/registry.h`, `runtime/voice.h`) and the schema
-   (`schema/config_schema.h`).
-
-3. Cross-references between layers must be **explicit and absolute**:
-   `#include "typio/<layer>/<file>.h"`. Never use a relative form — the
-   path itself is part of the contract.
-
-4. External processes (CLI, control panel, third-party clients) that need
-   to talk to a running host depend on the host's own protocol contract,
-   not on libtypio. They may still link the schema layer (`typio/schema/`)
-   for shared config-key knowledge.
-
-5. Engine discovery is the host's responsibility. The host resolves manifest
-   directories and registers each accepted process backend. Core bakes in no
-   engine paths and `TypioInstanceConfig` has no loader callback.
-
-## Additive growth via `struct_size`
-
-Caller-allocated event payloads such as `TypioKeyEvent` and
-`TypioComposition` carry a `size_t struct_size` first field. Engine metadata
-and vtables are versioned by `typio_engine_abi_version`; they do not use an
-independent size sentinel.
-
-## Memory ownership
-
-A single deallocator family covers everything libtypio returns by value:
-
-| Return shape | Free with |
+| Boundary | Contract |
 |---|---|
-| `char *` | `typio_free_string` |
-| `char **` (with `size_t *count`) | `typio_free_string_array(list, count)` |
-| `TypioEngineInfo *` | `typio_engine_info_free` |
-| `TypioConfig *` | `typio_config_free` |
+| Daemon to engine | Typed Typio Engine Protocol over private fd 3 |
+| Daemon to external client | TIP over a credential-checked Unix socket |
+| Host modules to runtime | Owned Rust APIs inside the workspace |
 
-Strings allocated by the C caller must be released with the matching C
-allocator. Never mix the two — on Windows, libtypio and the host may
-link different CRTs.
-
-The full rule is documented in `typio/abi/string.h`.
-
-## Enforcement
-
-Engine ABI compliance is enforced by code review.
+No allocator, pointer, struct-layout, symbol-version, header, or dynamic-loader
+contract crosses these boundaries.

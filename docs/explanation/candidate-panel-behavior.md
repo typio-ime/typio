@@ -19,7 +19,7 @@ When the Panel is owned by composition, it shows the Candidate Zone:
 
 | Region | Contents | Driven by |
 |---|---|---|
-| **Candidate Zone** | A vertical list of candidates with a muted index label (`1`…`9`, `0`) before each entry. The selected candidate is highlighted. | `TypioComposition.candidates` + `TypioComposition.selected` |
+| **Candidate Zone** | A vertical list of candidates with a muted index label (`1`…`9`, `0`) before each entry. The selected candidate is highlighted. | `Composition.candidates` + `Composition.selected` |
 
 Inline preedit is not rasterized into the Panel. The daemon sends it through
 `zwp_input_method_v2.set_preedit_string`, and the focused application renders
@@ -69,8 +69,8 @@ update is discarded and the state returns to `Hidden`.
 
 ### Visible
 
-The Panel surface is mapped near the caret. Each new composition
-callback repaints the Candidate Zone without re-arming the anchor
+The Panel surface is mapped near the caret. Each new composition output
+repaints the Candidate Zone without re-arming the anchor
 probe when candidate content or selection changes. Preedit-only edits use the
 separate Wayland text path and do not require a Panel repaint. The host marks
 the Panel dirty and the event loop flushes candidate redraws in the current or
@@ -80,12 +80,11 @@ next reactor step.
 
 The Candidate Zone is torn down when any of these happens:
 
-- The engine commits a candidate (`typio_input_context_commit_callback`
-  fires).
+- The engine emits a `COMMIT` output record.
 - The input context loses focus (`focus_out` is applied).
-- The engine resets (`typio_input_context_reset`) — e.g. on a soft
+- The runtime resets the context — e.g. on a soft
   pause or resume-from-suspend hard boundary.
-- A composition callback arrives with no candidates. Inline preedit may remain
+- A composition output arrives with no candidates. Inline preedit may remain
   visible in the focused application.
 
 Tearing the Panel down detaches the wl_buffer so no stale popup shadow
@@ -95,7 +94,7 @@ remains beside the caret.
 
 The host and the engine share responsibility for navigating the
 Candidate Zone. The split is governed by the engine's declared
-**host-managed-selection flags** in `TypioComposition.host_managed_selection`
+**host-managed-selection flags** in `Composition.host_managed_selection`
 (see `candidate_guard.rs`):
 
 | Flag | Keys the host intercepts | Visible effect |
@@ -139,9 +138,13 @@ not. A successful first present retroactively marks the anchor
 trustworthy for any subsequent positioned UI in the same activation.
 
 Reactivation (clicking between two text fields in the same window)
-refreshes the anchor generation: the host re-sends the probe and
-the Candidate Zone waits for a fresh rectangle rather than reusing
-the previous field's position.
+refreshes the anchor generation and invalidates the last-presented candidate
+snapshot. The host re-sends the probe and re-presents non-empty candidates
+even when their contents and sequence number did not change. This is required
+because the compositor may unmap the popup during the focus handoff without
+changing any host-side presentation state. The Candidate Zone therefore uses
+fresh placement instead of silently retaining the previous field's cached
+position or remaining absent until another composition update.
 
 ## What the user sees during stalls
 

@@ -11,8 +11,8 @@ use crate::repeat_timer::Modifiers;
 
 // ── Keysym constants ─────────────────────────────────────────────────────
 //
-// Subset of `libtypio/include/typio/abi/event.h`. Only the keysyms the
-// policy predicates consult are listed here; a full keysym table is not
+// Subset of xkbcommon keysyms. Only the keysyms the policy predicates consult
+// are listed here; a full keysym table is not
 // needed because the rest of the keyboard logic operates on raw u32
 // keysyms from xkbcommon.
 

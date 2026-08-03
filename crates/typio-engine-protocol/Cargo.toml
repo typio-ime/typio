@@ -1,0 +1,10 @@
+[package]
+name = "typio-engine-protocol"
+version = "0.1.0"
+description = "Typed wire contract for isolated Typio engine processes"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

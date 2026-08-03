@@ -8,10 +8,9 @@ use crate::focus_controller::GrabWant;
 
 // ── Keysym / modifier constants ──────────────────────────────────────────
 //
-// Subset of `libtypio/include/typio/abi/event.h` and `.../types.h`. The
-// boundary bridge reasons in the libtypio *ABI* modifier space (the values
-// the engine sees), which is distinct from the host's internal xkb modifier
-// bit layout used by `keyboard_policy`.
+// Subset of the stable keysym and Engine Protocol modifier values. This is
+// distinct from the host's internal xkb modifier bit layout used by
+// `keyboard_policy`.
 
 /// Numeric keysym, matching `xkb_keysym_t` / `TYPIO_KEY_*` constants.
 pub type Keysym = u32;
@@ -21,7 +20,7 @@ pub const KEY_RETURN: Keysym = 0xff0d;
 /// `TYPIO_KEY_KP_Enter`.
 pub const KEY_KP_ENTER: Keysym = 0xff8d;
 
-/// `TYPIO_MOD_CTRL` (matches `libtypio/include/typio/abi/types.h`).
+/// Engine Protocol Ctrl modifier bit.
 pub const MOD_CTRL: u32 = 1 << 1;
 /// `TYPIO_MOD_ALT`.
 pub const MOD_ALT: u32 = 1 << 2;

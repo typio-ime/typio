@@ -33,7 +33,7 @@ pub(super) struct Cli {
 /// Runtime options after CLI parsing and directory resolution.
 ///
 /// Strings are owned (not `&str` or `PathBuf`) because downstream
-/// consumers (libtypio FFI, EngineLoader) need them as `String` anyway;
+/// consumers (typio-core and EngineLoader) need them as `String` anyway;
 /// converting once at parse time keeps the hot paths free of path-to-string
 /// coercions.
 #[derive(Debug, Clone)]

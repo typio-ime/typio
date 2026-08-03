@@ -1,151 +1,45 @@
 # typio-vet
 
-Conformance vetting for native Typio C ABI engine artifacts.
+Black-box conformance testing for manifest-declared Typio engine processes.
 
-`typio-vet` loads a single native C ABI engine artifact into the vet process and
-puts it through three dimensions of the engine contract, reporting a `PASS` /
-`WARN` / `FAIL` verdict per check:
+`typio-vet` reads the same `typio-engine-*.toml` file as the daemon, launches
+the declared executable with a private Engine Protocol channel on fd 3, and
+checks the production boundary. It never loads engine code into the vet process.
 
-| Dimension | What it covers |
-|-----------|----------------|
-| **ABI** | `TypioEngineInfo` fields, vtable completeness |
-| **Behavior** | invariants observed by driving the engine against a mock host |
-| **Resource** | packaged assets that ship beside the native engine artifact — today the freedesktop icon contract |
+| Dimension | Checks |
+|---|---|
+| **Protocol** | required manifest fields, protocol/type, spawn, EngineHello, identity, schema namespace, HostHello |
+| **Behavior** | initialization, availability, keyboard or voice request, clean shutdown |
+| **Resource** | freedesktop icon name, asset presence, and placement |
 
-Only `FAIL` blocks the gate (non-zero exit). `WARN` flags behavior that is
-*legal but suspicious* — for example a keyboard engine that declines a plain
-ASCII key — so a do-nothing engine cannot quietly pass clean.
+Only `FAIL` makes the command exit non-zero. A `WARN` identifies legal but
+suspicious behavior, such as a keyboard declining a plain printable key.
 
-## Quick start
+## Usage
 
 ```bash
 cargo run -p typio-vet --bin typio-vet -- \
-    ../typio-engine-basic/target/debug/libtypio_engine_basic.so
+  ../typio-engines/typio-engine-compose/typio-engine-compose.toml
+
+typio-vet <typio-engine-*.toml> [options]
+
+    --package <dir>    Override the package root for resource checks
+    --only <dims>      Comma-separated: protocol,behavior,resource
+    --check <name>     Run/report one named check
+    --list             List dimensions
+    --help, -h         Show help
 ```
 
-```
-typio-vet: .../libtypio_engine_basic.so (name=basic, type=TypioEngineTypeKeyboard)
-           package: ../typio-engine-basic
-
-  ABI
-    create .................. PASS
-    info_present ............ PASS
-    name .................... PASS
-    type_matches_slot ....... PASS
-    base_vtable ............. PASS
-    keyboard_vtable ......... PASS
-    process_key_present ..... PASS
-
-  Behavior
-    lifecycle ............... PASS
-    printable_key ........... PASS
-    modifier_passthrough .... PASS
-    escape_on_empty ......... PASS
-    focus_churn ............. PASS
-    reset ................... PASS
-    config_reload ........... PASS
-
-  Resource
-    icon_name ............... PASS
-    icon_asset .............. PASS
-
-22 passed, 0 warnings, 0 failed
-```
-
-### Options
-
-```
-typio-vet <engine-abi.so> [options]
-
-    --package <dir>    Package root for resource checks (auto-detected otherwise)
-    --only <dims>      Comma-separated: abi, behavior, resource
-    --check <name>     Run/report only the named check
-    --list             List the dimensions and exit
-    --help, -h         Show usage
-```
+The repository also includes a minimal worker fixture for protocol work:
 
 ```bash
-# ABI + resources only
-typio-vet ./libtypio_engine_rime.so --only abi,resource
-
-# point at a package root explicitly (e.g. when the artifact lives in target/)
-typio-vet ./libtypio_engine_whisper.so --package ../typio-engine-whisper
+cargo build -p typio-engine-protocol --example hello_worker
+typio-vet crates/typio-engine-protocol/examples/typio-engine-hello.toml
 ```
 
-## Using in Rust engine tests
-
-`typio-vet` doubles as a mock host you can link as a dev-dependency. It exports
-the `typio_*` host symbols (`typio_input_context_commit`, the config getters,
-…) so an engine built into the test binary resolves them against the mock and
-records every side effect.
-
-```toml
-[dev-dependencies]
-typio-vet = { path = "crates/typio-vet" }
-```
-
-```rust
-use typio_vet::{key_press, ContextEvent, TestHarness, TypioKeyProcessResult};
-
-#[test]
-fn engine_commits_a() {
-    let mut h = unsafe {
-        TestHarness::new_keyboard(typio_keyboard_engine_create, Default::default())
-    }
-    .expect("init failed");
-
-    let r = unsafe { h.press(&key_press('a')) };
-    assert_eq!(r, TypioKeyProcessResult::TypioKeyCommitted);
-    assert_eq!(h.log.take(), vec![ContextEvent::Commit("a".into())]);
-
-    unsafe { h.destroy() };
-}
-```
-
-See [`examples/demo_engine.rs`](examples/demo_engine.rs) for a complete engine
-plus its tests.
-
-## Checks
-
-### ABI
-
-| Check | Verdict on miss |
-|-------|-----------------|
-| `create` / `info_present` / `base_vtable` | FAIL — engine is unusable |
-| `name` / `type_matches_slot` / `process_key_present` (kbd) / `process_audio_present` (voice) | FAIL |
-| `display_name` / `author` / `language` / `init_present` / `destroy_present` | WARN |
-
-### Behavior (keyboard)
-
-| Check | Contract |
-|-------|----------|
-| `lifecycle` | `init` → `destroy` succeeds |
-| `printable_key` | result code and side effects cohere; a commit emits non-empty text; declining `'a'` is a WARN |
-| `modifier_passthrough` | a lone modifier never commits |
-| `escape_on_empty` | Escape on an empty context never commits |
-| `focus_churn` | `focus_in`→`focus_out`→`focus_in` then still processes a key |
-| `reset` | `reset` clears composition, never commits |
-| `config_reload` | `reload_config` returns OK |
-
-### Behavior (voice)
-
-| Check | Contract |
-|-------|----------|
-| `lifecycle` | `init` → `destroy` succeeds |
-| `is_ready` | reports readiness; "not ready" is a WARN, not a failure |
-| `process_audio_silent` | 1s of silence does not crash; any returned text is valid UTF-8 |
-
-### Resource
-
-| Check | Contract |
-|-------|----------|
-| `icon_name` | `TypioEngineInfo.icon` is a bare freedesktop icon *name*, not a path or filename |
-| `icon_asset` | a matching `<name>.svg` or `<name>-symbolic.svg` exists and is readable under `data/icons/hicolor/**/apps/` (or the bundled `icons/hicolor/**`) |
-| `icon_placement` | a `-symbolic` asset lives under `symbolic/` or `scalable/` (WARN otherwise) |
-
-## Scope
-
-`typio-vet` vets **native C ABI engine artifacts** by loading them in the vet
-process. It is not a host-process manifest/executable vetter, and it is not a
-test harness for hosts, the CLI, or settings; those are tested with ordinary
-`cargo test`.
+The tool shares `typio-engine-manifest` and `typio-engine-protocol` with the
+daemon, including frame limits and typed payload decoding. A worker that passes
+vet is therefore exercised through the same handshake and request forms used in
+production; engine-specific correctness still belongs in the engine's own test
+suite. Vet supplies isolated temporary config, data, and state roots and removes
+them after the worker exits.

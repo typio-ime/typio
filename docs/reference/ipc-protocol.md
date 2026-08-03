@@ -92,7 +92,7 @@ Unknown keys and values outside schema choices or integer ranges are rejected.
 `config.unset` removes the user value and restores the schema default when one
 exists. `source` is `"user"` or `"default"`. For an engine-namespaced key
 (`engines.<name>.<key>`) the daemon also delivers `on_config_change` to the
-owning engine (libtypio ADR-0008).
+owning engine (typio-core ADR-0008).
 
 ### `engine.*` / `keyboard.*` / `voice.*`
 
@@ -137,7 +137,7 @@ the reload.
 | `language.next` | `{}` | `{ active }` |
 | `language.prev` | `{}` | `{ active }` |
 
-`tag` is a [BCP 47](https://www.rfc-editor.org/info/bcp47) language tag (see [Configuration § Language tag format](configuration.md)). The list is the enabled cycle: the `languages.enabled` config key when set, otherwise every engine-declared language in registration order. Activating a language retargets the keyboard and voice slots together (libtypio ADR-0018); the keyboard slot resolves in order — the `languages.<tag>.keyboard` config override (`"none"` forces an empty slot), then the engine last used for that language, then the first engine declaring it in registration order. `language.next` / `language.prev` return invalid-params when fewer than two languages are enabled or declared.
+`tag` is a [BCP 47](https://www.rfc-editor.org/info/bcp47) language tag (see [Configuration § Language tag format](configuration.md)). The list is the enabled cycle: the `languages.enabled` config key when set, otherwise every engine-declared language in registration order. Activating a language retargets the keyboard and voice slots together (typio-core ADR-0018); the keyboard slot resolves in order — the `languages.<tag>.keyboard` config override (`"none"` forces an empty slot), then the engine last used for that language, then the first engine declaring it in registration order. `language.next` / `language.prev` return invalid-params when fewer than two languages are enabled or declared.
 
 ### `daemon.*`
 

@@ -8,8 +8,8 @@
 | Manifest value | `typio-engine-protocol` |
 | Version | `1.0` |
 | Magic | `TYEP` |
-| Header | `typio/abi/engine_protocol.h` |
-| Rust module | `core::engine::backend::engine_protocol` |
+| Rust contract | [`typio-engine-protocol`](../../../typio-engine-protocol/README.md) |
+| Runtime backend | `typio_core::core::engine::backend::ProcessBackend` |
 
 ## Transport
 
@@ -21,7 +21,7 @@
 | Standard input | Closed to engine protocol traffic |
 | Standard output | Logs only |
 | Standard error | Logs only |
-| Host registration | `typio_registry_register_engine_process` |
+| Host registration | `EngineRegistry::register` with `ProcessBackend` |
 
 ## Frame Header
 
@@ -54,7 +54,7 @@
 | Major version mismatch | Transport error |
 | Response request id | Must echo request id |
 
-## Hello Payload
+## EngineHello Payload
 
 ```text
 protocol	1.0
@@ -64,15 +64,30 @@ SCHEMA	<key-hex>	<type>	<default>	<label-hex>	<section-hex>	<min>	<max>	<step>	<
 ```
 
 The first three records are mandatory. `SCHEMA` may occur zero or more times.
-Its fields mirror `TypioConfigField`: type is `0` (string), `1` (int), `2`
-(bool), or `3` (float); string values are hexadecimal UTF-8; options are a
+Schema type is `0` (string), `1` (int), `2` (bool), or `3` (float); string
+values are hexadecimal UTF-8; options are a
 comma-separated list of hexadecimal strings. Numeric defaults and range hints
 are decimal text. Every key must be under `engines.<engine-name>.`.
+
+## HostHello Payload
+
+```text
+protocol	1.0
+engine	<name>
+type	<keyboard|voice>
+config-dir	<hex-encoded UTF-8 path>
+data-dir	<hex-encoded UTF-8 path>
+state-dir	<hex-encoded UTF-8 path>
+```
+
+The path records carry the daemon's exact runtime roots, including command-line
+overrides. Workers use them instead of reconstructing paths from ambient XDG
+variables. Engine-persistent files belong below `<data-dir>/<engine-name>/`.
 
 Discovery starts the executable, reads and validates `EngineHello`, registers
 the complete schema atomically, and then closes the worker without sending
 `HostHello`. Normal activation repeats `EngineHello`, receives `HostHello`,
-and only then constructs the engine and its worker-local `TypioInstance`.
+and only then asks the engine to initialize its own implementation state.
 Workers must therefore keep pre-hello work cheap and must tolerate the host
 closing the channel after a discovery probe.
 

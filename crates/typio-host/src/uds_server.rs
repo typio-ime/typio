@@ -22,14 +22,6 @@
 //! rejected and the offending client is disconnected (matches the C
 //! `TYPIO_UDS_MAX_FRAME`).
 //!
-//! ## What is NOT ported
-//!
-//! The C version's `ipc_bus.c` (301 lines) is the routing/handler layer
-//! that wires UDS requests to TypioInstance/TypioStateController. It is
-//! heavily coupled to libtypio's C ABI and the state-controller machinery
-//! — neither of which the Rust host has integrated yet. Defer until
-//! enough of the daemon is ported to actually serve requests.
-//!
 //! ## Handler model
 //!
 //! The caller installs a closure via [`UdsServer::set_handler`]. The

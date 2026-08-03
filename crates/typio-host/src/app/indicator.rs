@@ -9,15 +9,10 @@
 //! [`App::hide_indicator`] / [`App::request_voice_status_show`] /
 //! [`App::hide_voice_status`].
 
-use std::ffi::CStr;
 use std::time::Instant;
-
-use typio_abi::TypioStatusSalience;
 
 use crate::indicator::{EngineModeSnapshot, IndicatorConfig, LabelSources, Salience};
 use crate::panel_coordinator::{FlushDecision, UiOwner};
-
-use typio::TypioInstance;
 
 #[cfg(feature = "wayland")]
 use crate::voice::VoiceOutcome;
@@ -80,30 +75,24 @@ impl<'a> LabelSources for RegistryLabelSources<'a> {
 }
 
 impl App {
-    /// Read `display.indicator_*` from libtypio's config cache. Returns
+    /// Read `display.indicator_*` from typio-core's config cache. Returns
     /// the default-enabled, default-1500ms config when the instance or
     /// config pointer is unavailable.
     pub(super) fn load_indicator_config(&self) -> IndicatorConfig {
-        let raw = match self.instance.as_ref() {
-            Some(i) => i.as_ref() as *const TypioInstance as *mut TypioInstance,
+        let instance = match self.instance.as_ref() {
+            Some(instance) => instance.borrow(),
             None => return IndicatorConfig::default(),
         };
-        let cfg = typio::instance::typio_instance_get_config(raw);
-        if cfg.is_null() {
+        let Some(config) = instance.config_rust() else {
             return IndicatorConfig::default();
-        }
-        let enabled =
-            typio::config::typio_config_get_bool(cfg, c"display.indicator_enabled".as_ptr(), true);
-        let duration_ms = typio::config::typio_config_get_int(
-            cfg,
-            c"display.indicator_duration_ms".as_ptr(),
-            1500,
-        );
+        };
+        let enabled = config.boolean("display.indicator_enabled", true);
+        let duration_ms = config.integer("display.indicator_duration_ms", 1500);
         IndicatorConfig::from_values(enabled, duration_ms.into())
     }
 
     /// Trigger the indicator's focus-path show (FirstActivate). Reads the
-    /// live registry and cached mode from libtypio; applies the salience
+    /// live registry and cached mode from typio-core; applies the salience
     /// gate + acknowledged-recency gate.
     #[cfg(feature = "wayland")]
     pub(super) fn trigger_indicator_focus(&mut self) {
@@ -133,7 +122,7 @@ impl App {
     fn trigger_indicator_show(&mut self, path: IndicatorPath) {
         let now = Instant::now();
 
-        // Read the current mode from libtypio's cache. The mode-changed
+        // Read the current mode from typio-core's cache. The mode-changed
         // callback stores the fresh mode in `last_mode` before firing, so
         // by the time StateRefresh delivers us here, the data is current.
         // This covers rime's schema/mode switches: the engine reports its
@@ -148,11 +137,14 @@ impl App {
                 tracing::debug!(target: "typio.indicator", "no instance, skipping show");
                 return;
             };
+            let instance = instance.borrow();
             let Some(registry) = instance.registry_rust() else {
                 tracing::debug!(target: "typio.indicator", "no registry, skipping show");
                 return;
             };
-            let sources = RegistryLabelSources { registry };
+            let sources = RegistryLabelSources {
+                registry: &registry,
+            };
             let Some(indicator) = self.indicator.as_mut() else {
                 tracing::debug!(
                     target: "typio.indicator",
@@ -162,7 +154,7 @@ impl App {
             };
             let cfg = self.indicator_config;
 
-            // Build the mode snapshot from the libtypio-cached mode. The
+            // Build the mode snapshot from the typio-core-cached mode. The
             // snapshot always exists when we have a valid mode pointer,
             // even if `display_label` is None — the salience gate still
             // needs to see it.
@@ -198,41 +190,26 @@ impl App {
         }
     }
 
-    /// Read the cached mode's `display_label` from libtypio (e.g. "中",
+    /// Read the cached mode's `display_label` from typio-core (e.g. "中",
     /// "A", "Latin"). Returns `None` when no engine has reported a mode
     /// yet, or when the mode has no display label.
     fn read_mode_display_label(&self) -> Option<String> {
-        let raw = self.instance.as_ref()?;
-        let raw = raw.as_ref() as *const TypioInstance as *mut TypioInstance;
-        let mode_ptr = typio::instance::typio_instance_get_last_keyboard_mode(raw);
-        if mode_ptr.is_null() {
-            return None;
-        }
-        let mode = unsafe { &*mode_ptr };
-        if mode.display_label.is_null() {
-            None
-        } else {
-            Some(
-                unsafe { CStr::from_ptr(mode.display_label) }
-                    .to_string_lossy()
-                    .into_owned(),
-            )
-        }
+        self.instance
+            .as_ref()?
+            .borrow()
+            .last_keyboard_mode()?
+            .display_label
+            .clone()
     }
 
     /// Read the cached mode's salience. Returns `Quiet` when no mode is set.
     fn read_mode_salience(&self) -> Salience {
-        let raw = match self.instance.as_ref() {
-            Some(i) => i.as_ref() as *const TypioInstance as *mut TypioInstance,
+        let instance = match self.instance.as_ref() {
+            Some(instance) => instance.borrow(),
             None => return Salience::Quiet,
         };
-        let mode_ptr = typio::instance::typio_instance_get_last_keyboard_mode(raw);
-        if mode_ptr.is_null() {
-            return Salience::Quiet;
-        }
-        let mode = unsafe { &*mode_ptr };
-        match mode.salience {
-            TypioStatusSalience::TypioStatusSalienceNotable => Salience::Notable,
+        match instance.last_keyboard_mode().map(|mode| mode.salience) {
+            Some(typio::core::engine::ModeSalience::Notable) => Salience::Notable,
             _ => Salience::Quiet,
         }
     }

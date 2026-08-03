@@ -84,7 +84,11 @@ The edge detection prevents repeated `focus_in`/`focus_out` calls while the stat
 **Reactivate.** A fresh `activate` inside a `done` batch while already `YES` —
 the compositor moved focus to a new field in the same window with no
 intervening `deactivate` — sets `reactivate`. The grab and the in-flight
-composition are preserved; only the panel anchor is refreshed.
+composition are preserved. Transient key ownership is not: releases are
+synthesized for keys forwarded by the old field and its repeat chain is
+stopped. The Panel anchor is refreshed, and any unchanged candidate snapshot
+is re-presented because the compositor may have unmapped the popup during the
+handoff.
 
 ### Actual State
 
@@ -131,7 +135,7 @@ The grab resource state merges the keyboard grab object presence with the virtua
 | `grab == YES`, actual == `BROKEN` | `destroy_grab`, `create_grab`, `scrub_generation` |
 | `focus_in == true` | `send_focus_in` |
 | `focus_out == true` | `send_focus_out`, `discard_composition`, `clear_preedit`, `commit` |
-| `reactivate == true` | `reactivate` (panel re-anchor) |
+| `reactivate == true` | `reactivate` (key/repeat fence, Panel re-anchor and re-present) |
 
 `discard_composition` abandons the engine's in-flight composition and candidate
 UI when a field loses focus, so a half-typed attempt cannot leak into the next
@@ -150,7 +154,8 @@ field or auto-commit into the one being left. Both defocus paths — soft-pause
 6. `scrub_generation`
 7. `create_grab`
 8. `send_focus_in`
-9. `reactivate` — re-anchor the panel to the new caret
+9. `reactivate` — fence old-field key/repeat state, then re-anchor and
+   re-present the Panel at the new caret
 
 The order matters: the abandoned composition is discarded before focus leaves,
 teardown happens before the grab is recreated, and focus enters after the new

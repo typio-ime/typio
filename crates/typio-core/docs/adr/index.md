@@ -1,15 +1,20 @@
 # Architecture Decision Records
 
-ADRs are append-only records of significant design decisions in `libtypio` — the platform-neutral core library. Once accepted, they are not edited; a new ADR supersedes an old one if a decision changes.
+ADRs are append-only records of significant design decisions in `typio-core` —
+the platform-neutral Rust runtime. Once accepted, they are not edited; a new
+ADR supersedes an old one if a decision changes.
+
+The repository-wide [ADR-0046](../../../../docs/adr/0046-engine-protocol-only-runtime.md)
+supersedes the former public C ABI and plugin-loading decisions recorded here.
 
 Decisions that only apply to downstream components (the Wayland host, the CLI, the settings panel, individual engines) live in those repositories' own ADR sets.
 
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-0001](0001-record-architecture-decisions.md) | Record Architecture Decisions | Accepted |
-| [ADR-0002](0002-c-abi-as-the-only-public-interface.md) | C ABI as the only public interface | Accepted |
-| [ADR-0003](0003-plugin-engine-abi-dual-category.md) | Plugin engine ABI with dual-category (keyboard/voice) slots | Accepted |
-| [ADR-0004](0004-platform-neutral-core-host-loading.md) | Platform-neutral core, host-owned plugin loading, out-of-tree engines | Accepted |
+| [ADR-0002](0002-c-abi-as-the-only-public-interface.md) | C ABI as the only public interface | Superseded by root ADR-0046 |
+| [ADR-0003](0003-plugin-engine-abi-dual-category.md) | Plugin engine ABI with dual-category (keyboard/voice) slots | Superseded by root ADR-0046 |
+| [ADR-0004](0004-platform-neutral-core-host-loading.md) | Platform-neutral core, host-owned plugin loading, out-of-tree engines | Amended by root ADR-0046 |
 | [ADR-0005](0005-internal-engine-backend-abstraction.md) | Internal engine backend abstraction | Accepted |
 | [ADR-0006](0006-composition-state-and-commit-event.md) | Composition as state, commit as event | Accepted |
 | [ADR-0007](0007-ipc-ownership-host-and-engine-backend-deferred.md) | IPC ownership — control surface to host, engine backend deferred | Accepted |
@@ -22,7 +27,7 @@ Decisions that only apply to downstream components (the Wayland host, the CLI, t
 | [ADR-0014](0014-engine-availability-axis.md) | Engine availability as a first-class lifecycle axis | Accepted |
 | [ADR-0015](0015-ipc-only-engine-backend.md) | IPC-Only Engine Backend | Superseded by ADR-0017 |
 | [ADR-0016](0016-out-of-process-active-mode-reflection.md) | Out-of-process active-mode reflection | Accepted (terminology amended by ADR-0017) |
-| [ADR-0017](0017-typio-engine-protocol.md) | Typio Engine Protocol and engine-process registration | Accepted |
+| [ADR-0017](0017-typio-engine-protocol.md) | Typio Engine Protocol and engine-process registration | Accepted; amended by root ADR-0046 |
 | [ADR-0018](0018-language-first-switching.md) | Language-first switching — language as the user-facing switch unit | Accepted |
 
 ## Looking for something else?

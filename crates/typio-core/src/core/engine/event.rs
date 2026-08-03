@@ -62,9 +62,8 @@ pub enum KeyState {
 
 /// A single key event delivered to a keyboard engine.
 ///
-/// This is the lossless internal mirror of the public `TypioKeyEvent`
-/// (`include/typio/abi/event.h`): every field the host fills in must round-trip
-/// to the engine unchanged. Do not drop fields here — the host's resolved
+/// Every field the host fills in must round-trip to the worker unchanged. Do
+/// not drop fields here — the host's resolved
 /// `unicode` (dead keys, compose, level shifts) and `is_repeat` signal are not
 /// recoverable from `sym`/`code` alone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

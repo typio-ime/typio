@@ -2,8 +2,6 @@
 
 use crate::core::engine::backend::ProcessBackend;
 use crate::core::engine::{EngineError, EngineType, InstanceHandle, Result};
-use crate::log::log_msg;
-use crate::types::TypioLogLevel;
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -71,6 +69,14 @@ impl EngineRegistry {
             recent_language: None,
             last_engine_per_language: BTreeMap::new(),
             state_dir: None,
+        }
+    }
+
+    /// Set runtime-owned directories advertised to every engine worker.
+    pub(crate) fn set_runtime_dirs(&mut self, config: &str, data: &str, state: &str) {
+        self.instance.set_runtime_dirs(config, data, state);
+        for slot in &mut self.slots {
+            slot.backend.set_runtime_dirs(&self.instance);
         }
     }
 
@@ -200,11 +206,12 @@ impl EngineRegistry {
     /* --------------------------------------------------------------------- */
 
     /// Register a new out-of-process engine backend.
-    pub fn register(&mut self, backend: ProcessBackend) -> Result<()> {
+    pub fn register(&mut self, mut backend: ProcessBackend) -> Result<()> {
         let name = backend.info().name.clone();
         if self.find_index(&name).is_some() {
             return Err(EngineError::AlreadyExists);
         }
+        backend.set_runtime_dirs(&self.instance);
         self.slots.push(EngineSlot {
             name,
             backend,
@@ -640,14 +647,11 @@ impl EngineRegistry {
             (None, EngineType::Voice) => self.deactivate_current_voice(),
         };
         if let Err(e) = result {
-            log_msg(
-                TypioLogLevel::TypioLogWarning,
-                &format!(
-                    "Language '{}': engine '{}' activation failed ({:?}); slot deactivated",
-                    tag,
-                    target.as_deref().unwrap_or("none"),
-                    e
-                ),
+            log::warn!(
+                "Language '{}': engine '{}' activation failed ({:?}); slot deactivated",
+                tag,
+                target.as_deref().unwrap_or("none"),
+                e
             );
             let _ = match engine_type {
                 EngineType::Keyboard => self.deactivate_current_keyboard(),
@@ -677,13 +681,11 @@ impl EngineRegistry {
                 if self.find_index_of_type(o, engine_type).is_some() {
                     return Some(o.to_string());
                 }
-                log_msg(
-                    TypioLogLevel::TypioLogWarning,
-                    &format!(
-                        "Language '{}': configured engine '{}' is not registered; \
-                         falling back to declared languages",
-                        tag, o
-                    ),
+                log::warn!(
+                    "Language '{}': configured engine '{}' is not registered; \
+                     falling back to declared languages",
+                    tag,
+                    o
                 );
             }
         }
@@ -837,10 +839,7 @@ impl EngineRegistry {
             let name = slot.name.clone();
             let r = slot.backend.with_engine(|engine| engine.reload_config());
             if let Some(Err(e)) = r {
-                log_msg(
-                    TypioLogLevel::TypioLogWarning,
-                    &format!("Engine '{}' reload_config failed: {:?}", name, e),
-                );
+                log::warn!("Engine '{}' reload_config failed: {:?}", name, e);
             }
         }
     }
@@ -982,24 +981,11 @@ impl EngineRegistry {
     /// The handle owns shared worker state and therefore remains valid if the
     /// main thread switches or unloads the registry slot while inference is
     /// running.
-    pub(crate) fn snapshot_active_voice(
+    pub fn snapshot_active_voice(
         &mut self,
     ) -> Option<crate::core::engine::backend::process::VoiceProcessHandle> {
         let idx = self.active_voice?;
         self.slots[idx].backend.voice_handle()
-    }
-
-    /// Query keyboard availability after recovering a poisoned worker.
-    pub(crate) fn recovering_active_keyboard_availability(
-        &mut self,
-    ) -> crate::core::engine::EngineAvailability {
-        let Some(idx) = self.active_keyboard else {
-            return crate::core::engine::EngineAvailability::Failed;
-        };
-        self.slots[idx]
-            .backend
-            .with_engine(|engine| engine.availability())
-            .unwrap_or(crate::core::engine::EngineAvailability::Failed)
     }
 
     /// Query voice availability after recovering a poisoned worker.
@@ -1021,7 +1007,7 @@ impl EngineRegistry {
     }
 
     /// Return true after recovering the active voice worker when necessary.
-    pub(crate) fn recovering_active_voice_is_ready(&mut self) -> bool {
+    pub fn recovering_active_voice_is_ready(&mut self) -> bool {
         self.recovering_active_voice_availability()
             == crate::core::engine::EngineAvailability::Ready
     }
@@ -1035,10 +1021,7 @@ impl EngineRegistry {
         if !slot.backend.is_instantiated()
             && let Err(e) = slot.backend.instantiate()
         {
-            log_msg(
-                TypioLogLevel::TypioLogError,
-                &format!("Engine '{}' instantiate failed: {:?}", slot.name, e),
-            );
+            log::error!("Engine '{}' instantiate failed: {:?}", slot.name, e);
             return Err(e);
         }
         let init_result = slot
@@ -1046,10 +1029,7 @@ impl EngineRegistry {
             .with_engine(|engine| engine.init(&mut self.instance))
             .unwrap_or(Err(EngineError::NotFound));
         if let Err(e) = init_result {
-            log_msg(
-                TypioLogLevel::TypioLogError,
-                &format!("Engine '{}' init failed: {:?}", slot.name, e),
-            );
+            log::error!("Engine '{}' init failed: {:?}", slot.name, e);
             return Err(e);
         }
         slot.active = true;
@@ -1116,100 +1096,14 @@ mod tests {
     use crate::core::engine::backend::process::ProcessBackend;
     use crate::core::engine::{Command, EngineInfo, EngineType};
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-
-    fn worker_script() -> String {
-        let path: PathBuf = std::env::temp_dir().join(format!(
-            "typio-libtypio-registry-test-{}-{}.py",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("unnamed")
-        ));
-        fs::write(
-            &path,
-            r#"#!/usr/bin/env python3
-import os
-import struct
-import sys
-
-MAGIC = 0x54594550
-MAJOR = 1
-MINOR = 0
-ENGINE_HELLO = 1
-HOST_HELLO = 2
-REQUEST = 3
-RESPONSE = 4
-
-name = sys.argv[1]
-engine_type = sys.argv[2]
-fd = int(os.environ.get("TYPIO_ENGINE_FD", "3"))
-
-def read_exact(n):
-    data = b""
-    while len(data) < n:
-        chunk = os.read(fd, n - len(data))
-        if not chunk:
-            raise SystemExit(0)
-        data += chunk
-    return data
-
-def read_frame():
-    header = read_exact(28)
-    magic, major, minor, msg_type, flags, request_id, payload_len = struct.unpack("!IHHIIQI", header)
-    if magic != MAGIC or major != MAJOR:
-        raise SystemExit(2)
-    return msg_type, request_id, read_exact(payload_len)
-
-def write_frame(msg_type, request_id, payload):
-    os.write(fd, struct.pack("!IHHIIQI", MAGIC, MAJOR, MINOR, msg_type, 0, request_id, len(payload)) + payload)
-
-write_frame(ENGINE_HELLO, 0, f"protocol\t1.0\nengine\t{name}\ntype\t{engine_type}".encode())
-msg_type, request_id, payload = read_frame()
-if msg_type != HOST_HELLO:
-    raise SystemExit(2)
-
-while True:
-    msg_type, request_id, payload = read_frame()
-    if msg_type != REQUEST:
-        continue
-    line = payload.decode()
-    if line == "shutdown":
-        raise SystemExit(0)
-    if line == "availability":
-        response = "AVAILABILITY\tREADY\n"
-    elif line == "list-commands":
-        response = f"COMMAND\t{'diagnose'.encode().hex()}\t{'Run diagnostics'.encode().hex()}\n"
-    elif line.startswith("invoke-command\t"):
-        response = "OK\n"
-    elif line.startswith("process-key"):
-        response = "RESULT\tNOT_HANDLED\n"
-    elif line.startswith("process-audio"):
-        response = ""
-    else:
-        response = "OK\n"
-    write_frame(RESPONSE, request_id, response.encode())
-"#,
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path.to_string_lossy().into_owned()
-    }
 
     fn register_keyboard(reg: &mut EngineRegistry, name: &str) {
-        let worker = worker_script();
-        let backend = ProcessBackend::new(
-            EngineInfo::new(name, EngineType::Keyboard),
-            vec![worker, name.to_string(), "keyboard".to_string()],
-        );
+        let backend = ProcessBackend::new_mock(EngineInfo::new(name, EngineType::Keyboard));
         reg.register(backend).unwrap();
     }
 
     fn register_voice(reg: &mut EngineRegistry, name: &str) {
-        let worker = worker_script();
-        let backend = ProcessBackend::new(
-            EngineInfo::new(name, EngineType::Voice),
-            vec![worker, name.to_string(), "voice".to_string()],
-        );
+        let backend = ProcessBackend::new_mock(EngineInfo::new(name, EngineType::Voice));
         reg.register(backend).unwrap();
     }
 
@@ -1387,7 +1281,7 @@ while True:
     #[test]
     fn active_language_persists_across_registries() {
         let dir = std::env::temp_dir().join(format!(
-            "typio-libtypio-language-state-{}-{}",
+            "typio-core-language-state-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("unnamed")
         ));
@@ -1585,7 +1479,7 @@ while True:
     #[test]
     fn last_used_engine_persists_across_registries() {
         let dir = std::env::temp_dir().join(format!(
-            "typio-libtypio-lang-engine-state-{}-{}",
+            "typio-core-lang-engine-state-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("unnamed")
         ));

@@ -7,9 +7,11 @@
 use std::fmt;
 
 pub mod backend;
+pub mod composition;
 pub mod event;
 pub mod mode;
 
+pub use composition::{Candidate, Composition, ContextOutput, PreeditFormat, PreeditSegment};
 pub use event::{KeyEvent, KeyProcessResult, KeyState, KeySym};
 pub use mode::{EngineCapabilities, EngineMode, ModeSalience};
 
@@ -126,26 +128,60 @@ impl EngineInfo {
 /// Opaque handle to the Typio instance, passed to `Engine::init`.
 ///
 /// Engines must not store this handle beyond the scope of the call.
-pub struct InstanceHandle;
+pub struct InstanceHandle {
+    config_dir: String,
+    data_dir: String,
+    state_dir: String,
+}
 
 impl InstanceHandle {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            config_dir: String::new(),
+            data_dir: String::new(),
+            state_dir: String::new(),
+        }
+    }
+
+    pub(crate) fn set_runtime_dirs(&mut self, config: &str, data: &str, state: &str) {
+        self.config_dir = config.to_string();
+        self.data_dir = data.to_string();
+        self.state_dir = state.to_string();
+    }
+
+    pub(crate) fn runtime_dirs(&self) -> (&str, &str, &str) {
+        (&self.config_dir, &self.data_dir, &self.state_dir)
     }
 }
 
-/// Opaque handle to an input context.
+/// Engine-facing input context.
+///
+/// The context exposes only a stable protocol identifier and an ordered output
+/// queue. Engine backends cannot access host runtime state or raw pointers.
 pub struct InputContext {
-    raw: *mut typio_abi::TypioInputContext,
+    id: u64,
+    outputs: Vec<ContextOutput>,
 }
 
 impl InputContext {
-    pub(crate) fn from_raw(raw: *mut crate::TypioInputContext) -> Self {
-        Self { raw: raw.cast() }
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
+            id,
+            outputs: Vec::new(),
+        }
     }
 
-    pub(crate) fn as_raw(&self) -> *mut typio_abi::TypioInputContext {
-        self.raw
+    /// Stable identifier carried by Typio Engine Protocol requests.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn push_output(&mut self, output: ContextOutput) {
+        self.outputs.push(output);
+    }
+
+    pub(crate) fn drain_outputs(&mut self) -> impl Iterator<Item = ContextOutput> + '_ {
+        self.outputs.drain(..)
     }
 }
 
@@ -205,9 +241,9 @@ pub trait Engine: Send {
     /* Engine command surface (ADR-0008)                                 */
     /*                                                                   */
     /* Engine-owned *properties* are unified with the config schema      */
-    /* layer; engines declare schemas via `typio_config_schema_register_*`
+    /* layer; engines publish schemas in EngineHello
     and react to value changes via `on_config_change` (below) or       */
-    /* via the existing `reload_config` callback for full reloads.       */
+    /* via the `reload_config` request for full reloads.                 */
     /* ----------------------------------------------------------------- */
 
     /// List commands exposed by this engine.

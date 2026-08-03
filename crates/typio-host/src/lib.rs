@@ -7,7 +7,7 @@
 //!
 //! - [`engine_loader`] discovers `typio-engine-*.toml` manifests, parses them
 //!   with the `toml` crate, negotiates capabilities, and registers
-//!   out-of-process engine backends with libtypio.
+//!   out-of-process engine backends with the Rust runtime.
 //! - [`config_watcher`] watches the config directory and engine-manifest
 //!   subdirectory via inotify, filters events to relevant files, and debounces
 //!   reload triggers with a one-shot timerfd.
@@ -46,6 +46,7 @@ pub use typio_host_types::{
 pub mod preedit;
 pub mod repeat_timer;
 pub mod resume_signal;
+pub(crate) mod runtime;
 pub mod service;
 pub mod session_glue;
 pub mod state_controller;

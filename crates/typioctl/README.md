@@ -5,7 +5,7 @@ Command-line client for the Typio input method framework. Installs as
 
 Speaks the daemon's TIP v1 protocol — JSON-RPC 2.0 over a Unix Domain
 Socket — to query and switch engines, read and write configuration, and
-inspect status. Pure Rust with no link against libtypio; the only runtime
+inspect status. Pure Rust with no runtime link; the only runtime
 requirement is the daemon's socket.
 
 ## Building

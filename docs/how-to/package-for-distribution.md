@@ -69,7 +69,6 @@ does not install engine packages.
 
 The daemon requires:
 
-- `libtypio` from the workspace build
 - `wayland-client` and `xkbcommon`
 - D-Bus runtime support for StatusNotifierItem tray integration
 - `pw-record` (PipeWire) at runtime for voice capture when voice support is used
@@ -145,7 +144,6 @@ logs. For the decision background, see
 
 ## Packaging Checklist
 
-- [ ] `libtypio` is packaged or declared as a dependency.
 - [ ] `flux` / `libflux` is packaged or declared as a dependency.
 - [ ] At least one engine package is packaged or declared as a dependency.
 - [ ] `cargo xtask install --destdir` produces a clean file list.

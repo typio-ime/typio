@@ -4,11 +4,11 @@ Typio uses two files under `$XDG_CONFIG_HOME/typio` (default `~/.config/typio`):
 
 | File | Owner | What it controls |
 |------|-------|------------------|
-| `core.toml` | **libtypio** (framework) | Engine registry, shortcuts, notifications, voice runtime, per-engine settings |
+| `core.toml` | **typio-core** runtime | Engine registry, shortcuts, notifications, voice runtime, per-engine settings |
 | `platform.toml` | **typio** (this host) | Panel styling: theme, fonts, colours, layout |
 
-Both files are read from the same directory.  The directory itself is created
-and managed by libtypio (`typio_instance_get_config_dir`).  If you need a
+Both files are read from the same directory. The directory itself is created
+and managed by the runtime (`TypioInstance::config_dir`). If you need a
 custom path, use the `-c` / `--config` command-line flag.
 
 ## Quick start
@@ -35,7 +35,7 @@ custom path, use the `-c` / `--config` command-line flag.
 
 ### `[languages]` — language-first switching
 
-Parsed by libtypio (ADR-0018 / [ADR-0031](../adr/0031-language-first-switching-surface.md)).
+Parsed by typio-core (ADR-0018 / [ADR-0031](../adr/0031-language-first-switching-surface.md)).
 The **language** (a BCP-47 tag) is the user-facing switch unit: activating a
 language retargets the keyboard and voice engine slots together.
 
@@ -72,7 +72,7 @@ Guidance:
   to Morocco* (typically Modern Standard Arabic) — a different language.
 - Prefer a **script** subtag (`zh-Hans` / `zh-Hant`) over a region subtag
   (`zh-CN` / `zh-TW`) when the distinction you mean is the writing system.
-- The host treats tags as opaque and passes them to libtypio, which owns
+- The host treats tags as opaque and passes them to typio-core, which owns
   resolution and matching (RFC 4647). The only host-side interpretation is the
   tray/indicator endonym lookup, which keys on the **primary subtag** — so any
   `-script` / `-region` suffix still resolves to a display name.
@@ -120,7 +120,7 @@ build); without them the icon falls back to the generic glyph name.
 
 ### `[shortcuts]` — global shortcuts
 
-Parsed by libtypio.  All values are shortcut strings such as `Ctrl+Shift` or
+Parsed by typio-core. All values are shortcut strings such as `Ctrl+Shift` or
 `Super+v`.
 
 | Key | Default | Description |
@@ -157,13 +157,16 @@ Wayland frontend routes printable keys when the basic engine is active.
 ### `[engines.rime]`, `[engines.mozc]`, etc. — engine-owned sections
 
 Each engine package registers its own `engines.<name>.*` schema.  The host does
-not interpret these keys; it passes the config table to the engine via the
-engine ABI.
+not interpret these keys. The engine publishes their schema in `EngineHello`;
+after the host persists a change it sends `ReloadConfig` over Engine Protocol.
 
-Engines obtain their data directory via `typio_instance_get_engine_data_dir()`
-(returns `<data_dir>/<engine_name>/`, e.g. `~/.local/share/typio/rime/`), so
-users do not need to configure `user_data_dir` manually. Only system-level
-paths (like Rime's `shared_data_dir`) remain as config keys.
+`HostHello` gives the worker the exact host-owned config, data, and state
+roots, including command-line overrides. A worker reads only its own
+`engines.<name>.*` values from `<config_dir>/core.toml` and stores persistent
+data under `<data_dir>/<engine_name>/` (for example
+`~/.local/share/typio/rime/`). Users therefore do not need to configure a
+`user_data_dir` manually. Only system-level paths such as Rime's
+`shared_data_dir` remain engine config keys.
 
 Common keys you may see in examples:
 
@@ -258,7 +261,7 @@ channel.
 | File | Hot-reload | Notes |
 |------|------------|-------|
 | `platform.toml` | ✅ Yes | The Wayland frontend watches the config directory via inotify.  A `CLOSE_WRITE`, `MOVED_TO`, or attribute change **to `core.toml` or `platform.toml`** triggers a debounced reload (100 ms); editor swap/backup files and other directory churn are ignored. |
-| `core.toml` | ✅ Yes | libtypio reloads the file on the same inotify event. Invalid files are rejected and the last known-good in-memory config remains active. The frontend then re-queries shortcuts, voice engine, and notification settings. |
+| `core.toml` | ✅ Yes | typio-core reloads the file on the same inotify event. Invalid files are rejected and the last known-good in-memory config remains active. The frontend then re-queries shortcuts, voice engine, and notification settings. |
 
 Keys that **require a restart** to take effect:
 

@@ -8,11 +8,12 @@ Typio test suite.
 The suite is the Cargo workspace suite. `crates/typio-host` covers the
 shipping Rust daemon, subsystem ports, TIP framing, UDS IPC, engine
 discovery, and headless daemon behavior. `crates/typio-core`,
-`crates/typio-abi`, and `crates/typio-vet` cover the framework, shared ABI,
-and engine conformance tooling. `crates/typio-client` covers shared TIP framing
-and event subscriptions, `crates/typioctl` covers CLI presentation, and
-`crates/typio-settings` covers graphical config state and platform-config
-persistence.
+`crates/typio-engine-protocol`, `crates/typio-engine-manifest`, and
+`crates/typio-vet` cover the runtime, typed wire contract, manifest contract,
+and black-box engine conformance tooling. `crates/typio-client` covers shared
+TIP framing and event subscriptions, `crates/typioctl` covers CLI
+presentation, and `crates/typio-settings` covers graphical config state and
+platform-config persistence.
 
 ## Run Cargo Tests
 
@@ -28,7 +29,8 @@ Run the full Rust suite:
 ```bash
 cargo test -p typio-host
 cargo test -p typio-core
-cargo test -p typio-abi
+cargo test -p typio-engine-protocol
+cargo test -p typio-engine-manifest
 cargo test -p typio-vet
 cargo test -p typio-client
 cargo test -p typioctl
@@ -60,6 +62,8 @@ or system `libflux.so`. Rebuild `../optics`, then confirm
 | Settings config persistence and TIP model decoding | `typio-settings` unit tests |
 | UDS server and IPC bus | `uds_server`, `ipc_bus`, `service` tests |
 | Engine manifests and registration | `engine_loader` unit and integration tests |
+| Engine wire framing and typed messages | `typio-engine-protocol` unit tests |
+| Engine process conformance | `typio-vet` black-box worker scenarios |
 | Wayland focus, key policy, repeat, candidate guard | `focus_controller`, `session_glue`, `keyboard_policy`, `keyboard::router`, `candidate_guard` tests |
 | Panel policy and text UI state | `panel_scheduler`, `panel_coordinator`, `text_ui_state`, `preedit` tests |
 | Tray and status state | `tray_menu`, `tray_sni`, `state_controller`, `language_display`, `icon_badge` tests |

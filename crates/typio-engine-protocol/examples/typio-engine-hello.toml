@@ -1,0 +1,7 @@
+name = "hello"
+type = "keyboard"
+protocol = "typio-engine-protocol"
+command = "../../../target/debug/examples/hello_worker"
+display_name = "Protocol Hello"
+description = "Minimal process-only Typio engine example"
+language = "und"

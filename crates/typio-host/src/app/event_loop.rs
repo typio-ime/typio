@@ -187,8 +187,12 @@ impl App {
                 let engine_present = self
                     .instance
                     .as_ref()
-                    .and_then(|i| i.registry_rust())
-                    .map(|r| r.active_keyboard_name().is_some())
+                    .and_then(|instance| {
+                        instance
+                            .borrow()
+                            .registry_rust()
+                            .map(|registry| registry.active_keyboard_name().is_some())
+                    })
                     .unwrap_or(false);
                 let frontend = self.frontend.as_mut().unwrap();
                 let router = self.router.as_mut().unwrap();

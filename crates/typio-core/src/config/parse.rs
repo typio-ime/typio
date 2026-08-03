@@ -1,12 +1,9 @@
 //! Parsing helpers for configuration files (TOML and INI-like)
 
 use super::{Config, ConfigValue};
-use std::ffi::CString;
-use std::ptr;
-
 pub(super) fn toml_to_config_value(v: &toml::Value) -> Option<ConfigValue> {
     match v {
-        toml::Value::String(s) => Some(ConfigValue::String(CString::new(s.clone()).ok()?)),
+        toml::Value::String(s) => Some(ConfigValue::String(s.clone())),
         toml::Value::Integer(i) => Some(ConfigValue::Int(*i as i32)),
         toml::Value::Float(f) => Some(ConfigValue::Float(*f)),
         toml::Value::Boolean(b) => Some(ConfigValue::Bool(*b)),
@@ -52,9 +49,7 @@ fn parse_ini_value(value: &str) -> ConfigValue {
     if (trimmed.starts_with('"') && trimmed.ends_with('"'))
         || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
     {
-        return ConfigValue::String(
-            CString::new(&trimmed[1..trimmed.len() - 1]).unwrap_or_else(|_| CString::default()),
-        );
+        return ConfigValue::String(trimmed[1..trimmed.len() - 1].to_string());
     }
 
     // Number
@@ -66,10 +61,10 @@ fn parse_ini_value(value: &str) -> ConfigValue {
     }
 
     // Default to string
-    ConfigValue::String(CString::new(trimmed).unwrap_or_else(|_| CString::default()))
+    ConfigValue::String(trimmed.to_string())
 }
 
-pub(super) fn parse_ini_like(content: &str) -> *mut Config {
+pub(super) fn parse_ini_like(content: &str) -> Option<Config> {
     let mut config = Config::new();
     let mut section = String::new();
 
@@ -81,11 +76,11 @@ pub(super) fn parse_ini_like(content: &str) -> *mut Config {
 
         if trimmed.starts_with('[') {
             if !trimmed.ends_with(']') {
-                return ptr::null_mut();
+                return None;
             }
             section = trimmed[1..trimmed.len() - 1].trim().to_string();
             if section.is_empty() {
-                return ptr::null_mut();
+                return None;
             }
             continue;
         }
@@ -93,7 +88,7 @@ pub(super) fn parse_ini_like(content: &str) -> *mut Config {
         if let Some(eq_pos) = trimmed.find('=') {
             let key = trimmed[..eq_pos].trim();
             if key.is_empty() {
-                return ptr::null_mut();
+                return None;
             }
             let value = trimmed[eq_pos + 1..].trim();
 
@@ -109,9 +104,9 @@ pub(super) fn parse_ini_like(content: &str) -> *mut Config {
             // The TOML parser has already rejected the content. Do not turn a
             // malformed non-comment line into a successful empty INI config;
             // callers rely on NULL to retain the last known-good state.
-            return ptr::null_mut();
+            return None;
         }
     }
 
-    Box::into_raw(Box::new(config))
+    Some(config)
 }

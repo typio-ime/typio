@@ -1,7 +1,6 @@
 pub mod audio;
 pub mod session;
-pub mod state;
-/// Voice types and C-compatible event structures.
+/// Voice state and owned events.
 pub mod types;
 
 pub use types::{VoiceEvent, VoiceState};

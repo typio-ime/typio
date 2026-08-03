@@ -3,7 +3,8 @@ resolver = "2"
 members = [
     "crates/typio-client",
     "crates/typio-core",
-    "crates/typio-abi",
+    "crates/typio-engine-manifest",
+    "crates/typio-engine-protocol",
     "crates/typioctl",
     "crates/typio-settings",
     "crates/typio-host",
@@ -58,10 +59,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# The framework library and its ABI headers live in this workspace so host,
-# ABI, and vet changes can land atomically.
+# The framework runtime and engine protocol live in this workspace so host,
+# protocol, and vet changes can land atomically.
 typio-core = { path = "crates/typio-core" }
-typio-abi = { path = "crates/typio-abi" }
+typio-engine-manifest = { path = "crates/typio-engine-manifest" }
+typio-engine-protocol = { path = "crates/typio-engine-protocol" }
 typio-host-platform = { path = "crates/typio-host-platform" }
 typio-host-types = { path = "crates/typio-host-types" }
 typio-client = { path = "crates/typio-client" }

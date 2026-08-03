@@ -46,13 +46,13 @@
 # keyboard.engine = "rime"
 
 # Installed engines that should NOT be loaded.  Comma-separated names.
-# Disabled engines are skipped entirely (no dlopen, no memory use).
+# Disabled engines are skipped entirely (no worker process or model memory).
 # keyboard.disabled = "mozc"
 # voice.disabled = "whisper"
 
 # ── Engine routing (consumed by typio-linux) ───────────────────────
 # These keys change how the Wayland frontend routes keys when the basic
-# engine is active.  They are NOT owned by the engine plugin itself.
+# engine is active. They are not owned by the engine worker itself.
 
 [engines.basic]
 # "forward" sends printable keys through virtual keyboard forwarding.
@@ -65,9 +65,9 @@
 # compose = true
 
 # ── Engine-owned sections ────────────────────────────────────────────
-# Each engine plugin registers its own `engines.<name>.*` schema.  The
-# host does not interpret these keys; they are passed to the engine via
-# the engine ABI.  Consult the plugin's documentation for authoritative
+# Each engine worker publishes its own `engines.<name>.*` schema during the
+# Engine Protocol handshake. The host validates and persists these keys;
+# consult the engine's documentation for authoritative
 # defaults.
 
 [engines.rime]
@@ -79,12 +79,12 @@
 
 # ── Voice input ──────────────────────────────────────────────────────
 # voice.engine selects which voice backend to activate on startup.
-# It must match the file name prefix: libtypio_engine_<name>.so.
+# It must match the engine manifest's `name`.
 # When omitted or the named engine is not installed, the first available
 # voice engine is auto-selected.
 # voice.engine = "whisper"
 
-# Voice engine plugin settings (illustrative):
+# Voice engine settings (illustrative):
 #   - whisper:    model is ggml model name (base, small, medium, large)
 #                 place model at ~/.local/share/typio/whisper/ggml-<model>.bin
 #   - sherpa-onnx: model is the directory name under ~/.local/share/typio/sherpa-onnx/
@@ -111,7 +111,7 @@
 # cooldown_ms = 5000
 
 # ── Keyboard shortcuts ───────────────────────────────────────────────
-# Parsed by libtypio.  Values are shortcut strings such as Ctrl+Shift
+# Parsed by typio-core. Values are shortcut strings such as Ctrl+Shift
 # or Super+v.
 
 [shortcuts]

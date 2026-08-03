@@ -212,9 +212,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bindgen"
-version = "0.70.1"
+version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
  "bitflags",
  "cexpr",
@@ -457,14 +457,14 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flux"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "flux-sys",
 ]
 
 [[package]]
 name = "flux-sys"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "flux-text-sys"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "iris"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "iris-sys",
  "lens",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "iris-sys"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -663,7 +663,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lens"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "flux",
  "lens-sys",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "lens-sys"
-version = "0.0.1"
+version = "0.0.9"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -935,9 +935,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rustc-hash"
-version = "1.1.0"
+version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustix"
@@ -1274,13 +1274,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "typio-abi"
-version = "0.1.1"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "typio-client"
 version = "0.1.0"
 dependencies = [
@@ -1297,8 +1290,20 @@ dependencies = [
  "nix",
  "serde",
  "toml",
- "typio-abi",
+ "typio-engine-protocol",
 ]
+
+[[package]]
+name = "typio-engine-manifest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "typio-engine-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "typio-host"
@@ -1314,12 +1319,11 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "toml",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
- "typio-abi",
  "typio-core",
+ "typio-engine-manifest",
  "typio-host-platform",
  "typio-host-types",
  "wayland-backend",
@@ -1341,7 +1345,6 @@ dependencies = [
  "nix",
  "serde_json",
  "tracing",
- "typio-core",
  "typio-host-types",
  "wayland-backend",
  "wayland-client",
@@ -1378,7 +1381,9 @@ name = "typio-vet"
 version = "0.1.0"
 dependencies = [
  "libc",
- "typio-abi",
+ "tempfile",
+ "typio-engine-manifest",
+ "typio-engine-protocol",
 ]
 
 [[package]]

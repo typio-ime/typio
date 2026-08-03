@@ -66,7 +66,7 @@ The compositor's double-buffer commit point, and where focus facts become lifecy
 
 1. **Cancelled activation.** A UI flicker can produce `activate` → `deactivate` within one batch. Per-event handling would build the keyboard grab, call engine `focus_in`, show the indicator — then immediately tear it all down. With `done`-time reduction, the two facts cancel out: `was=false, now=false` → `NONE`, zero work done.
 
-2. **Reactivation.** Clicking from one text field to another inside the same window produces `activate` while already active (no intervening `deactivate`). Per-event handling would build a new grab on `activate`, destroying the existing one mid-composition. With `done`-time reduction: `was=true, now=true, activate_seen=true` → `REACTIVATE` — the grab and composition are preserved, only the Panel anchor is refreshed.
+2. **Reactivation.** Clicking from one text field to another inside the same window produces `activate` while already active (no intervening `deactivate`). Per-event handling would build a new grab on `activate`, destroying the existing one mid-composition. With `done`-time reduction: `was=true, now=true, activate_seen=true` → `REACTIVATE` — the grab and composition are preserved, old-field key/repeat state is fenced, and the Panel is re-anchored and re-presented.
 
 **Steps at `done`:**
 
@@ -105,7 +105,11 @@ The grab and its keymap handshake are **one resource** (`absent → needs_keymap
 
 Briefly:
 - Each grab incarnation has a **generation**. A key press claims the current generation, and the matching release is accepted only when the stored per-key generation still matches the active grab generation.
-- When a grab is rebuilt (focus-in, re-activate, resume, reconnect), the compositor may re-send already-in-flight keys; the generation fence discards them.
+- When a grab is rebuilt (focus-in, resume, reconnect), the compositor may
+  re-send already-in-flight keys; the generation fence discards them.
+- Re-activation retains the grab but synthesizes releases for keys forwarded
+  by the old field and stops their repeat chain before routing in the new
+  field.
 - Unhandled keys are forwarded as original press/release pairs through the virtual keyboard.
 - Modifier state is synced separately; modifier changes do not synthesise releases for unrelated non-modifier keys.
 - Two fail-safe backstops remain: an emergency-exit shortcut and a rejected-press-streak threshold, both releasing the grab.
@@ -114,25 +118,19 @@ Briefly:
 
 The daemon must remain responsive even when third-party engine processes are buggy, slow to initialize, or fail entirely. This section describes the patterns that prevent engine failures from bringing down the input method.
 
-### Deferred availability query
+### Bounded initialization and availability queries
 
-During `typio_wl_frontend_new`, the daemon **does not** eagerly query engine availability. Instead, it defaults `keyboard_availability` to `TYPIO_ENGINE_PREPARING` and relies on the push-based availability callback (ADR-0014) to transition to `TYPIO_ENGINE_READY` when the engine finishes warm-up.
+Engine discovery reads `EngineHello` before heavyweight initialization. The
+runtime then sends `init` over the private engine channel with a bounded
+60-second cold-start budget, so loading dictionaries or deploying schemas can
+never block indefinitely.
 
-```c
-// frontend.c — typio_wl_frontend_new
-frontend->keyboard_availability = TYPIO_ENGINE_PREPARING;
-// Do NOT call typio_registry_get_active_keyboard_availability here
-```
-
-**Why not query eagerly?** Third-party engine processes may have slow `init` requests (loading dictionaries, compiling schemas). An eager query would block daemon startup before the Wayland connection is established.
-
-The key router already implements the "engine not ready" path: when `keyboard_availability != TYPIO_ENGINE_READY`, the router consumes all keys silently and does not forward them to the application. The daemon remains responsive to Wayland events, and the user sees the indicator show "engine preparing" until the push callback fires.
-
-### Engine availability push
-
-When an engine finishes initialization (e.g., Rime completes schema deployment), it calls `typio_instance_notify_engine_availability(instance, TYPIO_ENGINE_READY, "ready")`. The framework dispatches this to the host via the `TypioEngineAvailabilityChangedCallback`, which the frontend registers during initialization. The callback updates `frontend->keyboard_availability` and triggers a UI refresh.
-
-This push-based design means the daemon can start accepting Wayland events immediately, without waiting for engines to warm up. The engine works asynchronously in the background, and the user sees the transition from "preparing" to "ready" as soon as the engine is available.
+Once initialized, the router queries the active engine with the typed
+`availability` request. That hot-path request has a 100-millisecond deadline.
+`PREPARING` keeps keys inside the input method without forwarding incomplete
+state; `READY` enables normal routing; transport failure becomes `FAILED` and
+poisons the worker channel for supervised restart. No engine calls into the
+daemon and no raw callback crosses a thread or process boundary.
 
 ### Engine Process Isolation
 
@@ -142,11 +140,13 @@ private engine fd. If an engine process crashes, the daemon observes a
 transport failure instead of taking the fault in the Wayland process. Engine
 code runs inside direct engine executables, not inside the daemon.
 
-See the [libtypio Engine Contract](../../crates/typio-core/docs/explanation/engine-contract.md#9-fault-isolation-protecting-the-daemon-from-engine-failures) for the complete list of sandboxed callbacks and their fallback behaviors.
+See the [engine contract](../../crates/typio-core/docs/explanation/engine-contract.md)
+for process isolation, ownership, and poisoned-channel recovery.
 
 ## Virtual Keyboard Forwarding
 
-`zwp_virtual_keyboard_v1` is the daemon's output path for keys the engine declined (`TYPIO_KEY_NOT_HANDLED`). The virtual-keyboard bridge manages:
+`zwp_virtual_keyboard_v1` is the daemon's output path for keys the engine
+declined with `KeyResult::NotHandled`. The virtual-keyboard bridge manages:
 
 - **Keymap handoff** — when the compositor delivers a new keymap on the grab, the vk must receive the same keymap before forwarding keys, or modifier mappings will mismatch.
 - **Readiness gating** — vk forwarding is blocked until the keymap is confirmed, preventing modifier-sync errors during activation handshakes.
@@ -156,13 +156,26 @@ See the [libtypio Engine Contract](../../crates/typio-core/docs/explanation/engi
 
 A subtle protocol behaviour: the compositor may send `activate` while the daemon is still focused (e.g. the user clicked from one text field to another inside the same window). Treating this as a full `deactivate` → `activate` cycle would tear down the grab, lose the preedit round-trip, and interrupt typing.
 
-The `activate_seen` fact makes this case explicit without that cost. At `done`, `classify_done(was=true, now=true, activate_seen=true)` returns `REACTIVATE`, which runs `transition_to_reactivate`: the keyboard grab and the engine's input context are **left intact** (they belong to the same input-method, not the field), and only the *position-sensitive* state is refreshed — the Panel anchor is reset. The indicator is **not** re-shown on reactivation: the engine state has not changed across a field switch, so the old indicator (already hidden by `activate`) should not carry over. Only genuine state changes — `ACTIVATE`, deliberate engine/mode switches — announce via the indicator. A `done` with no `activate` this batch (`activate_seen=false`) classifies as `NONE` and changes nothing, so plain text-state updates during composition never disturb the grab. See [ADR-0018](../adr/0018-focus-transition-classification.md).
+The `activate_seen` fact makes this case explicit without that cost. At
+`done`, `classify_done(was=true, now=true, activate_seen=true)` returns
+`REACTIVATE`, which runs `transition_to_reactivate`. The keyboard grab and
+the engine's input context are **left intact** because they belong to the
+input method, not the field. Transient key ownership does belong to the old
+field, so the daemon synthesizes releases for forwarded keys and stops the
+repeat timer. It then resets the Panel anchor, invalidates the submitted-frame
+cache, and re-presents a non-empty candidate snapshot even when its sequence
+number did not change. A `done` with no `activate` this batch
+(`activate_seen=false`) classifies as `NONE` and changes nothing, so plain
+text-state updates during composition never disturb the grab. See
+[ADR-0018](../adr/0018-focus-transition-classification.md).
 
 ## Resume and silent grab loss
 
 System suspend is invisible to the Wayland protocol: no `deactivate` before sleep, no guaranteed `activate` after wake; a held modifier may be stuck and the grab may be silently dead on wake. The compositor can also drop the grab with no event at all (restart, bug, race).
 
-How much of this the focus controller handles depends on whether `typio_wl_focus_observe()` can *see* it — and observation reads resource *presence*, not *liveness*:
+How much of this the focus controller handles depends on whether
+`session_glue::observe()` can *see* it — and observation reads resource
+*presence*, not *liveness*:
 
 - **Suspend.** A grab dead across suspend leaves a *live proxy*; observation reports it healthy, so the focus controller alone is blind. A resume **detector** (logind `PrepareForSleep` plus a `CLOCK_BOOTTIME` vs `CLOCK_MONOTONIC` gap heuristic) records facts: it invalidates the grab generation and drops the compositor-visible preedit, then lets the next reactor step rebuild as needed.
 - **Grab object gone.** If the grab *object* is actually absent while `desired.grab` is still `YES`, observation reports `ABSENT` and the diff recreates it.

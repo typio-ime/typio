@@ -1,6 +1,6 @@
 //! Input-method session lifecycle driver.
 //!
-//! Effectful half of the focus controller: observes live Wayland/libtypio
+//! Effectful half of the focus controller: observes live Wayland/runtime
 //! resources each tick and applies the minimal effect set produced by the
 //! pure `focus_controller` module. This is the Rust analog of the C host's
 //! `src/wayland/focus_effects.c` + the per-tick pipeline driver in
@@ -30,7 +30,8 @@ pub(crate) trait ApplyTarget {
     fn create_grab(&mut self);
     /// 8. Focus in (after grab is ready/created).
     fn focus_in(&mut self);
-    /// 9. Reactivate — re-anchor panel without changing focus state.
+    /// 9. Reactivate — fence old-field keys and re-anchor/re-present the panel
+    ///    without rebuilding the grab or discarding engine composition.
     fn reactivate(&mut self);
 }
 
@@ -109,6 +110,14 @@ impl ApplyTarget
     }
 
     fn reactivate(&mut self) {
+        // A compositor can batch deactivate(old) + activate(new) into one
+        // active-to-active transition. The grab and composition belong to the
+        // input method and survive, but the key gesture belongs to the old
+        // field. Fence its key-routing state so a lost release cannot leave
+        // the repeat timer injecting into the newly focused field. Keep
+        // pending composition text intact along with the engine composition.
+        self.1.fence_key_routing(self.0.state_mut());
+        let _ = self.2.stop();
         let state = self.0.state_mut();
         state.text_input_rect = None;
         state.clear_caret_rect();
@@ -164,6 +173,15 @@ impl FocusDriver {
         timer: &mut RepeatTimer,
         engine_present: bool,
     ) -> Option<FocusTransition> {
+        if let Some(text) = frontend
+            .state()
+            .current_session()
+            .surrounding_text
+            .as_deref()
+        {
+            let session = frontend.state().current_session();
+            router.set_surrounding(text, session.cursor as i32, session.anchor as i32);
+        }
         let mut facts = frontend.state_mut().take_facts();
         facts.engine_present = engine_present;
 

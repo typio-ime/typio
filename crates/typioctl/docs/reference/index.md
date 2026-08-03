@@ -4,7 +4,7 @@ Lookup-oriented documentation. These pages are dense, complete, and accurate —
 
 ## Interfaces and Protocol
 
-- [CLI Reference](cli.md) — Command-line flags and `typioctl` client subcommands
+- [CLI Reference](command.md) — Command-line flags and `typioctl` client subcommands
 - [IPC Protocol Reference](ipc-protocol.md) — UDS socket path, JSON-RPC wire format, methods, and properties
 
 ## Looking for something else?

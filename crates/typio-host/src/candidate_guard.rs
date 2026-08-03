@@ -22,13 +22,10 @@
 //!
 //! ## What is NOT ported
 //!
-//! `typio_wl_host_selection_try_commit` in C — it needed the input
-//! context (`session->ctx`) to actually call `commit_candidate`. The
-//! pure resolution is in [`host_selection_resolve`]; the commit call
-//! lives in [`KeyboardRouter::try_host_selection`] in `router.rs`,
-//! which threads the libtypio input-context pointer through and falls
-//! back to `process_key_engine` when the engine declines (returns
-//! `TypioErrorNotFound`).
+//! The old host's effectful commit path is not part of this pure module. The
+//! resolution is in [`host_selection_resolve`]; the owned context operation
+//! lives in [`KeyboardRouter::try_host_selection`] in `router.rs` and falls
+//! back to normal engine key processing when candidate commit is declined.
 //!
 //! ## Opt-in semantics (deviation from the C ancestor)
 //!

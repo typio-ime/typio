@@ -28,7 +28,7 @@ focus/grab bug reports.
 | Concept | What it is | Lifetime | Owner |
 |---------|-----------|----------|-------|
 | **Protocol session** | One `activate` → `deactivate` cycle on `zwp_input_method_v2` | compositor `activate` → `deactivate` | compositor |
-| **Session object** (`TypioWlSession`) | The C struct wrapping `TypioInputContext` + editing-context facts | first `activate` → frontend teardown | daemon |
+| **Session state** | Rust `SessionState` editing facts plus the router-owned `TypioInputContext` | first `activate` → frontend teardown | daemon |
 | **Grab / focus lifecycle** | The keyboard-grab + vk-keymap resource | `desired.grab = YES` → `NONE` | [focus controller](focus-controller.md) |
 
 The first two are detailed below; the third is the [focus controller](focus-controller.md)'s
@@ -51,7 +51,9 @@ window).
 - **Reactivation** (`activate` while already active, with no intervening
 `deactivate`) extends the same protocol session. The compositor moved focus
 to a new text field inside the same window. The daemon keeps the grab and
-the engine's in-flight composition, refreshing only the Panel anchor.
+the engine's in-flight composition, but releases old-field forwarded keys,
+stops their repeat chain, and re-presents candidates at a refreshed Panel
+anchor.
 
 The `done(serial)` event is the compositor's double-buffer commit point.
 Events in a batch (`activate`, `deactivate`, `surrounding_text`, …) are
@@ -59,19 +61,20 @@ provisional until `done` commits them atomically. The daemon records them as
 facts and classifies the batch at `done` time; see
 [ADR-0018](../adr/0018-focus-transition-classification.md).
 
-### Session Object
+### Session State
 
-`TypioWlSession` is a C struct that wraps the libtypio `TypioInputContext`
-and buffers editing-context facts (`surrounding_text`, `content_type`, …).
+The platform frontend stores compositor editing facts in `SessionState`, while
+`KeyboardRouter` owns the corresponding boxed runtime `TypioInputContext`.
+No pointer or callback-user-data relationship connects them.
 
 Lifetime rules:
 
-- **Created** on the first `activate` if none exists (`im_handle_activate` →
-`typio_wl_session_create`).
-- **Reset** on every subsequent `activate` (`typio_wl_session_reset`),
-clearing pending facts but preserving the `ctx`.
-- **Destroyed** only on `frontend` teardown (`typio_wl_session_destroy`),
-which calls `focus_out` on the engine and frees the context.
+- **Created** during daemon/frontend initialization.
+- **Updated** by compositor events and committed at each `done` boundary.
+- **Reused** across deactivate/reactivate focus churn; the boxed input context
+  remains owned by the router.
+- **Destroyed** during ordered daemon shutdown after focus-out and before the
+  runtime instance.
 
 The session object **survives** `deactivate`. It is not tied one-to-one to
 the protocol session. This matters for two reasons:
@@ -85,7 +88,7 @@ the engine sees context immediately on re-focus.
 ### Grab / Focus Lifecycle
 
 This is the availability of the unified keyboard-grab + vk-keymap resource —
-**not** a protocol object and **not** a C struct instance. It can outlive a
+**not** a second protocol object and **not** another session store. It can outlive a
 protocol session (soft pause) and be rebuilt across protocol sessions (resume,
 reconnect).
 
@@ -136,9 +139,9 @@ Additionally:
 - a previously healthy virtual keyboard is not proof that the current grab
   has a current keymap
 
-`typio_wl_focus_observe()` is a **view of reality, never a stored second
-source of truth**, so the observed snapshot cannot drift from the resources
-it describes.
+`session_glue::observe()` is a **view of reality, never a stored second source
+of truth**, so the observed snapshot cannot drift from the resources it
+describes.
 
 ## Ownership
 
@@ -148,7 +151,7 @@ it describes.
 | `crates/typio-host/src/session_glue.rs` | `observe` (live resource snapshot) and `apply` (effectful execution of the diff) |
 | `crates/typio-host/src/keyboard_policy.rs` | the per-key generation stamp and symmetric press/release tracking — mutable, and **never** the routing decision |
 | `crates/typio-host/src/keyboard/router.rs` | the pure routing decision `(key, mods, state) → {action, reason}` |
-| `crates/typio-host-platform/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | key-event interpretation (XKB → `TypioKeyEvent`) while the session is focused |
+| `crates/typio-host-platform/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | key-event interpretation (XKB → owned `DecodedKeyEvent`) while the session is focused |
 | `crates/typio-host-platform/src/input_method.rs` (`forward_key`, `forward_modifiers`) | virtual-keyboard health, keymap/modifier handoff, readiness gating, and fail-safe downgrade |
 | `crates/typio-host/src/app/mod.rs` (`App::run`) | poll scheduling, bounded auxiliary-fd dispatch, and deadline-aware wakeups |
 | `crates/typio-host/src/config_watcher.rs` | config-watch events, debounce timing, watch rearming, and the runtime reload boundary |
@@ -166,19 +169,19 @@ tracker.
 timeline
     title Three "session" layers across two protocol sessions
     section Protocol Session 1
-        activate + done : Session object CREATED : Grab CREATED, NEEDS_KEYMAP
-        typing          : Session object alive    : Grab READY, keys reach engine
-        deactivate      : Session object RESET, ctx kept : Grab soft-paused, stays READY
+        activate + done : Session state ACTIVE : Grab CREATED, NEEDS_KEYMAP
+        typing          : Context retained     : Grab READY, keys reach engine
+        deactivate      : Session state PAUSED : Grab soft-paused, stays READY
     section Pause (no protocol session)
-        idle            : Session object still alive : Grab retained, READY
+        idle            : Context still alive : Grab retained, READY
     section Protocol Session 2
-        activate        : Session object RESET, ctx kept : Grab REUSED, still READY
-        typing          : Session object alive    : Grab READY, keys reach engine
+        activate        : Session state ACTIVE : Grab REUSED, still READY
+        typing          : Context retained     : Grab READY, keys reach engine
 ```
 
 Key observations from the diagram:
 
-- `TypioWlSession` lives across both protocol sessions.
+- The frontend session state and router-owned input context live across both protocol sessions.
 - The grab is created once, stays `READY` through the soft pause, and is
 reused on the second activation.
 - The focus controller's `desired.grab` transitions `YES → SOFT_PAUSE → YES`.
@@ -199,11 +202,11 @@ during `needs_keymap`) are owned by the focus controller — see
 ## Engine Availability
 
 Grab readiness is necessary but not sufficient. The active keyboard engine also
-has an availability state from `libtypio`:
+has an availability state from `typio-core`:
 
-- `TYPIO_ENGINE_READY`: key routing may call `typio_input_context_process_key`
+- `Ready`: key routing may call `TypioInputContext::process_key`
 - any other value: key press/release is consumed locally as
-  `TYPIO_KEY_TRACK_ENGINE_NOT_READY`
+  `KeyTrackState::EngineNotReady`
 
 This prevents an engine that is still deploying or loading data from returning
 `NOT_HANDLED` and leaking raw keys to the focused application. A not-ready key
@@ -314,13 +317,13 @@ decision:
 
 ## Invariants
 
-- lifecycle transitions must go through the lifecycle helpers and stay valid
-  under `typio_wl_lifecycle_transition_is_valid`
+- lifecycle transitions must go through `FocusController::update` and its
+  desired/actual state reconciliation
 - observed lifecycle axes must be used to detect declared-phase drift, not as
   a second mutable phase model
 - no key press/release is processed unless the grab resource is `ready`
 - no key press reaches the engine unless the active keyboard engine is
-  `TYPIO_ENGINE_READY`
+  `EngineAvailability::Ready`
 - modifier-mask updates may be processed while `needs_keymap` to resynchronize
   held modifiers
 - no virtual-keyboard forwarding happens unless vk is explicitly `ready`

@@ -1,20 +1,19 @@
 //! Transport-agnostic TIP dispatch — the daemon's method router.
 //!
-//! Port of `src/state/service.c`. This module owns the *dispatch policy* of the
-//! Typio IPC Protocol: it parses a method's params, queries the engine/config
+//! This module owns the *dispatch policy* of the Typio IPC Protocol: it parses
+//! a method's params, queries the engine/config
 //! state via the [`ServiceBackend`] trait, and builds the JSON-RPC 2.0 response.
 //! It knows nothing about UDS framing — that lives in [`crate::uds_server`].
 //!
 //! ## Design
 //!
-//! The C original reaches directly into a live `TypioInstance` / `TypioRegistry`
-//! / `TypioConfig`. To keep this port unit-testable without a full libtypio
-//! fixture, every libtypio read/write is abstracted behind the [`ServiceBackend`]
-//! trait. The real (libtypio-backed) impl is a separate concern; here the
+//! To keep dispatch unit-testable without a full runtime fixture, every runtime
+//! read/write is abstracted behind the [`ServiceBackend`]
+//! trait. The real typio-core-backed implementation is a separate concern; here the
 //! dispatch is generic over `B: ServiceBackend`.
 //!
-//! Error messages are reproduced verbatim from the C handler so clients and the
-//! existing C-test parity assertions continue to hold.
+//! Error messages are stable TIP behavior rather than runtime implementation
+//! details.
 
 use std::time::Instant;
 
@@ -115,7 +114,7 @@ pub struct ConfigEntry {
     pub source: ConfigSource,
 }
 
-/// Keyboard vs. voice engine. Mirrors `TypioEngineType`.
+/// Keyboard vs. voice engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
     Keyboard,
@@ -211,7 +210,7 @@ impl Default for CycleLanguageOutcome {
     }
 }
 
-/// The libtypio surface the dispatch needs. Implementations may back this with
+/// The runtime surface the dispatch needs. Implementations may back this with
 /// a live `TypioInstance` (production) or a fake (tests).
 pub trait ServiceBackend {
     // ── config ──
@@ -228,11 +227,10 @@ pub trait ServiceBackend {
     fn config_show_text(&self) -> String;
     /// `Err(SvcError)` if reload failed.
     fn config_reload(&mut self) -> Result<(), SvcError>;
-    /// Persist the current config to disk (`typio_instance_save_config`).
+    /// Persist the current config to disk.
     fn save_config(&mut self) -> Result<(), SvcError>;
-    /// Notify an engine that one of its config keys changed
-    /// (`typio_registry_notify_config_change`). Called only when the changed
-    /// key sits under the engine's namespace.
+    /// Notify an engine that one of its config keys changed. Called only when
+    /// the changed key sits under the engine's namespace.
     fn notify_engine_config(&mut self, engine: &str, key: &str, value: &str);
 
     // ── registry ──
@@ -1533,7 +1531,11 @@ mod tests {
         b.load_fail = true;
         let fake = b.build();
         let mut svc = StatusService::new(fake);
-        let r = dispatch(&mut svc, "engine.load", json!({"path": "/x.so"}));
+        let r = dispatch(
+            &mut svc,
+            "engine.load",
+            json!({"path": "/typio-engine-x.toml"}),
+        );
         let error = r.error.unwrap();
         assert_eq!(error.code, -32602);
         assert_eq!(error.message, "engine.load failed");

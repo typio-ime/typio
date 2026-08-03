@@ -112,15 +112,14 @@ fn build_filter(level: u8) -> EnvFilter {
 /// frame timing). This mapping matches `docs/reference/cli.md`. The floor is
 /// reloadable at runtime — see [`apply_pending_level_signals`].
 ///
-/// libtypio (`typio-core`) logs through the `log` crate facade
+/// `typio-core` logs through the `log` crate facade
 /// (`log::info!`, `log::warn!`, …) while the host uses `tracing`. The
 /// `tracing-log` compatibility layer (installed automatically by
 /// [`tracing_subscriber`'s `SubscriberInitExt::init`]) re-emits every
 /// `log::*` record as a `tracing` event, preserving its original target
 /// (e.g. `typio::instance`) and routing it through this same filter and
-/// writer. So libtypio lifecycle/engine logs, and C-engine records (which
-/// arrive via `typio_log_emit` → `log::*`), appear alongside host
-/// diagnostics in the daemon's output.
+/// writer. Runtime lifecycle and engine-backend records therefore appear
+/// alongside host diagnostics in the daemon's output.
 pub fn init_logging(verbosity: u8) {
     static INIT: OnceLock<()> = OnceLock::new();
     let _ = INIT.get_or_init(|| {

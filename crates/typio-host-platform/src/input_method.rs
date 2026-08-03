@@ -287,8 +287,6 @@ pub struct InputMethodState {
     pending: SessionState,
     /// Text state committed by the latest `done`.
     current: SessionState,
-    /// Optional libtypio input context used to apply surrounding text.
-    input_context: Option<*mut typio::TypioInputContext>,
     /// True once a keymap event has been received for the current grab epoch.
     pub keymap_received_this_epoch: bool,
     /// Panel redraw scheduling state.
@@ -332,11 +330,6 @@ impl InputMethodState {
     /// True if the compositor declared the input method unavailable.
     pub fn stopped(&self) -> bool {
         self.stopped
-    }
-
-    /// Provide the libtypio input context used to apply surrounding text.
-    pub fn set_input_context(&mut self, ctx: *mut typio::TypioInputContext) {
-        self.input_context = if ctx.is_null() { None } else { Some(ctx) };
     }
 
     /// Current text-state snapshot committed by the latest `done`.
@@ -390,10 +383,18 @@ impl InputMethodState {
         &self.shm_release_registry
     }
 
-    /// Reset the positioned-popup anchor generation. Call on focus_in and
-    /// hard boundaries so the next caret rect belongs to a new generation.
+    /// Reset the positioned-popup anchor generation. Call on focus-in and
+    /// active-to-active handoffs so the next caret rect belongs to a new
+    /// generation. Resetting the anchor also invalidates the submitted Panel
+    /// snapshot: the compositor may have unmapped the popup during focus churn
+    /// even though the candidate content and sequence number did not change.
     pub fn reset_panel_anchor(&mut self) {
         self.panel_coord.reset_anchor();
+        refresh_panel_after_anchor_reset(
+            &mut self.panel_presentation,
+            &mut self.panel_schedule_state,
+            !self.composition.candidates.is_empty(),
+        );
     }
 
     /// Clear the cached caret-rect flag.
@@ -595,6 +596,17 @@ impl InputMethodState {
                 tracing::warn!(target: "typio.wayland.keymap", "xkb_keymap_new_from_string failed")
             }
         }
+    }
+}
+
+fn refresh_panel_after_anchor_reset(
+    presentation: &mut PresentationRecord,
+    schedule: &mut PanelScheduleState,
+    has_candidates: bool,
+) {
+    presentation.invalidate();
+    if has_candidates {
+        schedule.mark_dirty();
     }
 }
 
@@ -854,7 +866,6 @@ impl InputMethodFrontend {
             stopped: false,
             pending: SessionState::default(),
             current: SessionState::default(),
-            input_context: None,
             keymap_received_this_epoch: false,
             panel_schedule_state: PanelScheduleState::default(),
             panel_coord: PanelCoordinator::new(),
@@ -889,11 +900,6 @@ impl InputMethodFrontend {
     /// Mutable access to the candidate panel, if one was created.
     pub fn panel_mut(&mut self) -> Option<&mut FluxPanel> {
         self.panel.as_mut()
-    }
-
-    /// Provide the libtypio input context used to apply surrounding text.
-    pub fn set_input_context(&mut self, ctx: *mut typio::TypioInputContext) {
-        self.state.set_input_context(ctx);
     }
 
     /// True if the compositor declared the input method unavailable.
@@ -1108,22 +1114,9 @@ impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for InputMethodState {
 }
 
 impl InputMethodState {
-    /// Apply the pending `done` batch to the current session state and, if a
-    /// libtypio input context is wired, forward surrounding text to it.
+    /// Apply the pending `done` batch to the current session state.
     fn apply_pending_to_current(&mut self) {
         self.current = self.pending.clone();
-        if let Some(ctx) = self.input_context {
-            if let Some(ref text) = self.current.surrounding_text {
-                if let Ok(c_text) = std::ffi::CString::new(text.as_str()) {
-                    typio::input_context::typio_input_context_set_surrounding(
-                        ctx,
-                        c_text.as_ptr(),
-                        self.current.cursor as i32,
-                        self.current.anchor as i32,
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -1519,6 +1512,30 @@ mod tests {
         assert_ne!(seq1, 0);
         assert_eq!(seq2, seq1);
         assert_ne!(seq3, seq2);
+    }
+
+    #[test]
+    fn anchor_reset_requeues_an_unchanged_candidate_snapshot() {
+        let mut presentation = PresentationRecord::default();
+        let mut schedule = PanelScheduleState::Idle;
+        presentation.mark_presented(7);
+
+        refresh_panel_after_anchor_reset(&mut presentation, &mut schedule, true);
+
+        assert!(!presentation.is_current(7));
+        assert_eq!(schedule, PanelScheduleState::Dirty);
+    }
+
+    #[test]
+    fn anchor_reset_does_not_schedule_an_empty_candidate_panel() {
+        let mut presentation = PresentationRecord::default();
+        let mut schedule = PanelScheduleState::Idle;
+        presentation.mark_presented(7);
+
+        refresh_panel_after_anchor_reset(&mut presentation, &mut schedule, false);
+
+        assert!(!presentation.is_current(7));
+        assert_eq!(schedule, PanelScheduleState::Idle);
     }
 
     #[test]

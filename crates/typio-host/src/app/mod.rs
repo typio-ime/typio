@@ -26,7 +26,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use clap::Parser;
-use typio::c_api::registry as c_registry;
 use typio::instance::TypioInstance;
 
 pub use cli::AppOptions;
@@ -73,16 +72,19 @@ enum DaemonEvent {
     /// Stop and re-exec with the same argv. Causes the main loop to
     /// exit; [`App::finish`] then `execv`s.
     Restart,
-    /// libtypio state changed (engine / language / voice switch from
+    /// Runtime state changed (engine / language / voice switch from
     /// the tray). Re-sync `StateController`, IPC bus, and tray surface.
     StateRefresh,
+    /// A tray action forwarded from the zbus worker for main-loop execution.
+    #[cfg(feature = "systray")]
+    TrayAction(crate::tray_sni::TrayAction),
 }
 
 /// The running daemon.
 pub struct App {
     argv: Vec<CString>,
     options: AppOptions,
-    instance: Option<Box<TypioInstance>>,
+    instance: Option<crate::runtime::SharedInstance>,
     state_controller: Option<StateController<TypioRegistryView>>,
     ipc_bus: Option<Rc<RefCell<IpcBus>>>,
     #[cfg(feature = "systray")]
@@ -97,7 +99,7 @@ pub struct App {
     resume_signal: Option<ResumeSignal>,
     #[cfg(feature = "wayland")]
     focus_driver: Option<FocusDriver>,
-    /// Voice push-to-talk controller: owns the libtypio voice session and
+    /// Voice push-to-talk controller: owns the runtime voice session and
     /// the PipeWire (`pw-record`) audio source. `None` if session creation
     /// failed at startup.
     #[cfg(feature = "wayland")]
@@ -106,7 +108,7 @@ pub struct App {
     /// Pure; the popup surface is owned by `PanelCoordinator`, the auto-hide
     /// timer by [`Self::indicator_timer`].
     indicator: Option<Indicator>,
-    /// Cached indicator configuration snapshot. Re-read from libtypio on
+    /// Cached indicator configuration snapshot. Re-read from typio-core on
     /// startup and on every config reload so the running loop never does
     /// FFI on the hot path.
     indicator_config: IndicatorConfig,
@@ -253,7 +255,7 @@ impl App {
         let mut instance = TypioInstance::new_rust(
             self.options.config_dir.as_deref(),
             self.options.data_dir.as_deref(),
-            None, // state_dir — let libtypio pick the default.
+            None, // state_dir — let typio-core pick the default.
             // Retained for host-side engine.reload manifest resolution.
             engine_dirs
                 .iter()
@@ -280,15 +282,12 @@ impl App {
             }
         }
 
-        // Register engines from the resolved directories via libtypio's
+        // Register engines from the resolved directories via Typio's
         // native Rust API (ADR-0035). EngineLoader handles manifest
         // discovery, parsing, capability negotiation, and ProcessBackend
         // registration in one pass. Embedding hosts can perform the same
-        // operation through the C `typio_registry_register_engine_process`
-        // API.
-        let raw = instance.as_mut() as *mut TypioInstance;
-        let registry = typio::instance::typio_instance_get_registry(raw);
-        if registry.is_null() {
+        // operation through the same typed registry API.
+        if instance.registry_rust().is_none() {
             return Err("engine registry not available".to_string());
         }
 
@@ -300,14 +299,10 @@ impl App {
             if !dir_path.is_dir() {
                 continue;
             }
-            // SAFETY: `raw` is a valid, initialised `*mut TypioInstance`;
-            // `registry_rust_mut` borrows `&mut instance` exclusively for
-            // the duration of the call. The C-ABI `registry` pointer
-            // borrowed above is not dereferenced in this block.
-            let Some(reg) = instance.registry_rust_mut() else {
+            let Some(mut reg) = instance.registry_rust_mut() else {
                 continue;
             };
-            let report = loader.load_dir(reg, dir_path);
+            let report = loader.load_dir(&mut reg, dir_path);
             if report.manifest_count == 0 {
                 let build_dir = dir_path.join("build");
                 if has_engine_manifest(&build_dir) {
@@ -368,11 +363,12 @@ impl App {
         // あ …) instead of the generic `typio-keyboard-symbolic`. Falls back
         // to the first registered keyboard when no languages are declared so
         // legacy layout-only setups keep working.
-        let restored = c_registry::typio_registry_restore_language(registry);
-        if restored != typio::TypioResult::TypioOk {
+        if instance.restore_language().is_err() {
             if let Some(first) = registered_keyboards.first() {
-                if let Ok(c_name) = CString::new(first.as_str()) {
-                    c_registry::typio_registry_set_active_keyboard(registry, c_name.as_ptr());
+                if instance
+                    .registry_rust_mut()
+                    .is_some_and(|mut registry| registry.activate_keyboard(first).is_ok())
+                {
                     tracing::info!(target: "typio.startup", keyboard = %first, "active keyboard set");
                 }
             }
@@ -381,8 +377,7 @@ impl App {
         }
         let active_voice = instance
             .registry_rust()
-            .and_then(|reg| reg.active_voice_name())
-            .map(str::to_string);
+            .and_then(|registry| registry.active_voice_name().map(str::to_string));
         tracing::info!(
             target: "typio.startup",
             keyboards = %format_engine_list(&registered_keyboards),
@@ -402,25 +397,20 @@ impl App {
             );
         }
 
-        self.instance = Some(instance);
+        let instance = Rc::new(RefCell::new(instance));
+        self.instance = Some(instance.clone());
 
-        // Wire the mode-changed callback so engine-internal mode switches
+        // Wire the mode observer so engine-internal mode switches
         // (rime schema changes, 中/A toggle, etc.) reach the indicator.
         // The trampoline's sender lives in `signals::MODE_CALLBACK_TX` so
         // the callback (which fires on the engine-comm thread for
         // out-of-process engines like rime) can safely reach the main
         // loop. Without this, only Ctrl+Shift language/engine switches
         // trigger the indicator — rime's own mode/schema switches are silent.
-        signals::set_mode_callback_tx(self.event_tx.clone());
-        {
-            let raw = self.instance.as_ref().unwrap().as_ref() as *const TypioInstance
-                as *mut TypioInstance;
-            typio::instance::typio_instance_set_keyboard_mode_changed_callback(
-                raw,
-                signals::mode_changed_trampoline as _,
-                std::ptr::null_mut(),
-            );
-        }
+        let mode_tx = self.event_tx.clone();
+        instance.borrow_mut().set_mode_observer(move |_| {
+            let _ = mode_tx.send(DaemonEvent::StateRefresh);
+        });
 
         #[cfg(feature = "wayland")]
         {
@@ -443,19 +433,8 @@ impl App {
                 }
             }
 
-            if let Some(ref mut instance) = self.instance {
-                let raw = instance.as_mut() as *mut TypioInstance;
-                match unsafe { KeyboardRouter::new(raw) } {
-                    Some(router) => {
-                        if let Some(ref mut frontend) = self.frontend {
-                            frontend.set_input_context(router.ctx());
-                        }
-                        self.router = Some(router);
-                    }
-                    None => {
-                        tracing::warn!(target: "typio.startup", "failed to create keyboard router");
-                    }
-                }
+            if let Some(instance) = self.instance.as_ref().cloned() {
+                self.router = Some(KeyboardRouter::new(instance.borrow_mut().as_mut()));
 
                 match RepeatTimer::new() {
                     Ok(timer) => {
@@ -469,12 +448,11 @@ impl App {
                 self.resume_signal = Some(ResumeSignal::new());
                 self.focus_driver = Some(FocusDriver::new());
 
-                // Voice push-to-talk: create the libtypio voice session and
+                // Voice push-to-talk: create the runtime voice session and
                 // attach a PipeWire (`pw-record`) audio source. Capture is
                 // now real; transcription additionally requires a registered
                 // voice engine (gated at PTT-press time via `is_available`).
-                let raw = instance.as_mut() as *mut TypioInstance;
-                match crate::voice::VoiceController::new(raw) {
+                match crate::voice::VoiceController::new(instance.clone()) {
                     Some(voice) => {
                         tracing::info!(
                             target: "typio.startup",
@@ -508,8 +486,10 @@ impl App {
             self.indicator_config = self.load_indicator_config();
         }
 
-        let raw = self.instance.as_mut().unwrap().as_mut() as *mut TypioInstance;
-        self.state_controller = Some(StateController::new(TypioRegistryView::new(raw)));
+        let instance = self.instance.as_ref().expect("instance stored").clone();
+        self.state_controller = Some(StateController::new(TypioRegistryView::new(
+            instance.clone(),
+        )));
 
         #[cfg(feature = "systray")]
         {
@@ -527,8 +507,8 @@ impl App {
                     "tray did not register (no org.kde.StatusNotifierWatcher on the session bus?)"
                 );
             }
-            install_tray_action_handler(&tray, raw, self.event_tx.clone());
-            if let Some(snapshot) = build_tray_snapshot(raw) {
+            install_tray_action_handler(&tray, self.event_tx.clone());
+            if let Some(snapshot) = build_tray_snapshot(&instance) {
                 tray.set_menu_snapshot(snapshot);
             }
             self.tray = Some(tray);
@@ -567,8 +547,8 @@ impl App {
 
         self.print_startup_banner();
 
-        let raw = self.instance.as_mut().unwrap().as_mut() as *mut TypioInstance;
-        let backend = TypioBackend::new(raw);
+        let instance = self.instance.as_ref().expect("instance stored").clone();
+        let backend = TypioBackend::new(instance.clone());
         let service = crate::service::StatusService::new(backend);
         let ipc_bus = Rc::new(RefCell::new(IpcBus::new(server, service)));
         // The IPC `daemon.stop` method routes through the same event
@@ -581,7 +561,7 @@ impl App {
 
         // IPC-driven mutations (engine/language switch, config reload, engine
         // load/unload) bypass the Rust `StateController` notification path —
-        // the registry is mutated directly via the C ABI. Route a
+        // the registry is mutated through its owned Rust API. Route a
         // `StateRefresh` back to the main loop so derived surfaces (controller
         // snapshot, tray icon, tooltip, menu) re-sync against the new state.
         // Without this, `typioctl language use en` would update the registry
@@ -607,7 +587,7 @@ impl App {
 
             #[cfg(feature = "systray")]
             if let Some(ref tray) = self.tray {
-                update_tray_from_controller(tray, controller, raw);
+                update_tray_from_controller(tray, controller, &instance);
             }
         }
 
@@ -666,12 +646,12 @@ impl App {
     #[cfg(feature = "wayland")]
     /// Reload core/platform configuration and notify listeners.
     fn reload_config(&mut self) {
-        let Some(ref mut instance) = self.instance else {
+        let Some(instance) = self.instance.as_ref().cloned() else {
             return;
         };
-        let raw = instance.as_mut() as *mut TypioInstance;
-        match typio::instance::typio_instance_reload_config(raw) {
-            typio::TypioResult::TypioOk => {
+        let reload = instance.borrow_mut().reload_config_rust();
+        match reload {
+            Ok(()) => {
                 tracing::info!(target: "typio.lifecycle", "configuration reloaded");
                 self.indicator_config = self.load_indicator_config();
                 self.refresh_state_surfaces();
@@ -695,7 +675,7 @@ impl App {
             _ => tracing::warn!(target: "typio.lifecycle", "configuration reload failed"),
         }
     }
-    /// Re-sync the Rust-side `StateController` with libtypio, then push
+    /// Re-sync the `StateController` with typio-core, then push
     /// the resulting state to every surface that mirrors it: the IPC
     /// bus (controller listeners), the tray icon + tooltip, and the
     /// tray menu snapshot.
@@ -705,15 +685,15 @@ impl App {
     /// drain of `DaemonEvent::StateRefresh` (tray-driven engine/language
     /// switches that bypass the Rust controller).
     fn refresh_state_surfaces(&mut self) {
-        let raw = match self.instance.as_mut() {
-            Some(inst) => inst.as_mut() as *mut TypioInstance,
+        let instance = match self.instance.as_ref() {
+            Some(instance) => instance.clone(),
             None => return,
         };
         if let Some(ref mut controller) = self.state_controller {
             controller.sync();
             #[cfg(feature = "systray")]
             if let Some(ref tray) = self.tray {
-                update_tray_from_controller(tray, controller, raw);
+                update_tray_from_controller(tray, controller, &instance);
             }
         }
         if let Some(ref ipc) = self.ipc_bus {
@@ -722,7 +702,7 @@ impl App {
         }
         #[cfg(feature = "systray")]
         if let Some(ref tray) = self.tray {
-            if let Some(snapshot) = build_tray_snapshot(raw) {
+            if let Some(snapshot) = build_tray_snapshot(&instance) {
                 tray.set_menu_snapshot(snapshot);
             }
         }
@@ -786,6 +766,12 @@ impl App {
                         should_exit = true;
                     }
                     DaemonEvent::StateRefresh => state_refresh = true,
+                    #[cfg(feature = "systray")]
+                    DaemonEvent::TrayAction(action) => {
+                        if tray::apply_tray_action(self.instance.as_ref(), action, &self.event_tx) {
+                            state_refresh = true;
+                        }
+                    }
                 }
             }
         }
@@ -809,25 +795,22 @@ impl App {
 
     /// Tear down runtime services.
     ///
-    /// Drops the dependents that hold raw pointers into `TypioInstance`
-    /// (router, frontend, repeat timer, controller) BEFORE the instance
-    /// itself, so their `Drop` impls see valid memory. Without this the
-    /// instance drops first inside `self.instance.take()`, frees the
-    /// `TypioInputContext` (it owns all contexts), and then the router's
-    /// own `Drop` calls `typio_input_context_free` on a dangling pointer
-    /// → double-free segfault.
+    /// Drops runtime-dependent services before the shared instance. The
+    /// router owns its input context and the voice controller may own an
+    /// in-flight process handle, so explicit order keeps lifecycle effects
+    /// deterministic even though all memory ownership is safe Rust.
     pub fn shutdown(&mut self) {
         // Drop the voice controller first: freeing its session joins any
-        // in-flight inference thread, which dereferences the instance's
-        // registry — so it must happen while the instance is still alive.
+        // in-flight inference thread and releases its process handle before
+        // the registry shuts down.
         #[cfg(feature = "wayland")]
         drop(self.voice.take());
         drop(self.router.take());
         drop(self.repeat_timer.take());
         drop(self.frontend.take());
         drop(self.state_controller.take());
-        if let Some(mut instance) = self.instance.take() {
-            instance.shutdown_rust();
+        if let Some(instance) = self.instance.take() {
+            instance.borrow_mut().shutdown_rust();
         }
     }
 

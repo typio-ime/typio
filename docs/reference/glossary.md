@@ -61,7 +61,7 @@ in depth.
 | **TIP v1** | Typio IPC Protocol version 1. Unix Domain Socket + length-prefixed JSON-RPC 2.0. | [IPC Protocol](ipc-protocol.md) |
 | **Focus Controller** | Derived-state, idempotent-diff pipeline that manages grab create/destroy, focus_in/focus_out, and keymap epoch scrubbing. Replaces the stored-phase FSM and reconciler. | [Focus Controller](../explanation/focus-controller.md) |
 | **Soft Pause** | Normal deactivate state where the grab object is retained (keys released, tracking reset) so the next activation can reuse it without rebuilding. | [Focus Controller](../explanation/focus-controller.md) |
-| **Input-Method Session** | A single `activate` → `deactivate` cycle on `zwp_input_method_v2`, distinct from the persistent `TypioWlSession` struct and the grab resource cycle. | [Input-Method Session](../explanation/input-method-session.md) |
+| **Input-Method Session** | A single `activate` → `deactivate` cycle on `zwp_input_method_v2`, distinct from persistent frontend/runtime session state and the grab resource cycle. | [Input-Method Session](../explanation/input-method-session.md) |
 
 ## Vocabulary to avoid
 

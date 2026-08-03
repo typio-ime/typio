@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed engine contracts.** The zero-dependency `typio-engine-protocol`
+  crate now owns fd 3 framing and typed handshakes, requests, replies, schema,
+  modes, and composition records. `typio-engine-manifest` is the shared parser
+  and validator used by the daemon and conformance tooling. `HostHello` carries
+  the daemon's exact config, data, and state roots so command-line overrides do
+  not leak through ambient-process assumptions.
+
 - **Inactive engine schema discovery.** Engine workers now publish typed
   `SCHEMA` records in EngineHello. The host probes executable manifests during
   discovery, validates each `engines.<name>.*` namespace, atomically replaces
@@ -18,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   models.
 
 - **Process-engine command surface.** `engine.describe` and `engine.invoke`
-  now bridge `TypioEngineSurfaceOps` through Typio Engine Protocol with
-  bounded, hex-encoded `list-commands` and `invoke-command` operations.
+  now use bounded, hex-encoded `list-commands` and `invoke-command` Engine
+  Protocol operations.
   Explicit command discovery or invocation instantiates an inactive worker,
   making engine-owned setup actions such as Sherpa-ONNX model installation
   reachable from `typioctl` and the settings client.
@@ -51,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rust-native runtime ownership.** The daemon now drives `typio-core`
+  through owned Rust values and explicit event queues. Instance, input-context,
+  configuration, registry, and voice lifetimes no longer cross raw pointers,
+  callback user data, or FFI vtables.
+
+- **Production-boundary engine vetting.** `typio-vet` now starts the manifest's
+  real worker executable, communicates through its private fd 3 channel, and
+  validates identity, schema, lifecycle, availability, modality, shutdown,
+  and resource bounds as a black-box process. Each run receives isolated
+  temporary config, data, and state roots.
+
 - **Wayland runtime loop split into cohesive reactor drivers.** Named poll
   sources and deadline reduction, ordered keyboard/text processing, and
   candidate Panel convergence now live in separate modules. The main loop keeps
@@ -66,11 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (stable since Rust 1.80), and the test-only `static mut` capture slot in
   `typio-core`'s input-context tests was rewritten as a `Mutex`-guarded
   `Send` newtype to remove the last `static mut` from the crate.
-- **Framework, ABI, and vet crates moved into the host workspace.**
-  `libtypio`, `typio-abi`, and `typio-vet` now live under `crates/` in this
-  repository, so engine-contract, framework, vet, and host changes can land in
-  one atomic commit instead of coordinating a sibling `libtypio` checkout or
-  git tag.
+- **Runtime and engine-contract crates consolidated in the host workspace.**
+  `typio-core`, `typio-engine-protocol`, `typio-engine-manifest`, and
+  `typio-vet` now live under `crates/`, so runtime, wire-contract, discovery,
+  conformance, and host changes can land atomically.
 - **`typioctl` moved into the main Typio workspace.** The command-line client
   now builds as `cargo build -p typioctl` from this repository, so TIP/UDS
   client changes can land atomically with daemon protocol changes.
@@ -97,16 +114,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **Legacy instance plugin-loader callback.** `TypioInstanceConfig` now owns
-  only config, data, and state directories. The unused `engine_dirs`,
-  `TypioPluginLoaderFunc`, and callback user-data fields were removed; the Rust
-  host is the single manifest-discovery owner and registers isolated process
-  backends explicitly.
-
-- **In-process engine lifecycle state.** The dead `TypioEngine.config_path`
-  field and exported host-side engine-object lifecycle helpers are gone.
-  Native workers use header-only constructors/accessors around their local
-  engine object; the daemon communicates only through protocol frames.
+- **Retired host and engine C ABI.** `typio-abi`, public C headers,
+  `libtypio.so`, pkg-config metadata, exported factories, vtables, and dynamic
+  engine loading have been removed. Isolated Typio Engine Protocol workers are
+  now the sole engine boundary; TIP remains the separate client IPC surface
+  (ADR-0046).
 
 - **Host watchdog.** The background thread that sampled the main loop's stage
   progress and `SIGKILL`ed the daemon on a 3 s stall has been removed entirely
@@ -116,7 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   intrusive `set_stage` annotations across the main loop. The one genuine
   unbounded blocking point it covered — config-file `read_to_string` on a
   stalled NFS/FUSE mount — is now bounded at 2 s at the source
-  (`typio_config_load_file` reads on a short-lived thread with a channel
+  (`Config::load` reads on a short-lived thread with a channel
   timeout). The per-draw `heartbeat`/`before_present` callbacks were removed
   from `FluxPanel::draw_candidates` / `draw_status_banner`, and the unused
   `watchdogArmed` IPC field was dropped. Supersedes ADR-0004 (watchdog part),
@@ -143,6 +155,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Focus-handoff key and candidate recovery.** Active-to-active input-field
+  handoffs now synthesize releases for keys forwarded by the old field and
+  stop its repeat chain, preventing Firefox `Ctrl-W` from repeating `W` into
+  an input on the next tab. Reactivation also invalidates the candidate
+  Panel's submitted-frame cache and re-presents unchanged candidates, so
+  switching windows cannot leave a compositor-unmapped popup missing until
+  the next focus cycle.
+
 - **Correct input-method `done` diagnostics.** Typio no longer treats
   compositor `done` events as acknowledgements of `commit(serial)` requests.
   The event applies updated text-input state, so a compositor that correctly
@@ -160,10 +180,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daemons survive and register duplicate Typio tray icons. UDS-only and
   UDS-bind-failure modes use the same wakeup path without periodic polling.
 
-- **Native worker ABI validation.** The shared C worker harness now validates
-  `typio_engine_abi_version()` before reading schema metadata or constructing
-  an engine, rejecting incompatible binaries before any vtable call.
-
 - **Failed process handshake schema rollback.** A first-time worker spawn that
   fails after publishing EngineHello now removes the schema it just installed,
   preventing stale fields and duplicate-registration failures in embedding
@@ -180,11 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RUSTSEC-2026-0194 and RUSTSEC-2026-0195 without adopting unreleased scanner
   API changes.
 
-- **Input-context destruction no longer double-frees owned contexts.**
-  `typio_instance_destroy_context` now transfers the context out of the
-  instance's owning collection exactly once instead of dropping it during
-  removal and then freeing the same allocation again. The real Rime process
-  integration suite now covers this teardown path.
+- **Owned input-context teardown.** `KeyboardRouter` now owns its boxed
+  `TypioInputContext`, eliminating the former duplicate raw-pointer ownership
+  path and making context destruction single-owner safe Rust.
 
 - **Candidate Panel navigation no longer performs avoidable full-frame work.**
   The Panel reserves a free SHM buffer before CPU drawing, lazily allocates its
@@ -213,8 +227,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Soft-pause also synthesizes releases for held forwarded keys so focus loss
   cannot leave the app with a stuck key.
 
-- **Rime engine intermittent load failures and missing mode on startup.** Three
-  root causes are addressed:
+- **Process-worker cold-start failures and missing mode recovery.** Three root
+  causes are addressed:
   1. **IPC timeout was a flat 100 ms for all requests.** `init`/`reload-config`
      on a cold Rime deploy can take seconds; the 100 ms budget caused a spurious
      timeout that left the socket mid-frame, cascading into permanent transport
@@ -229,17 +243,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      error the child is killed and the flag set. The next `with_engine` call
      transparently respawns a fresh worker (spawn + HELLO + init), so the
      daemon self-heals instead of staying broken for the rest of the session.
-  3. **Empty mode id dropped before first session.** Before the first Rime
-     session was created (deploy still running), `get_active_mode` returned a
-     default mode with `id = ""`. The framework's
-     `dispatch_observed_keyboard_mode` silently drops empty ids, so the host's
-     mode cache stayed empty and the indicator showed no mode until the first
-     successful `process_key` after deploy. The engine now caches a provisional
-     mode built from the configured schema id (`engines.rime.schema`), so the
-     host always receives a non-empty mode id. Additionally, the deploy-success
-     notification now eagerly creates a session for the focused context (if any)
-     and publishes mode, and the `availability` worker reply carries an
-     `ACTIVE_MODE` line so the host detects readiness + mode in one round-trip.
+  3. **Empty mode ids are ignored safely.** The runtime drops invalid empty
+     mode identities without corrupting its last-known mode; protocol workers
+     publish a non-empty active mode once initialized.
 
 - **Logging robustness and predictable level filtering.** Three issues in the
   logging path are fixed. (1) The daemon's verbosity filter was built from two
@@ -247,15 +253,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose interaction could silently cap or contradict the `-v`/`-vv` floor and
   `RUST_LOG` overrides. It is now a single `EnvFilter` directive
   (`<floor>,<RUST_LOG>`), so the CLI floor and per-target `RUST_LOG` refine
-  each other with no hidden default. (2) The libtypio logger forwarded records
-  to the host callback while still holding the callback's `Mutex`, and used
-  panicking `.lock().unwrap()` everywhere; a callback that itself logged (or a
-  panic on any lock-holding thread) could deadlock or poison the logger and
-  cascade into every subsequent log call. The callback is now invoked outside
-  the lock, and all logger mutexes tolerate poisoning. (3) Crash-dump
-  `typio_logger_dump_recent` wrote second-resolution timestamps while the
-  live callback carried milliseconds; the dump now uses milliseconds too, so
-  dumps and the live log are cross-referenceable.
+  each other with no hidden default. (2) Runtime records now use the `log`
+  facade and `tracing-log` bridge, removing the callback mutex, manually owned
+  sink, and cross-allocator message path. Host and runtime diagnostics share
+  one filter and writer.
 
 - **Voice recording and inference reliability.** Voice inference now owns a
   stable snapshot of its engine process, so switching, reloading, or unloading
@@ -270,7 +271,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete schema. Writes use strict schema validation, array values remain
   arrays, unset restores defaults, persistence errors reach the client, and an
   invalid on-disk reload preserves the last known-good config. Engine config
-  changes now reach process engines, including deferred voice reloads.
+  changes now reach process engines, including deferred voice reloads, using
+  the exact host-owned config root advertised in `HostHello`.
 
 - **TIP and engine lifecycle robustness.** The Unix socket now fails closed on
   peer-credential errors, bounds read/write queues, resumes partial nonblocking
@@ -289,7 +291,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `done` is a compositor state boundary, not a text-commit ack. ADR-0042 batch
   coalesce remains the only host-side preedit merge (pending-key drain).
 - **Fast Rime preedit/candidate updates now use staged text-input transactions.**
-  The keyboard router no longer maps every composition callback to an immediate
+  The keyboard router no longer maps every composition output to an immediate
   `zwp_input_method_v2.commit(serial)`. Composition-only preedit bursts are
   coalesced to the latest value for the pending-key drain, while commit text is
   flushed before the next key to preserve order. The old direct
@@ -297,7 +299,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InputMethodState::text_transaction_and_flush()` (ADR-0042).
 - **Host-managed candidate navigation boundaries.** Candidate Up/Down
   navigation now sends PageUp/PageDown to the engine at page edges so Rime can
-  page forward/backward, and host-local highlight moves keep libtypio's
+  page forward/backward, and host-local highlight moves keep typio-core's
   selected candidate in sync with the panel.
 - **Candidate panel CJK font fallback.** The CPU text renderer now prefers a
   consistent sans CJK face for Han, kana, and Hangul candidates instead of

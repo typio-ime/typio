@@ -59,12 +59,12 @@ const RECENT_INPUT_COOLDOWN: Duration = Duration::from_millis(3000);
 /// path, which has no live mode until the engine reports one).
 const MODE_CACHE_CAPACITY: usize = 8;
 
-/// Announcement salience. Mirrors libtypio's `TypioStatusSalience`. Governs
+/// Announcement salience. Mirrors typio-core's `ModeSalience`. Governs
 /// only the unprompted reveal; deliberate user actions always announce.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Salience {
     /// Home-keyboard-like; never announce on the focus or reactivate paths.
-    /// The default zero value of the libtypio enum.
+    /// The default/quiet runtime value.
     #[default]
     Quiet,
     /// Could surprise if typed into blind; eligible for unprompted reveal.
@@ -72,7 +72,7 @@ pub enum Salience {
 }
 
 /// A read-only snapshot of the keyboard engine mode at a particular moment.
-/// Mirrors the fields of libtypio's `TypioKeyboardEngineMode` that the
+/// Mirrors the fields of typio-core's `EngineMode` that the
 /// indicator consumes. Borrows its strings for zero-copy label building.
 #[derive(Debug, Clone, Copy)]
 pub struct EngineModeSnapshot<'a> {
@@ -92,7 +92,7 @@ impl EngineModeSnapshot<'_> {
     }
 }
 
-/// Indicator configuration. Production values are read from libtypio config
+/// Indicator configuration. Production values are read from typio-core config
 /// once at startup and on reload; tests use defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct IndicatorConfig {
@@ -110,7 +110,7 @@ impl Default for IndicatorConfig {
 }
 
 impl IndicatorConfig {
-    /// Build from raw libtypio config values. `duration_ms` is clamped to
+    /// Build from raw typio-core config values. `duration_ms` is clamped to
     /// the same range as the C original: too-small values fall back to the
     /// default (not silently clamped to the floor), too-large values clamp
     /// to the ceiling.

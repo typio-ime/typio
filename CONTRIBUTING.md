@@ -2,27 +2,21 @@
 
 ## Build and test
 
-Follow [Developer Setup](docs/dev/setup.md) for dependencies and the
-libtypio checkout, then:
+Follow [Developer Setup](docs/dev/setup.md) for native dependencies, then:
 
 ```bash
-cargo build --release --manifest-path ../libtypio/Cargo.toml
-meson compile -C ../../flux/build    # first time: meson setup ../../flux/build ../../flux
-export LD_LIBRARY_PATH="$PWD/../libtypio/target/release:$PWD/../../flux/build:${LD_LIBRARY_PATH}"
+meson compile -C ../optics/build
+export FLUX_BUILD_DIR="$PWD/../optics/build"
+export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
-cargo test -p typio-host
+cargo test -p typio-host -p typio-core \
+  -p typio-engine-protocol -p typio-engine-manifest -p typio-vet
 ```
 
 Before sending a change, run the relevant suites described in
-[Testing](docs/dev/testing.md). CI builds the shipping Rust daemon and runs
-the Cargo test suite against pinned sibling `libtypio` and `flux` checkouts.
-
-## libtypio version
-
-CI builds against the libtypio commit pinned by `LIBTYPIO_PINNED_REF` in
-`.github/workflows/ci.yml`. If your change needs newer libtypio API, bump
-the pin in its own commit. The canary job tracks libtypio `main`; its
-failures are informational and never block a pull request.
+[Testing](docs/dev/testing.md). The runtime, typed engine protocol, manifest
+parser, and conformance tool live in this workspace and change atomically.
+`flux` remains a sibling native build prerequisite.
 
 ## Changes that need more than code
 

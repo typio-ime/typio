@@ -6,12 +6,10 @@
 //! the minimum async-signal-safe work (set a flag and write an eventfd) and
 //! let the main loop react on its own thread.
 
-use std::ffi::c_void;
 use std::io;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use super::{DaemonEvent, DaemonEventSender, ReactorWaker};
+use super::ReactorWaker;
 
 /// Async-signal-safe shutdown flag.
 ///
@@ -21,28 +19,12 @@ use super::{DaemonEvent, DaemonEventSender, ReactorWaker};
 /// flag — keeping it signal-only preserves async-signal-safety.
 pub(super) static SHUTDOWN_FROM_SIGNAL: AtomicBool = AtomicBool::new(false);
 
-/// Process-global sender for the mode-changed callback. Stored in a
-/// `OnceLock` because the C ABI callback holds a raw `user_data` pointer
-/// that must be valid for the instance's lifetime, and there is only one
-/// daemon per process. The `Mutex` makes `&Sender` safely shareable
-/// across the engine communication thread (where out-of-process engine
-/// responses fire the callback) and the main loop thread.
-static MODE_CALLBACK_TX: OnceLock<std::sync::Mutex<DaemonEventSender>> = OnceLock::new();
-
 /// Raw eventfd used only by the async signal handler.
 ///
 /// `App` owns the descriptor through [`ReactorWaker`]. The daemon is a
 /// process singleton, so the descriptor remains valid from handler
 /// installation until `execv` or process exit.
 static REACTOR_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
-
-/// Install the wakeable sender used by [`mode_changed_trampoline`]. Called
-/// once from [`crate::app::App::init`] after the daemon event channel is
-/// wired. Subsequent calls are no-ops (the first sender wins), matching the
-/// singleton nature of the trampoline.
-pub(super) fn set_mode_callback_tx(tx: DaemonEventSender) {
-    let _ = MODE_CALLBACK_TX.set(std::sync::Mutex::new(tx));
-}
 
 /// Swap the shutdown flag and return the previous value. Used by the
 /// main loop's per-step drain to translate a signal into the same exit
@@ -81,29 +63,6 @@ fn wake_reactor_from_signal() {
         // accepts the full eight-byte counter or returns EAGAIN because it
         // is already readable; both outcomes satisfy the wakeup contract.
         let _ = libc::write(fd, value.as_ptr().cast::<libc::c_void>(), value.len());
-    }
-}
-
-/// C trampoline for `TypioKeyboardModeChangedCallback`. Fires when an
-/// engine reports a **deliberate** mode change (e.g. rime switching schema
-/// or toggling 中/A). Marshals to the main loop via `DaemonEvent::StateRefresh`;
-/// the main loop then reads the fresh mode from
-/// `typio_instance_get_last_keyboard_mode` and triggers the indicator's
-/// no-gate deliberate-change path.
-///
-/// The first parameter uses the **opaque** `typio_abi::TypioInstance`
-/// (not `typio::instance::TypioInstance`) to match the callback typedef
-/// exactly. The actual pointer is to the real struct; we never dereference
-/// it here, so the opacity is harmless.
-pub(super) extern "C" fn mode_changed_trampoline(
-    _instance: *mut typio_abi::TypioInstance,
-    _mode: *const typio_abi::TypioKeyboardEngineMode,
-    _user_data: *mut c_void,
-) {
-    if let Some(mutex) = MODE_CALLBACK_TX.get() {
-        if let Ok(tx) = mutex.lock() {
-            let _ = tx.send(DaemonEvent::StateRefresh);
-        }
     }
 }
 

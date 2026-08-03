@@ -1,21 +1,18 @@
 //! Keyboard event router.
 //!
-//! Bridges the Wayland input-method keyboard grab to libtypio's input
+//! Bridges the Wayland input-method keyboard grab to typio-core's input
 //! context. Decides whether a key is consumed by the engine or forwarded
 //! to the focused application via the virtual keyboard.
 
-use std::ffi::c_void;
 use std::time::Instant;
 
-use typio_abi::{TypioEventType, TypioKeyEvent};
+use typio::core::engine::{KeyEvent as EngineKeyEvent, KeyState as EngineKeyState};
 
-use super::ffi_callbacks::{
-    PendingComposition, PendingEngineOutput, on_commit_abi, on_composition_abi,
-};
 use super::helpers::{
     commit_candidate_should_fallback, host_selection_plain_key, is_voice_ptt_key,
     page_boundary_selected_index, should_suppress_untracked_modifier_release,
 };
+use super::output::{PendingComposition, PendingEngineOutput};
 use super::preedit_coalescer::{PreeditCoalescer, PreeditUpdate};
 use crate::candidate_guard::{
     HostSelectionAction, HostSelectionPageState, classify_host_selection,
@@ -58,12 +55,12 @@ pub enum RepeatOutcome {
     Stopped,
 }
 
-/// A keyboard router tied to a libtypio input context.
+/// A keyboard router that owns one typio-core input context.
 pub struct KeyboardRouter {
-    ctx: *mut typio::TypioInputContext,
-    /// Output staged by engine callbacks. Owned by this router and passed to
-    /// libtypio as callback user_data; no global lock or cross-context state.
-    pending_output: Box<PendingEngineOutput>,
+    ctx: Option<Box<typio::TypioInputContext>>,
+    /// Output drained from the owned context and staged until the host flushes
+    /// it; no global lock or cross-context state.
+    pending_output: PendingEngineOutput,
     /// Key currently held down and subject to auto-repeat, if any.
     /// Set on the initial press (whether the key was consumed by the
     /// engine or forwarded to the application) and cleared on release.
@@ -151,28 +148,11 @@ pub fn default_switch_binding() -> crate::keyboard_policy::ShortcutBinding {
 impl KeyboardRouter {
     /// Create a new router for the given TypioInstance.
     ///
-    /// # Safety
-    /// `instance` must be a valid, initialized `TypioInstance` pointer.
-    pub unsafe fn new(instance: *mut typio::TypioInstance) -> Option<Self> {
-        let ctx = typio::input_context::typio_input_context_new(instance);
-        if ctx.is_null() {
-            return None;
-        }
-        let mut pending_output = Box::<PendingEngineOutput>::default();
-        let pending_ptr = pending_output.as_mut() as *mut PendingEngineOutput as *mut c_void;
-        typio::input_context::typio_input_context_set_commit_callback(
-            ctx,
-            Some(on_commit_abi),
-            pending_ptr,
-        );
-        typio::input_context::typio_input_context_set_composition_callback(
-            ctx,
-            Some(on_composition_abi),
-            pending_ptr,
-        );
-        Some(Self {
-            ctx,
-            pending_output,
+    pub fn new(instance: &mut typio::TypioInstance) -> Self {
+        let ctx = typio::TypioInputContext::new_rust(instance);
+        Self {
+            ctx: Some(ctx),
+            pending_output: PendingEngineOutput::default(),
             repeat_key: None,
             repeat_mode: RepeatMode::Forward,
             physical_modifiers: Modifiers::NONE,
@@ -191,17 +171,21 @@ impl KeyboardRouter {
             voice_ptt_keycode: None,
             voice_ptt_pressed: false,
             voice_ptt_released: false,
-        })
+        }
     }
 
     /// Notify the engine that the input context has gained focus.
     pub fn focus_in(&mut self) {
-        typio::input_context::typio_input_context_focus_in(self.ctx);
+        if let Some(ctx) = self.ctx.as_mut() {
+            ctx.focus_in();
+        }
     }
 
     /// Notify the engine that the input context has lost focus.
     pub fn focus_out(&mut self) {
-        typio::input_context::typio_input_context_focus_out(self.ctx);
+        if let Some(ctx) = self.ctx.as_mut() {
+            ctx.focus_out();
+        }
     }
 
     /// Forget the last preedit we claimed to have sent to the compositor.
@@ -214,18 +198,21 @@ impl KeyboardRouter {
         self.preedit_coalescer.clear();
     }
 
-    /// True iff the libtypio input context currently reports itself focused.
+    /// True iff the runtime input context currently reports itself focused.
     pub fn is_focused(&self) -> bool {
-        typio::input_context::typio_input_context_is_focused(self.ctx)
+        self.ctx.as_deref().is_some_and(|ctx| ctx.is_focused())
     }
 
     pub fn has_context(&self) -> bool {
-        !self.ctx.is_null()
+        self.ctx.is_some()
     }
 
     /// Reset the engine's in-flight composition and candidate state.
     pub fn reset(&mut self) {
-        typio::input_context::typio_input_context_reset(self.ctx);
+        if let Some(ctx) = self.ctx.as_mut() {
+            ctx.reset();
+        }
+        self.capture_engine_output();
         self.pending_output.commit = None;
         self.pending_output.composition = None;
         self.pending_commit_flush = None;
@@ -239,6 +226,7 @@ impl KeyboardRouter {
 
     /// Drain any pending composition update and update preedit/candidates.
     pub fn drain_composition(&mut self, frontend: &mut InputMethodState, now: Instant) {
+        self.capture_engine_output();
         if let Some(pending) = self.pending_output.composition.take() {
             let PendingComposition {
                 preedit_text: preedit,
@@ -349,18 +337,42 @@ impl KeyboardRouter {
     /// after focus leaves. The matching physical release is later swallowed
     /// via [`Self::release_is_pending`].
     pub fn soft_pause(&mut self, frontend: &mut InputMethodState) {
-        for (keycode, track) in self.key_tracking_states.iter_mut().enumerate() {
-            if tracking_press_was_forwarded(*track) {
-                frontend.forward_key(0, keycode as u32, WL_KEYBOARD_KEY_STATE_RELEASED);
-                frontend.mark_synthetic_release(keycode as u32);
-                *track = KeyTrackState::ReleasedPending;
-            }
+        self.fence_key_routing(frontend);
+        self.pending_commit_flush = None;
+        self.preedit_coalescer.clear();
+    }
+
+    /// Fence transient key ownership at an active-to-active focus handoff.
+    ///
+    /// The grab and engine composition survive reactivation, but a forwarded
+    /// key gesture belongs to the old field. Synthetic releases and repeat
+    /// cancellation prevent that gesture from crossing into the new field.
+    /// Pending composition text is deliberately retained here; a real soft
+    /// pause clears it in [`Self::soft_pause`].
+    pub fn fence_key_routing(&mut self, frontend: &mut InputMethodState) {
+        for keycode in self.prepare_key_routing_fence() {
+            frontend.forward_key(0, keycode, WL_KEYBOARD_KEY_STATE_RELEASED);
+            frontend.mark_synthetic_release(keycode);
         }
+    }
+
+    /// Apply the local half of a focus-boundary key pause and return the
+    /// keycodes that need synthetic virtual-keyboard releases.
+    ///
+    /// Keeping the state transition separate from the Wayland writes makes
+    /// the active-to-active handoff regression testable without a compositor.
+    fn prepare_key_routing_fence(&mut self) -> Vec<u32> {
+        let forwarded_keycodes = self
+            .key_tracking_states
+            .iter()
+            .enumerate()
+            .filter_map(|(keycode, track)| {
+                tracking_press_was_forwarded(*track).then_some(keycode as u32)
+            })
+            .collect();
         let _ = tracking_mark_released_pending(&mut self.key_tracking_states);
         self.repeat_key = None;
         self.repeat_mode = RepeatMode::Forward;
-        self.pending_commit_flush = None;
-        self.preedit_coalescer.clear();
         self.physical_modifiers = Modifiers::NONE;
         self.modifiers_acquired = false;
         self.engine_tracked_mods = Modifiers::NONE;
@@ -369,6 +381,7 @@ impl KeyboardRouter {
         self.voice_ptt_keycode = None;
         self.voice_ptt_pressed = false;
         self.voice_ptt_released = false;
+        forwarded_keycodes
     }
 
     /// Scrub the current key generation and reset all per-key tracking.
@@ -424,9 +437,11 @@ impl KeyboardRouter {
         self.active_generation
     }
 
-    /// Raw input context pointer. The caller must not free it.
-    pub fn ctx(&self) -> *mut typio::TypioInputContext {
-        self.ctx
+    /// Update the surrounding text snapshot received from Wayland.
+    pub fn set_surrounding(&mut self, text: &str, cursor: i32, anchor: i32) {
+        if let Some(ctx) = self.ctx.as_mut() {
+            ctx.set_surrounding(text, cursor, anchor);
+        }
     }
 
     /// Try to handle `key` through host-managed candidate selection
@@ -497,15 +512,16 @@ impl KeyboardRouter {
             HostSelectionAction::Commit(idx) => {
                 let had_pending_output = self.pending_output.commit.is_some()
                     || self.pending_output.composition.is_some();
-                let r = typio::input_context::typio_input_context_commit_candidate(
-                    self.ctx, idx as i32,
-                );
+                let r = self
+                    .ctx
+                    .as_mut()
+                    .ok_or(typio::core::engine::EngineError::NotFound)
+                    .and_then(|ctx| ctx.commit_candidate(idx as i32));
+                self.capture_engine_output();
                 let produced_engine_output = !had_pending_output
                     && (self.pending_output.commit.is_some()
                         || self.pending_output.composition.is_some());
-                if r == typio_abi::TypioResult::TypioOk
-                    || !commit_candidate_should_fallback(r, produced_engine_output)
-                {
+                if r.is_ok() || !commit_candidate_should_fallback(&r, produced_engine_output) {
                     return Some(true);
                 }
                 tracing::debug!(
@@ -541,16 +557,17 @@ impl KeyboardRouter {
     }
 
     fn sync_host_candidate_selection(
-        &self,
+        &mut self,
         frontend: &mut InputMethodState,
         selected: usize,
         label: &'static str,
     ) -> bool {
-        let r = typio::input_context::typio_input_context_set_candidate_selection(
-            self.ctx,
-            selected as i32,
-        );
-        if r != typio_abi::TypioResult::TypioOk {
+        let r = self
+            .ctx
+            .as_mut()
+            .ok_or(typio::core::engine::EngineError::NotFound)
+            .and_then(|ctx| ctx.set_candidate_selection(selected));
+        if r.is_err() {
             tracing::debug!(
                 target: "typio.engine.host_sel",
                 selected,
@@ -811,7 +828,7 @@ impl KeyboardRouter {
     /// Compute the modifier mask the engine should see for `key`.
     ///
     /// This is the pure, FFI-free heart of [`Self::process_key_engine`],
-    /// factored out so it can be unit-tested without a live libtypio
+    /// factored out so it can be unit-tested without a live runtime
     /// context.
     ///
     /// We pass `active_generation_owned_keys = true`: once the first
@@ -844,24 +861,23 @@ impl KeyboardRouter {
 
     /// Shared engine-dispatch core used by both the initial-press and
     /// repeat paths. Builds the `TypioKeyEvent` with the supplied
-    /// `is_repeat` flag and forwards it to libtypio.
+    /// `is_repeat` flag and forwards it to the active engine backend.
     fn process_key_engine(
-        &self,
+        &mut self,
         key: &DecodedKeyEvent,
         xkb_mods_depressed: u32,
         is_repeat: bool,
     ) -> bool {
         let effective = self.engine_modifier_mask(key, xkb_mods_depressed);
 
-        let event = TypioKeyEvent {
-            struct_size: std::mem::size_of::<TypioKeyEvent>(),
-            type_: if key.state == 1 {
-                TypioEventType::TypioEventKeyPress
+        let event = EngineKeyEvent {
+            sym: typio::core::engine::KeySym::Raw(key.keysym),
+            state: if key.state == 1 {
+                EngineKeyState::Press
             } else {
-                TypioEventType::TypioEventKeyRelease
+                EngineKeyState::Release
             },
-            keycode: key.keycode,
-            keysym: key.keysym,
+            code: key.keycode,
             modifiers: effective.0,
             unicode: key.unicode.chars().next().unwrap_or('\0') as u32,
             time: key.time as u64,
@@ -872,7 +888,7 @@ impl KeyboardRouter {
         let timing_enabled = tracing::enabled!(target: "typio.engine.key", tracing::Level::TRACE)
             || tracing::enabled!(target: "typio.engine.key", tracing::Level::INFO);
         let started = timing_enabled.then(std::time::Instant::now);
-        let consumed = typio::input_context::typio_input_context_process_key(self.ctx, &event);
+        let consumed = self.ctx.as_mut().is_some_and(|ctx| ctx.process_key(&event));
         if let Some(started) = started {
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
             if elapsed_ms > 5.0 {
@@ -907,6 +923,7 @@ impl KeyboardRouter {
     /// [`Self::flush_pending_text`] after the matching composition has also had
     /// a chance to contribute a replacement preedit.
     pub fn drain_commit(&mut self) {
+        self.capture_engine_output();
         if let Some(text) = self.pending_output.commit.take() {
             // A commit replaces the existing preedit with the cursor before
             // inserting text.  Any deferred composition-only preedit from an
@@ -914,6 +931,16 @@ impl KeyboardRouter {
             // will be staged by drain_composition immediately after this.
             self.preedit_coalescer.clear();
             self.pending_commit_flush = Some(text);
+        }
+    }
+
+    fn capture_engine_output(&mut self) {
+        let Some(ctx) = self.ctx.as_mut() else {
+            return;
+        };
+        let events = ctx.drain_events().collect::<Vec<_>>();
+        for event in events {
+            self.pending_output.absorb(event);
         }
     }
 
@@ -1104,29 +1131,19 @@ impl KeyboardRouter {
     }
 }
 
-impl Drop for KeyboardRouter {
-    fn drop(&mut self) {
-        if !self.ctx.is_null() {
-            typio::input_context::typio_input_context_focus_out(self.ctx);
-            typio::input_context::typio_input_context_free(self.ctx);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keyboard::ffi_callbacks::on_commit;
     use crate::keyboard_policy::{KEY_CAPITAL_V, KEY_V};
 
     impl KeyboardRouter {
-        /// Test-only constructor that bypasses the libtypio setup. The
+        /// Test-only constructor that bypasses runtime setup. The
         /// provided context pointer is stored but not dereferenced by the
         /// lifecycle helpers under test.
-        pub(crate) fn new_for_test(ctx: *mut typio::TypioInputContext) -> Self {
+        pub(crate) fn new_for_test() -> Self {
             Self {
-                ctx,
-                pending_output: Box::default(),
+                ctx: None,
+                pending_output: PendingEngineOutput::default(),
                 repeat_key: None,
                 repeat_mode: RepeatMode::Forward,
                 physical_modifiers: Modifiers::NONE,
@@ -1185,47 +1202,35 @@ mod tests {
     #[test]
     fn commit_candidate_falls_back_only_when_no_output_was_produced() {
         assert!(commit_candidate_should_fallback(
-            typio_abi::TypioResult::TypioErrorNotFound,
+            &Err(typio::core::engine::EngineError::NotFound),
             false,
         ));
         assert!(!commit_candidate_should_fallback(
-            typio_abi::TypioResult::TypioErrorNotFound,
+            &Err(typio::core::engine::EngineError::NotFound),
             true,
         ));
         assert!(commit_candidate_should_fallback(
-            typio_abi::TypioResult::TypioError,
+            &Err(typio::core::engine::EngineError::Transport("failed".into())),
             false,
         ));
         assert!(!commit_candidate_should_fallback(
-            typio_abi::TypioResult::TypioError,
+            &Err(typio::core::engine::EngineError::Transport("failed".into())),
             true,
         ));
-        assert!(!commit_candidate_should_fallback(
-            typio_abi::TypioResult::TypioOk,
-            false,
-        ));
+        assert!(!commit_candidate_should_fallback(&Ok(()), false));
     }
 
     #[test]
-    fn commit_callback_stages_router_local_output() {
-        let text = std::ffi::CString::new("hello").unwrap();
+    fn owned_commit_event_stages_router_local_output() {
         let mut left = PendingEngineOutput::default();
         let mut right = PendingEngineOutput::default();
 
-        on_commit(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            &mut left as *mut PendingEngineOutput as *mut c_void,
-        );
+        left.absorb(typio::input_context::ContextEvent::Commit("hello".into()));
 
         assert_eq!(left.commit.as_deref(), Some("hello"));
         assert!(right.commit.is_none());
 
-        on_commit(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            &mut right as *mut PendingEngineOutput as *mut c_void,
-        );
+        right.absorb(typio::input_context::ContextEvent::Commit("hello".into()));
 
         assert_eq!(left.commit.as_deref(), Some("hello"));
         assert_eq!(right.commit.as_deref(), Some("hello"));
@@ -1233,7 +1238,7 @@ mod tests {
 
     #[test]
     fn scrub_generation_increments_epoch_and_clears_tracking() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         router.key_tracking_states[0] = KeyTrackState::Forwarded;
         router.key_tracking_generations[0] = 7;
         router.repeat_key = Some(DecodedKeyEvent {
@@ -1256,43 +1261,51 @@ mod tests {
 
     #[test]
     fn scrub_generation_never_produces_zero_generation() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         router.active_generation = u32::MAX;
         router.scrub_generation();
         assert_eq!(router.active_generation(), 1);
     }
 
     #[test]
-    fn soft_pause_marks_forwarded_keys_released_pending() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
-        router.key_tracking_states[0] = KeyTrackState::Forwarded;
+    fn focus_handoff_fences_forwarded_keys_and_repeat() {
+        let mut router = KeyboardRouter::new_for_test();
+        router.key_tracking_states[17] = KeyTrackState::Forwarded;
         router.key_tracking_states[1] = KeyTrackState::Idle;
-        router.key_tracking_states[2] = KeyTrackState::AppShortcut;
+        router.key_tracking_states[25] = KeyTrackState::AppShortcut;
         router.key_tracking_states[3] = KeyTrackState::SuppressedStartup;
         router.repeat_key = Some(DecodedKeyEvent {
-            keycode: 1,
-            xkb_keycode: 9,
-            keysym: 0x0061,
-            unicode: "a".to_string(),
+            keycode: 17, // W on a typical PC keymap
+            xkb_keycode: 25,
+            keysym: 0x0077,
+            unicode: "w".to_string(),
             state: 1,
             time: 0,
         });
+        router.physical_modifiers = Modifiers::CTRL;
+        router.pending_commit_flush = Some("commit".to_string());
+        router.preedit_coalescer.stage(
+            PreeditUpdate {
+                text: "preedit".to_string(),
+                cursor: 7,
+                engine_cursor_pos: 7,
+            },
+            Instant::now(),
+        );
 
-        // soft_pause needs an InputMethodState only for synthetic
-        // forward_key; tests cannot build a live Wayland frontend, so
-        // exercise the pure tracking transition via the mark helper and
-        // the tracking APIs used by the event loop.
-        tracking_mark_released_pending(&mut router.key_tracking_states);
-        router.repeat_key = None;
-        router.physical_modifiers = Modifiers::NONE;
+        // Models Ctrl-W moving focus to a new field before W-up arrives. The
+        // active-to-active reactivation path must release W and terminate its
+        // repeat chain even though the keyboard grab itself is retained.
+        let synthetic_releases = router.prepare_key_routing_fence();
 
+        assert_eq!(synthetic_releases, vec![17, 25]);
         assert_eq!(
-            router.key_tracking_states[0],
+            router.key_tracking_states[17],
             KeyTrackState::ReleasedPending
         );
         assert_eq!(router.key_tracking_states[1], KeyTrackState::Idle);
         assert_eq!(
-            router.key_tracking_states[2],
+            router.key_tracking_states[25],
             KeyTrackState::ReleasedPending
         );
         assert_eq!(
@@ -1301,11 +1314,19 @@ mod tests {
         );
         assert!(router.repeat_key.is_none());
         assert_eq!(router.physical_modifiers, Modifiers::NONE);
+        assert_eq!(router.pending_commit_flush.as_deref(), Some("commit"));
+        assert_eq!(
+            router
+                .preedit_coalescer
+                .pending()
+                .map(|update| update.text.as_str()),
+            Some("preedit")
+        );
     }
 
     #[test]
     fn on_forward_marks_keycode_for_symmetric_release() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         let key = DecodedKeyEvent {
             keycode: 57, // Space on a typical PC keymap
             xkb_keycode: 65,
@@ -1325,7 +1346,7 @@ mod tests {
 
     #[test]
     fn on_consumed_does_not_require_symmetric_release() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         let key = DecodedKeyEvent {
             keycode: 57,
             xkb_keycode: 65,
@@ -1342,13 +1363,13 @@ mod tests {
 
     #[test]
     fn is_focused_handles_null_ctx_gracefully() {
-        let router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let router = KeyboardRouter::new_for_test();
         assert!(!router.is_focused());
     }
 
     #[test]
     fn preedit_tracking_starts_empty_and_resets() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         router.preedit_tracking.last_text = Some("ni".to_string());
         router.preedit_tracking.last_cursor = 2;
         router.preedit_tracking_reset();
@@ -1376,7 +1397,7 @@ mod tests {
 
     #[test]
     fn switch_chord_fires_on_clean_ctrl_shift_release() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         // Press Ctrl, then Shift: the completing press must NOT fire.
         assert!(!router.track_switch_modifier(Modifiers::CTRL, true));
         assert!(!router.track_switch_modifier(Modifiers::SHIFT, true));
@@ -1395,7 +1416,7 @@ mod tests {
         // The Ctrl+Shift+V regression: a non-modifier key during the
         // gesture must cancel the switch even if it lifts before the
         // modifiers do (the latch stays set until the gesture ends).
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         router.track_switch_modifier(Modifiers::CTRL, true);
         router.track_switch_modifier(Modifiers::SHIFT, true);
         // V down then up (dispatch_key sets the latch on a non-mod press).
@@ -1407,7 +1428,7 @@ mod tests {
 
     #[test]
     fn super_v_press_and_release_are_voice_ptt_shortcut() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         let press = DecodedKeyEvent {
             keycode: 47,
             xkb_keycode: 55,
@@ -1433,7 +1454,7 @@ mod tests {
 
     #[test]
     fn super_capital_v_is_voice_ptt_shortcut() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         let press = DecodedKeyEvent {
             keycode: 47,
             xkb_keycode: 55,
@@ -1449,7 +1470,7 @@ mod tests {
 
     #[test]
     fn single_modifier_release_does_not_switch() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         // Only Ctrl is ever held: the full set is never reached.
         assert!(!router.track_switch_modifier(Modifiers::CTRL, true));
         assert!(!router.track_switch_modifier(Modifiers::CTRL, false));
@@ -1460,7 +1481,7 @@ mod tests {
         // A taint left over from earlier typing must not block the next
         // chord: starting a fresh gesture (first chord modifier down from
         // clean) clears the latch.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         router.shortcut_saw_non_modifier = true; // stale taint
         router.track_switch_modifier(Modifiers::CTRL, true);
         router.track_switch_modifier(Modifiers::SHIFT, true);
@@ -1469,7 +1490,7 @@ mod tests {
 
     #[test]
     fn scrub_generation_clears_switch_chord_state() {
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
         router.track_switch_modifier(Modifiers::CTRL, true);
         router.track_switch_modifier(Modifiers::SHIFT, true);
         router.shortcut_saw_non_modifier = true;
@@ -1489,7 +1510,7 @@ mod tests {
     // triggering an unwanted mode toggle. They drive the real
     // `dispatch_key` path (seeding + track_switch_modifier + mask
     // computation) and read back the exact mask the engine would receive
-    // via `engine_modifier_mask`, without needing a live libtypio context.
+    // via `engine_modifier_mask`, without needing a live runtime context.
 
     use crate::keyboard_policy::{KEY_ALT_L, KEY_CONTROL_L, KEY_SHIFT_L, KEY_SUPER_L};
 
@@ -1512,7 +1533,7 @@ mod tests {
         // the engine still carrying the Super bit, so the engine sees a
         // chord (Super+Shift) and does NOT treat it as a lone-Shift
         // mode toggle.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         // Press Super. xkb snapshot reports Super. Mask must include it.
         router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
@@ -1552,7 +1573,7 @@ mod tests {
         // at all at release time (worst-case stale snapshot). Because we
         // seed physical state and track per-key, Super must still be
         // present on the Shift release.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
         router.dispatch_key(
@@ -1574,7 +1595,7 @@ mod tests {
         // sibling modifier) must reach the engine with an empty blocking
         // mask. This is the gesture engines DO treat as a mode toggle,
         // and the fix must not suppress it.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         router.dispatch_key(&mod_key(KEY_SHIFT_L, true, 1), Modifiers::SHIFT.0);
 
@@ -1600,7 +1621,7 @@ mod tests {
     #[test]
     fn alt_shift_release_carries_alt_bit() {
         // The fix generalises to any blocking sibling, not just Super.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         router.dispatch_key(&mod_key(KEY_ALT_L, true, 1), Modifiers::ALT.0);
         router.dispatch_key(
@@ -1621,7 +1642,7 @@ mod tests {
         // The existing Ctrl+Shift engine-switch chord must keep working
         // after the mask fix — the chord detection is independent of the
         // mask reported to the engine.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         // Ctrl down, Shift down, Shift up: chord must fire exactly once.
         assert!(!router.take_switch_chord_fired());
@@ -1643,7 +1664,7 @@ mod tests {
     #[test]
     fn super_shift_does_not_fire_ctrl_shift_chord() {
         // Super+Shift must NOT be mistaken for the Ctrl+Shift switch.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
         router.dispatch_key(
@@ -1663,7 +1684,7 @@ mod tests {
         // leak into the new generation: scrub_generation resets the
         // baseline, and the first event of the new generation re-seeds
         // it from xkb rather than trusting stale physical state.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         // Hold Super in the old generation.
         router.dispatch_key(&mod_key(KEY_SUPER_L, true, 1), Modifiers::SUPER.0);
@@ -1692,7 +1713,7 @@ mod tests {
         // press event arrives for it), the first event of the generation
         // must seed it from the xkb snapshot, so a subsequent sibling
         // release still carries it.
-        let mut router = KeyboardRouter::new_for_test(std::ptr::null_mut());
+        let mut router = KeyboardRouter::new_for_test();
 
         // No Super press event; it was already held. First event is the
         // Shift press, whose xkb snapshot reports Super|Shift.

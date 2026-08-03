@@ -7,7 +7,7 @@
 //! from ONE place instead of every surface reaching into `TypioInstance`, and
 //! broadcasts change notifications so surfaces update uniformly.
 //!
-//! The libtypio registry/config reads are abstracted behind [`RegistryView`]
+//! Runtime registry/config reads are abstracted behind [`RegistryView`]
 //! so the notify/broadcast logic is unit-testable without a live instance; the
 //! production adapter wraps `TypioInstance` via the `typio` crate.
 
@@ -34,7 +34,7 @@ pub struct EngineMode {
     pub icon_name: Option<String>,
 }
 
-/// The libtypio registry/config reads the controller depends on. The live
+/// The runtime registry/config reads the controller depends on. The live
 /// implementation wraps `TypioInstance`; tests provide a fake.
 pub trait RegistryView {
     fn active_keyboard(&self) -> Option<String>;

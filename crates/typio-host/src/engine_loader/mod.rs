@@ -1,9 +1,9 @@
 //! Engine loader — discovers `typio-engine-*.toml` manifests on disk and
-//! registers the engines they describe with libtypio's [`EngineRegistry`].
+//! registers the engines they describe with typio-core's [`EngineRegistry`].
 //!
 //! It replaces the former hand-rolled C TOML parser, capability-set lookup,
 //! and path-resolution helpers with typed Rust manifest discovery on top of
-//! libtypio's native registry API. Startup and `engine.reload` both use this
+//! typio-core's native registry API. Startup and `engine.reload` both use this
 //! loader, so validation and schema probing follow one path.
 //!
 //! ## Architecture
@@ -158,7 +158,7 @@ impl EngineLoader {
     ///   4. Map `type` to [`EngineType`].
     ///   5. Negotiate capabilities (required must be a subset of host's caps).
     ///   6. Construct argv with path resolution.
-    ///   7. Build a [`ProcessBackend`] and register it via libtypio's native
+    ///   7. Build a [`ProcessBackend`] and register it via typio-core's native
     ///      Rust API. Engine is `EngineError::AlreadyExists` if another
     ///      engine with the same name is already registered — surfaced as
     ///      [`LoadError::Skipped`] with reason `AlreadyRegistered` (the
@@ -214,7 +214,7 @@ impl EngineLoader {
             )));
         }
 
-        // Register via libtypio's native Rust API.
+        // Register via typio-core's native Rust API.
         let should_probe = command_is_available(&argv[0]);
         let mut backend = ProcessBackend::new(info, argv);
         // Source-tree tests and manifests for optional packages may point to a
@@ -311,7 +311,7 @@ pub enum SkipReason {
 
 /// Errors that prevent a manifest from loading. Distinguished from
 /// [`SkipReason`] in that these indicate something is wrong with the file,
-/// the system, or libtypio — not a deliberate skip.
+/// the system, or typio-core — not a deliberate skip.
 #[derive(Debug)]
 pub enum LoadError {
     /// Could not read, parse, or build argv from the manifest.

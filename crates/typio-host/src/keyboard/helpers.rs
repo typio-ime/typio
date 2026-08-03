@@ -19,10 +19,10 @@ pub(super) fn page_boundary_selected_index(keysym: u32, candidate_count: usize) 
 }
 
 pub(super) fn commit_candidate_should_fallback(
-    result: typio_abi::TypioResult,
+    result: &typio::core::engine::Result<()>,
     produced_engine_output: bool,
 ) -> bool {
-    result != typio_abi::TypioResult::TypioOk && !produced_engine_output
+    result.is_err() && !produced_engine_output
 }
 
 pub(super) fn host_selection_plain_key(modifiers: Modifiers) -> bool {

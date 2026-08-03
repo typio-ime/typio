@@ -4,7 +4,7 @@ ADRs are append-only records of significant design decisions in the Typio
 workspace. Once accepted, they are not edited; a new ADR supersedes an old one
 if a decision changes.
 
-Historical framework-core decisions (engine ABI, composition contract) now live
+Historical framework-core decisions (including the retired engine ABI) live
 under `crates/typio-core/docs/adr/`. New decisions that affect the combined
 workspace or host/framework integration live in this ADR set.
 
@@ -63,7 +63,7 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0035](0035-bilingual-migration-to-rust.md) | Bilingual migration of the host to Rust | Accepted (D5 superseded for settings by ADR-0045) |
 | [ADR-0036](0036-soft-present-gate-for-candidate-panel.md) | Soft Present Gate for the Candidate Panel | Superseded by ADR-0040 (present gate retained as pacing hygiene only) |
 | [ADR-0037](0037-demand-armed-watchdog-cadence.md) | Demand-Armed Watchdog Cadence | Superseded by ADR-0041 (watchdog removed) |
-| [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Accepted (supersedes ADR-0035 decision D1) |
+| [ADR-0038](0038-framework-abi-vet-monorepo.md) | Framework, ABI, and Vet Monorepo | Superseded by ADR-0046 |
 | [ADR-0039](0039-cli-workspace-integration.md) | CLI Workspace Integration | Accepted (amends ADR-0038; client duplication and settings deferral superseded by ADR-0045) |
 | [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) | CPU Canvas Render with Host-Managed SHM Buffers | Accepted (supersedes ADR-0010/0013/0036; removes Vulkan/dma-buf presentation) |
 | [ADR-0041](0041-remove-watchdog.md) | Remove the host watchdog | Accepted (supersedes ADR-0004/0024/0037; bounds config-read instead) |
@@ -71,6 +71,7 @@ workspace or host/framework integration live in this ADR set.
 | [ADR-0043](0043-bounded-preedit-coalescing.md) | Bounded preedit coalescing across reactor steps | Accepted (amends ADR-0042) |
 | [ADR-0044](0044-bounded-panel-rendering.md) | Bounded Panel rendering before SHM presentation | Accepted (supersedes ADR-0013's indefinitely grow-only sizing) |
 | [ADR-0045](0045-rust-settings-workspace-integration.md) | Rust Settings Workspace Integration | Accepted (supersedes ADR-0035 D5 for settings and ADR-0039's deferral) |
+| [ADR-0046](0046-engine-protocol-only-runtime.md) | Engine-Protocol-Only Runtime | Accepted (retires the C ABI and amends ADR-0030/0038) |
 
 ## Looking for something else?
 

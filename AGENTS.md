@@ -137,7 +137,8 @@ export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 cargo build --release -p typio-host --bin typio
 cargo build --release -p typioctl
-cargo test -p typio-host -p typio-core -p typio-abi -p typio-vet -p typioctl
+cargo test -p typio-host -p typio-core -p typio-engine-protocol \
+  -p typio-engine-manifest -p typio-vet -p typioctl
 ```
 
 `optics` is a native C monorepo with a Meson build tree; `flux` is a
@@ -149,7 +150,7 @@ The intended local checkout layout is:
 
 | Path | Role |
 |---|---|
-| `/home/ming/projects/typio/` | This repo: host, framework, ABI, vet, and CLI workspace |
+| `/home/ming/projects/typio/` | This repo: host, runtime, engine protocol, manifest, vet, and client workspace |
 | `/home/ming/projects/typio-engines/typio-engine-*` | Engine repositories |
 | `/home/ming/projects/typio-settings/` | Meson/C settings panel |
 | `/home/ming/projects/optics/` | Vulkan/GPU canvas libraries used by the Panel |

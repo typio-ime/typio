@@ -37,7 +37,7 @@ pub enum UiOwner {
 }
 
 /// Panel-coordinator configuration. Production values are read from the
-/// libtypio config; tests can use defaults.
+/// typio-core config; tests can use defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct PanelCoordinatorConfig {
     pub anchor_probe_enabled: bool,
@@ -54,7 +54,7 @@ impl Default for PanelCoordinatorConfig {
 }
 
 impl PanelCoordinatorConfig {
-    /// Build from raw libtypio config values.
+    /// Build from raw typio-core config values.
     pub fn from_values(anchor_probe_enabled: bool, anchor_timeout_ms: i64) -> Self {
         let mut timeout = anchor_timeout_ms.clamp(0, i64::MAX) as u64;
         if timeout < MIN_ANCHOR_TIMEOUT_MS {

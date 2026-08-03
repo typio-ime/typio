@@ -6,8 +6,6 @@
 
 use std::time::Instant;
 
-use typio::instance::TypioInstance;
-
 use crate::keyboard::router::RepeatOutcome;
 
 use super::{App, DaemonEvent, arm_repeat, tray::cycle_active_language};
@@ -84,12 +82,9 @@ impl App {
                         // falls back to engine cycling. Suppresses
                         // forwarding of the modifier press itself.
                         tracing::debug!(target: "typio.indicator", "Ctrl+Shift language-switch chord fired");
-                        let instance_ptr = self
-                            .instance
-                            .as_mut()
-                            .map(|i| i.as_mut() as *mut TypioInstance)
-                            .unwrap_or(std::ptr::null_mut());
-                        cycle_active_language(instance_ptr);
+                        if let Some(instance) = self.instance.as_ref() {
+                            cycle_active_language(instance);
+                        }
                         let _ = self.event_tx.send(DaemonEvent::StateRefresh);
                     } else if router.take_voice_ptt_pressed() {
                         tracing::debug!(target: "typio.voice", "Super+V push-to-talk pressed");

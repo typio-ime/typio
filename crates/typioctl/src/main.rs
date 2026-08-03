@@ -92,7 +92,7 @@ enum EngineVerb {
     Setup { name: Option<String> },
     /// Load an engine from a specific path
     Load {
-        /// Absolute path to the engine .so file
+        /// Path to the engine manifest
         path: String,
     },
     /// Unload an engine by name
