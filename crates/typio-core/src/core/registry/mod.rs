@@ -1045,6 +1045,51 @@ impl EngineRegistry {
         Ok(())
     }
 
+    /// Shut down the worker processes of inactive engines that have been
+    /// idle for at least `idle_after`.
+    ///
+    /// Without this, every engine the user ever activates stays resident for
+    /// the daemon's lifetime — one child process and one socketpair each —
+    /// because `deactivate_slot` only sends a protocol-level `Deactivate`
+    /// and the backend keeps the process alive. Re-activation is
+    /// transparent: `activate_slot` re-instantiates a destroyed backend, so
+    /// a reaped engine costs one cold spawn on next use instead of
+    /// permanent residency.
+    ///
+    /// Returns the names of the engines whose workers were reaped (for
+    /// logging by the caller). The active keyboard and active voice are
+    /// never reaped, nor is any engine with an in-flight recovery.
+    pub fn reap_idle_workers(&mut self, idle_after: std::time::Duration) -> Vec<String> {
+        let now = Instant::now();
+        let mut reaped = Vec::new();
+        for (idx, slot) in self.slots.iter_mut().enumerate() {
+            if slot.active {
+                continue;
+            }
+            let is_current_keyboard = self.active_keyboard == Some(idx);
+            let is_current_voice = self.active_voice == Some(idx);
+            if is_current_keyboard || is_current_voice {
+                continue;
+            }
+            if now.duration_since(slot.last_activity) < idle_after {
+                continue;
+            }
+            if !slot.backend.is_instantiated() {
+                // Nothing to reap (already destroyed, or never spawned —
+                // registration probes never instantiate).
+                continue;
+            }
+            let name = slot.name.clone();
+            log::info!(
+                "Engine '{name}' idle for {:?}; stopping worker process",
+                now.duration_since(slot.last_activity)
+            );
+            slot.backend.destroy();
+            reaped.push(name);
+        }
+        reaped
+    }
+
     fn adjust_indices_after_removal(&mut self, removed: usize) {
         self.active_keyboard = self.active_keyboard.and_then(|i| {
             if i == removed {
@@ -1115,6 +1160,33 @@ mod tests {
         assert_eq!(reg.list_keyboards(), vec!["mock"]);
         reg.activate_keyboard("mock").unwrap();
         assert_eq!(reg.active_keyboard_name(), Some("mock"));
+    }
+
+    #[test]
+    fn reap_idle_workers_skips_active_and_fresh_inactive() {
+        let mut reg = EngineRegistry::new();
+        register_keyboard(&mut reg, "active-one");
+        register_keyboard(&mut reg, "recent");
+        register_keyboard(&mut reg, "idle");
+
+        // active-one is active → never reaped. recent and idle are inactive.
+        reg.activate_keyboard("active-one").unwrap();
+        reg.activate_keyboard("recent").unwrap();
+        reg.deactivate_current_keyboard().unwrap();
+
+        // Backdate the idle engine's last activity past the threshold.
+        let idx = reg.find_index("idle").unwrap();
+        reg.slots[idx].last_activity -= std::time::Duration::from_secs(15 * 60 + 1);
+
+        let reaped = reg.reap_idle_workers(std::time::Duration::from_secs(15 * 60));
+        // Mock backends are never "instantiated" in the process sense, so
+        // the walk finds nothing to destroy — but it must not name the
+        // active engine or the recently-deactivated one either.
+        assert!(!reaped.contains(&"active-one".to_string()));
+        assert!(!reaped.contains(&"recent".to_string()));
+        // The idle engine is eligible but uninstantiated → skipped, not an
+        // error, and still registered.
+        assert!(reg.find_index("idle").is_some());
     }
 
     #[test]

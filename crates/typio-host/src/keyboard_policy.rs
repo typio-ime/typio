@@ -1,13 +1,11 @@
 //! Keyboard policy: pure decision rules for modifier handling, shortcut
 //! chords, repeat gating, and per-key tracking state.
 //!
-//! Phase 5 port of the four `src/wayland/keyboard/policy/*.c` files
-//! (modifiers.c, chords.c, repeat_guard.c, tracker.c — 227 lines of C
-//! total). All pure functions; no I/O, no state, no frontend coupling.
-//! These are the decision predicates the keyboard router (not yet
-//! ported) consults at every key event.
+//! All pure functions; no I/O, no state, no frontend coupling.
+//! These are the decision predicates the keyboard router consults at every
+//! key event.
 
-use crate::repeat_timer::Modifiers;
+use typio_host_types::Modifiers;
 
 // ── Keysym constants ─────────────────────────────────────────────────────
 //
@@ -108,17 +106,6 @@ pub fn effective_modifiers(
     modifiers_for_current_key(modifiers, keysym, state)
 }
 
-/// Overlay xkb-derived Shift/Ctrl/Alt/Super onto physical (which may be
-/// stale for those keys). Port of `sync_physical_modifiers` in C.
-pub fn sync_physical_modifiers(
-    physical_modifiers: Modifiers,
-    xkb_modifiers: Modifiers,
-) -> Modifiers {
-    let blocking =
-        Modifiers(Modifiers::SHIFT.0 | Modifiers::CTRL.0 | Modifiers::ALT.0 | Modifiers::SUPER.0);
-    Modifiers((physical_modifiers.0 & !blocking.0) | (xkb_modifiers.0 & blocking.0))
-}
-
 fn modifiers_for_current_key(modifiers: Modifiers, keysym: Keysym, state: u32) -> Modifiers {
     let bit = modifier_bit_for_keysym(keysym);
     if bit == Modifiers::NONE {
@@ -144,60 +131,6 @@ pub struct ShortcutBinding {
     pub keysym: Keysym,
 }
 
-/// True iff `keysym` is one of the physical keys that produces a
-/// modifier in `binding.modifiers`.
-pub fn chord_is_switch_modifier(binding: &ShortcutBinding, keysym: Keysym) -> bool {
-    keysym_is_modifier_for(binding.modifiers, keysym)
-}
-
-/// True iff the chord should fire an engine switch now, given current
-/// state.
-///
-/// Rules (mirrors `typio_wl_shortcut_chord_should_switch_engine`):
-/// - already triggered in this gesture → no
-/// - saw a non-modifier key in between → no
-/// - current keysym isn't a chord modifier → no
-/// - required modifier set isn't fully held → no
-/// - otherwise yes
-pub fn chord_should_switch_engine(
-    binding: &ShortcutBinding,
-    keysym: Keysym,
-    modifiers: Modifiers,
-    saw_non_modifier: bool,
-    already_triggered: bool,
-) -> bool {
-    if already_triggered || saw_non_modifier {
-        return false;
-    }
-    if !keysym_is_modifier_for(binding.modifiers, keysym) {
-        return false;
-    }
-    // All required modifier bits must be set.
-    (modifiers.0 & binding.modifiers.0) == binding.modifiers.0
-}
-
-fn keysym_is_modifier_for(required_mods: Modifiers, keysym: Keysym) -> bool {
-    if required_mods.intersects(Modifiers::CTRL)
-        && (keysym == KEY_CONTROL_L || keysym == KEY_CONTROL_R)
-    {
-        return true;
-    }
-    if required_mods.intersects(Modifiers::SHIFT)
-        && (keysym == KEY_SHIFT_L || keysym == KEY_SHIFT_R)
-    {
-        return true;
-    }
-    if required_mods.intersects(Modifiers::ALT) && (keysym == KEY_ALT_L || keysym == KEY_ALT_R) {
-        return true;
-    }
-    if required_mods.intersects(Modifiers::SUPER)
-        && (keysym == KEY_SUPER_L || keysym == KEY_SUPER_R)
-    {
-        return true;
-    }
-    false
-}
-
 // ── repeat_guard ─────────────────────────────────────────────────────────
 
 /// True iff a modifier transition between two samples should cancel any
@@ -215,26 +148,22 @@ pub fn repeat_should_cancel_on_modifier_transition(
 }
 
 /// True iff keyboard repeat should fire for a key in the given tracking
-/// state. States like `SuppressedStartup`/`ReleasedPending`/
-/// `EngineNotReady` cancel repeat.
+/// state. A key whose release was already synthesized at a focus boundary
+/// (`ReleasedPending`) must not repeat: its gesture belongs to the field
+/// that just lost focus.
 ///
 /// Port of `typio_wl_repeat_should_run_for_state`.
 pub fn repeat_should_run_for_state(state: KeyTrackState) -> bool {
-    !matches!(
-        state,
-        KeyTrackState::SuppressedStartup
-            | KeyTrackState::ReleasedPending
-            | KeyTrackState::EngineNotReady
-    )
+    !matches!(state, KeyTrackState::ReleasedPending)
 }
 
 // ── tracker ──────────────────────────────────────────────────────────────
 
-/// Per-key tracking state. Port of `TypioKeyTrackState` enum.
+/// Per-key tracking state.
 ///
-/// Each key the host routes can be in exactly one of these states. The
-/// state machine transitions are documented in
-/// `src/wayland/internal.h` near the `TypioKeyTrackState` definition.
+/// Each key the host routes can be in exactly one of these states. Voice
+/// push-to-talk and the switch chord are tracked by separate latches on the
+/// router (`voice_ptt_keycode`, `shortcut_saw_non_modifier`), not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum KeyTrackState {
@@ -243,45 +172,23 @@ pub enum KeyTrackState {
     Idle = 0,
     /// Key was forwarded to the focused app (engine did not consume).
     Forwarded = 1,
-    /// Key is a basic passthrough (no engine active).
-    BasicPassthrough = 2,
-    /// Key is an application shortcut bypassing the engine.
-    AppShortcut = 3,
     /// Key was forwarded but its physical release is still pending (used
     /// to swallow the release after a focus transition).
-    ReleasedPending = 4,
-    /// Key is being suppressed because the engine is still warming up
-    /// (engine-not-ready startup guard).
-    SuppressedStartup = 5,
-    /// Key is being suppressed because the active engine reports
-    /// `EngineAvailability::Preparing` or `::Failed`.
-    EngineNotReady = 6,
-    /// Key is the push-to-talk hotkey for voice input.
-    VoicePtt = 7,
-    /// Key would be push-to-talk but no voice engine is available.
-    VoicePttUnavail = 8,
+    ReleasedPending = 2,
 }
 
 impl KeyTrackState {
-    /// Stable string name for trace output. Matches the C
-    /// `typio_wl_key_tracking_state_name`.
+    /// Stable string name for trace output.
     pub fn name(self) -> &'static str {
         match self {
             KeyTrackState::Idle => "idle",
             KeyTrackState::Forwarded => "forwarded",
-            KeyTrackState::BasicPassthrough => "basic_passthrough",
-            KeyTrackState::AppShortcut => "app_shortcut",
             KeyTrackState::ReleasedPending => "released_pending",
-            KeyTrackState::SuppressedStartup => "suppressed_startup",
-            KeyTrackState::EngineNotReady => "engine_not_ready",
-            KeyTrackState::VoicePtt => "voice_ptt",
-            KeyTrackState::VoicePttUnavail => "voice_ptt_unavail",
         }
     }
 }
 
-/// Free function form of [`KeyTrackState::name`] — matches the C API
-/// surface (`typio_wl_key_tracking_state_name`).
+/// Free function form of [`KeyTrackState::name`].
 pub fn state_name(state: KeyTrackState) -> &'static str {
     state.name()
 }
@@ -302,17 +209,13 @@ pub fn tracking_reset_generations(generations: &mut [u32]) {
     }
 }
 
-/// Mark every key in `states` that is currently in a "forwarded-like"
-/// state (Forwarded, BasicPassthrough, AppShortcut) as
+/// Mark every key in `states` whose press was forwarded to the app as
 /// [`KeyTrackState::ReleasedPending`]. Returns the number of keys
 /// transitioned. Port of `typio_wl_key_tracking_mark_released_pending`.
 pub fn tracking_mark_released_pending(states: &mut [KeyTrackState]) -> usize {
     let mut changed = 0;
     for s in states.iter_mut() {
-        if matches!(
-            *s,
-            KeyTrackState::Forwarded | KeyTrackState::BasicPassthrough | KeyTrackState::AppShortcut
-        ) {
+        if *s == KeyTrackState::Forwarded {
             *s = KeyTrackState::ReleasedPending;
             changed += 1;
         }
@@ -324,10 +227,7 @@ pub fn tracking_mark_released_pending(states: &mut [KeyTrackState]) -> usize {
 /// focused app via the virtual keyboard. A matching physical release must
 /// also be forwarded so the app cannot auto-repeat a stuck key.
 pub fn tracking_press_was_forwarded(state: KeyTrackState) -> bool {
-    matches!(
-        state,
-        KeyTrackState::Forwarded | KeyTrackState::BasicPassthrough | KeyTrackState::AppShortcut
-    )
+    state == KeyTrackState::Forwarded
 }
 
 /// Decide whether a release must be forwarded to the virtual keyboard.
@@ -354,16 +254,9 @@ mod tests {
     #[test]
     fn tracking_press_was_forwarded_covers_app_bound_states() {
         assert!(tracking_press_was_forwarded(KeyTrackState::Forwarded));
-        assert!(tracking_press_was_forwarded(
-            KeyTrackState::BasicPassthrough
-        ));
-        assert!(tracking_press_was_forwarded(KeyTrackState::AppShortcut));
         assert!(!tracking_press_was_forwarded(KeyTrackState::Idle));
         assert!(!tracking_press_was_forwarded(
             KeyTrackState::ReleasedPending
-        ));
-        assert!(!tracking_press_was_forwarded(
-            KeyTrackState::SuppressedStartup
         ));
     }
 
@@ -426,15 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn sync_physical_modifiers_overlays_xkb_blocking_bits() {
-        let phys = Modifiers::NONE;
-        let xkb = Modifiers(Modifiers::SHIFT.0 | Modifiers::CTRL.0);
-        let m = sync_physical_modifiers(phys, xkb);
-        assert!(m.intersects(Modifiers::SHIFT));
-        assert!(m.intersects(Modifiers::CTRL));
-    }
-
-    #[test]
     fn repeat_should_cancel_on_modifier_transition_logic() {
         // No transition in blocking mods → don't cancel.
         assert!(!repeat_should_cancel_on_modifier_transition(
@@ -461,80 +345,15 @@ mod tests {
     #[test]
     fn repeat_should_run_for_state_respects_lifecycle_states() {
         use KeyTrackState::*;
-        assert!(!repeat_should_run_for_state(SuppressedStartup));
         assert!(!repeat_should_run_for_state(ReleasedPending));
-        assert!(!repeat_should_run_for_state(EngineNotReady));
         assert!(repeat_should_run_for_state(Idle));
         assert!(repeat_should_run_for_state(Forwarded));
-        assert!(repeat_should_run_for_state(AppShortcut));
-    }
-
-    #[test]
-    fn chord_is_switch_modifier_recognises_chord_keys() {
-        let binding = ShortcutBinding {
-            modifiers: Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
-            keysym: KEY_SPACE,
-        };
-        assert!(chord_is_switch_modifier(&binding, KEY_CONTROL_L));
-        assert!(chord_is_switch_modifier(&binding, KEY_SHIFT_R));
-        assert!(!chord_is_switch_modifier(&binding, KEY_ALT_L));
-        assert!(!chord_is_switch_modifier(&binding, KEY_SPACE));
-    }
-
-    #[test]
-    fn chord_should_switch_engine_requires_all_chord_mods_held() {
-        let binding = ShortcutBinding {
-            modifiers: Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
-            keysym: KEY_SPACE,
-        };
-        // Only Ctrl held → not all of (Ctrl+Shift).
-        assert!(!chord_should_switch_engine(
-            &binding,
-            KEY_CONTROL_L,
-            Modifiers::CTRL,
-            false,
-            false,
-        ));
-        // Both held + keying Ctrl_L → switch.
-        assert!(chord_should_switch_engine(
-            &binding,
-            KEY_CONTROL_L,
-            Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
-            false,
-            false,
-        ));
-        // Already triggered → don't re-trigger.
-        assert!(!chord_should_switch_engine(
-            &binding,
-            KEY_CONTROL_L,
-            Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
-            false,
-            true,
-        ));
-        // Saw a non-modifier key in between → cancel.
-        assert!(!chord_should_switch_engine(
-            &binding,
-            KEY_CONTROL_L,
-            Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
-            true,
-            false,
-        ));
     }
 
     #[test]
     fn state_name_covers_all_variants() {
         use KeyTrackState::*;
-        for s in [
-            Idle,
-            Forwarded,
-            BasicPassthrough,
-            AppShortcut,
-            ReleasedPending,
-            SuppressedStartup,
-            EngineNotReady,
-            VoicePtt,
-            VoicePttUnavail,
-        ] {
+        for s in [Idle, Forwarded, ReleasedPending] {
             let name = state_name(s);
             assert!(!name.is_empty());
             assert_ne!(name, "unknown");
@@ -543,11 +362,7 @@ mod tests {
 
     #[test]
     fn tracking_reset_zeroes_all_states() {
-        let mut states = [
-            KeyTrackState::Forwarded,
-            KeyTrackState::AppShortcut,
-            KeyTrackState::Idle,
-        ];
+        let mut states = [KeyTrackState::Forwarded, KeyTrackState::Idle];
         tracking_reset(&mut states);
         assert!(states.iter().all(|s| *s == KeyTrackState::Idle));
     }
@@ -564,18 +379,12 @@ mod tests {
         let mut states = [
             KeyTrackState::Forwarded,
             KeyTrackState::Idle,
-            KeyTrackState::BasicPassthrough,
-            KeyTrackState::AppShortcut,
-            KeyTrackState::SuppressedStartup,
-            KeyTrackState::VoicePtt,
+            KeyTrackState::ReleasedPending,
         ];
         let changed = tracking_mark_released_pending(&mut states);
-        assert_eq!(changed, 3);
+        assert_eq!(changed, 1);
         assert_eq!(states[0], KeyTrackState::ReleasedPending);
         assert_eq!(states[1], KeyTrackState::Idle);
         assert_eq!(states[2], KeyTrackState::ReleasedPending);
-        assert_eq!(states[3], KeyTrackState::ReleasedPending);
-        assert_eq!(states[4], KeyTrackState::SuppressedStartup);
-        assert_eq!(states[5], KeyTrackState::VoicePtt);
     }
 }

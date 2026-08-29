@@ -66,7 +66,8 @@ impl ApplyTarget
     fn destroy_grab(&mut self) {
         self.0.destroy_keyboard_grab();
         let _ = self.2.stop();
-        self.1.physical_modifiers = crate::repeat_timer::Modifiers::NONE;
+        self.1.cancel_repeat();
+        self.1.physical_modifiers = typio_host_types::Modifiers::NONE;
         if let Some(panel) = self.0.panel_mut() {
             panel.reset_shm_pool();
         }
@@ -101,6 +102,14 @@ impl ApplyTarget
     }
 
     fn focus_in(&mut self) {
+        // A new field gaining focus is a hard boundary for any key-repeat
+        // chain that somehow survived the previous field (e.g. armed during
+        // a coalesced deactivate batch). The other three transitions
+        // (focus_out, destroy_grab, reactivate) already stop the timer;
+        // focus_in must too, or a stale chain injects repeated keys into
+        // the freshly focused field — the "wwwwww" regression.
+        self.1.cancel_repeat();
+        let _ = self.2.stop();
         let state = self.0.state_mut();
         state.text_input_rect = None;
         state.clear_caret_rect();

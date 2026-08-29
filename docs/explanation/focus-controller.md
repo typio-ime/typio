@@ -99,7 +99,6 @@ typedef enum {
     GRAB_RES_ABSENT,       /* No keyboard grab object */
     GRAB_RES_NEEDS_KEYMAP, /* Grab exists, keymap handoff pending */
     GRAB_RES_READY,        /* Grab exists, keymap synced this epoch */
-    GRAB_RES_BROKEN,       /* Keymap path unhealthy (timeout, cancellation) */
 } TypioWlGrabResourceState;
 ```
 
@@ -108,10 +107,7 @@ stateDiagram-v2
     [*] --> ABSENT
     ABSENT --> NEEDS_KEYMAP : create
     NEEDS_KEYMAP --> READY : keymap
-    NEEDS_KEYMAP --> BROKEN : timeout
-    READY --> BROKEN : fail-safe
     READY --> ABSENT : destroy
-    BROKEN --> ABSENT : destroy / rebuild
 ```
 
 The grab resource state merges the keyboard grab object presence with the virtual-keyboard keymap readiness tracked in `crates/typio-host-platform/src/input_method.rs` (`keymap_received_this_epoch`, set by the grab `Keymap` handler once the keymap has been mirrored to the `zwp_virtual_keyboard_v1`). This is one resource with one state, not a phase plus a separate vk state machine.
@@ -121,7 +117,7 @@ The grab resource state merges the keyboard grab object presence with the virtua
 - creating/rebuilding the grab starts a new epoch and forces `NEEDS_KEYMAP`
 - old `READY` must never survive into a new grab epoch
 - `READY` requires a compositor keymap observed in the current epoch
-- a timeout in `NEEDS_KEYMAP`, or any `BROKEN`, is a fail-safe condition — prefer releasing the grab over forwarding through a partially broken path
+- a timeout in `NEEDS_KEYMAP` is a fail-safe condition — prefer releasing the grab over forwarding through a partially broken path (the stall is diagnosed by `wayland_pending`, which feeds the poll deadline)
 - modifier-mask updates may apply while `NEEDS_KEYMAP` (a grab built while a field stays focused), so held Ctrl/Alt/Super survive grab creation before the first new key press; key presses may not
 
 ### Effects
@@ -132,7 +128,6 @@ The grab resource state merges the keyboard grab object presence with the virtua
 |-----------|---------|
 | `grab == NONE`, actual != `ABSENT` | `destroy_grab`, `scrub_generation`, `discard_composition`, `clear_preedit`, `commit` |
 | `grab == YES \| SOFT_PAUSE`, actual == `ABSENT` | `create_grab`, `scrub_generation` |
-| `grab == YES`, actual == `BROKEN` | `destroy_grab`, `create_grab`, `scrub_generation` |
 | `focus_in == true` | `send_focus_in` |
 | `focus_out == true` | `send_focus_out`, `discard_composition`, `clear_preedit`, `commit` |
 | `reactivate == true` | `reactivate` (key/repeat fence, Panel re-anchor and re-present) |

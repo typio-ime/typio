@@ -1,0 +1,24 @@
+# Valgrind suppressions for the typio leak gate (CI job
+# `valgrind-leak-gate`). Everything in here is a leak owned by an upstream
+# library's process-lifetime pattern, not by typio or optics/flux — the same
+# rationale as optics' tools/lsan.supp. A real typio-side leak still fails
+# the gate: nothing below matches flux or typio frames.
+
+# fontconfig keeps a per-pattern element array alive for the process
+# lifetime (FcPatternObjectInsertElt from config XML parsing). Upstream
+# owns it; library teardown cannot release it. Mirrors optics' single
+# LSAN suppression `leak:libfontconfig`.
+{
+   fontconfig-pattern-elt-cache
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   fun:FcPatternObjectInsertElt
+}
+{
+   fontconfig-pattern-append
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   fun:FcPatternObjectAddWithBinding*
+}

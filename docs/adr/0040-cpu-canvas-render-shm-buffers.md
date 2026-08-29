@@ -25,29 +25,51 @@ needs its own rasteriser regardless.
 ## Rationale
 
 The choice of **CPU rendering + `wl_shm`** is a deliberate technology
-selection, not a fallback:
+selection, not a fallback. The reasoning runs from the present path
+backward to the renderer:
 
-- **`wl_shm` is the only universally-stable Wayland present path.** Every
-  compositor implements `wl_shm`; nothing in the panel path depends on a
-  driver, a Vulkan loader, a dma-buf allocator, or compositor-specific
-  dmabuf/implicit-sync support. Several compositors were observed to *silently
-  drop* input-popup dmabuf buffers with no protocol feedback — an unrecoverable
-  failure mode for a UI the user is actively typing through.
-- **`wl_shm` is inherently CPU-bound, so lean into it.** SHM attach copies host
-  memory to the compositor; there is no GPU image to produce in the first
-  place. Rendering on the CPU removes the GPU→CPU readback stall that the old
-  Vulkan offscreen path paid on every frame, and removes the Vulkan device /
-  swapchain lifecycle entirely. Accepting the CPU cost up front is cheaper than
-  paying for a GPU pipeline only to throw the result over the bus.
-- **GPU paths were tried and were unreliable.** The earlier Vulkan offscreen +
-  readback path, and the dma-buf zero-copy path, shipped and repeatedly broke
-  across compositors, drivers, and resume-from-suspend. For a resident input
-  method that must never wedge the typing path, that flakiness is unacceptable;
-  the CPU + SHM path has none of it.
+- **The present path is fixed first, and it is `wl_shm`.** `wl_shm` is
+  the only present mechanism the Wayland core protocol mandates and every
+  compositor implements. `zwp_linux_dmabuf_v1` is an optional extension
+  whose behavior on input-popup surfaces varies by compositor; several
+  compositors were observed to *silently drop* input-popup dma-buf
+  buffers with no protocol feedback — an undetectable failure mode for a
+  UI the user is actively typing through. Vulkan WSI present
+  (`vkQueuePresentKHR`) is a blocking queue operation that stalls the
+  calling thread when a compositor stops recycling swapchain images.
+- **The workload does not benefit from GPU parallelism.** A frame is one
+  background rounded-rect, one highlight rounded-rect, and a row of
+  pre-shaped glyphs drawn into a framebuffer on the order of a megabyte,
+  redrawn on keystrokes rather than at animation rates. There are no
+  per-pixel effects (blur, composited layers) for a shader to accelerate,
+  so GPU rasterisation has nothing to win back.
+- **The renderer belongs on the same side as the destination.** Since the
+  destination is host memory (`wl_shm`), any GPU renderer must pay a
+  GPU→CPU readback or a dma-buf export on every frame — a fixed overhead
+  that exceeds the entire CPU rasterisation cost at this size. A GPU
+  pipeline also adds a Vulkan device lifecycle, device-lost recovery
+  after suspend, driver-dependent behavior, worse latency variance, and
+  waking the GPU on every keystroke.
+- **Field evidence matches the structural analysis.** The earlier Vulkan
+  offscreen + readback path and the dma-buf zero-copy path shipped and
+  repeatedly broke across compositors, drivers, and resume-from-suspend,
+  including a watchdog kill from swapchain exhaustion. Those failures are
+  instances of the structural problems above, not the sole reason for the
+  decision.
 
-The cost accepted in return is single-threaded software rasterisation with no
-GPU parallelism — a cost `wl_shm` already implied, and well within frame budget
-for a single candidate row (see Consequences).
+This is a component-level selection, not a verdict on GPU rendering in
+general. The settings GUI renders through the GPU stack (Iris/Lens/Flux;
+see `crates/typio-settings`). GPU rendering becomes the right choice for
+the Panel if the workload changes — continuous animation, per-pixel
+effects such as blur, or surfaces large enough that software
+rasterisation misses the frame budget — and any such move must keep
+`wl_shm` as the fallback present path. See
+[Frontend Graphics](../explanation/frontend-graphics.md) for the current
+pipeline.
+
+The cost accepted in return is single-threaded software rasterisation
+with no GPU parallelism — well within frame budget for a single
+candidate row (see Consequences).
 
 ## Decision
 
@@ -72,28 +94,37 @@ readback, the "liquid glass" effect, `panel_dmabuf.rs`, the
 **retained** for CPU text shaping/rasterisation — see Decision 2.)
 
 Grow-only framebuffer sizing with `wp_viewport` cropping (from ADR-0013) is
-retained.
+retained. The panel extent is hard-capped (16384 logical px wide / 4096 px
+tall): candidate rows wider than the cap render a fitting prefix plus a `⋯`
+overflow marker, and over-long banner labels truncate with `…`. The cap is a
+trust boundary — engine replies drive the panel width, and without a bound a
+buggy or hostile engine could imply multi-gigabyte allocation attempts per
+frame. Buffer busy/release tracking rides in each `wl_buffer`'s own wayland
+user-data (`Dispatch<wl_buffer, BufferReleaseState>`), so a release event
+always clears exactly the buffer it belongs to.
 
 ## Alternatives considered
 
-- **Keep Vulkan offscreen + readback**: rejected — flux's CPU canvas removes
-  the device and readback stall entirely while still giving us flux-quality
-  fills/rounded-rects.
+- **Keep Vulkan offscreen + readback**: rejected — the destination is host
+  memory either way, so this pays a per-frame readback stall larger than
+  the whole CPU rasterisation cost at this size, plus the Vulkan device
+  lifecycle, for no present-path gain.
 - **Drop flux from the panel and reimplement rounded-rect fills in Rust**:
   rejected as needless rework of geometry flux already rasterises well.
-- **dma-buf zero-copy**: rejected — several compositors silently drop
-  input-popup dmabuf buffers with no protocol feedback; the SHM path is
-  universally supported.
+- **dma-buf zero-copy**: rejected — `zwp_linux_dmabuf_v1` is an optional
+  extension, and several compositors silently drop input-popup dmabuf
+  buffers with no protocol feedback, an undetectable failure mode. The
+  SHM path is universally supported.
 
 ## Consequences
 
 - Positive: no GPU dependency for panel rendering; no readback stall; one
   universally-supported present path; no dmabuf protocol wiring.
 - Trade-off: panel text quality depends on flux-text's CPU rasteriser
-  (FreeType/HarfBuzz), which is shared with the rest of the host. The
-  `rustybuzz`/`fontdb`/`ab_glyph` stack is **not** in the panel path — it
-  backs only the tray badge (`icon_badge`, gated behind the `systray`
-  feature), so a non-systray build pulls in no pure-Rust shaping libs.
+  (FreeType/HarfBuzz), which is shared with the rest of the host,
+  including the tray badge (`icon_badge`, behind the `systray` feature).
+  No pure-Rust shaping stack (`rustybuzz`/`fontdb`/`ab_glyph`) remains in
+  the workspace.
 - Negative (accepted): software rasterisation is single-threaded and does not
   benefit from GPU parallelism; for a single candidate row this is well within
   frame budget.

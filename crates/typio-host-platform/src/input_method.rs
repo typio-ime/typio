@@ -33,6 +33,7 @@ use wayland_client::protocol::{wl_keyboard, wl_registry, wl_seat, wl_shm, wl_sur
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::InputFacts;
+use crate::Modifiers;
 use crate::panel::FluxPanel;
 use crate::panel_coordinator::PanelCoordinator;
 use crate::panel_present_gate::PresentationRecord;
@@ -49,9 +50,6 @@ use crate::protocols::viewporter::wp_viewport::WpViewport;
 use crate::protocols::viewporter::wp_viewporter::WpViewporter;
 use crate::protocols::virtual_keyboard_v1::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use crate::protocols::virtual_keyboard_v1::zwp_virtual_keyboard_v1::{self, ZwpVirtualKeyboardV1};
-
-/// Callback type for input-method lifecycle events.
-pub type LifecycleCallback = Box<dyn FnMut(LifecycleEvent) + Send>;
 
 /// A decoded key event with xkbcommon-resolved keysym.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,32 +85,6 @@ pub struct SessionState {
     pub content_purpose: u32,
     /// `text_change_cause` from the focused application.
     pub text_change_cause: u32,
-}
-
-/// Lifecycle events the frontend surfaces to the caller.
-#[derive(Debug, Clone)]
-pub enum LifecycleEvent {
-    /// Input method was activated.
-    Activated,
-    /// Input method was deactivated.
-    Deactivated,
-    /// The compositor sent `done` — a protocol serial boundary.
-    Done { serial: u32 },
-    /// The compositor declared this input-method protocol unavailable.
-    Unavailable,
-    /// Surrounding text update from the focused app.
-    SurroundingText {
-        text: String,
-        cursor: u32,
-        anchor: u32,
-    },
-    /// Content type hint from the focused app.
-    ContentType { hint: u32, purpose: u32 },
-    /// A key was pressed or released. Carries the fully decoded
-    /// keysym + unicode text from xkbcommon.
-    Key(DecodedKeyEvent),
-    /// Keyboard repeat rate / delay info.
-    RepeatInfo { rate: i32, delay: i32 },
 }
 
 /// Engine composition projection: what the panel should render and
@@ -236,10 +208,6 @@ pub struct InputMethodState {
     /// CPU-rendered Panel path to create host-managed `wl_buffer`s
     /// (replaces the Vulkan WSI swapchain; see `panel_shm`).
     shm: Option<wl_shm::WlShm>,
-    /// Shared registry mapping wl_buffer proxy pointers to their busy flags,
-    /// so the `Dispatch<wl_buffer>` release handler can clear them without
-    /// touching `wl_proxy` user-data (which wayland-client owns).
-    shm_release_registry: crate::panel_shm::ShmReleaseRegistry,
     /// Text input rectangle from the compositor (cursor position).
     pub text_input_rect: Option<(i32, i32, i32, i32)>,
     /// Engine composition projection (candidates, selection, commit).
@@ -247,7 +215,6 @@ pub struct InputMethodState {
     serial: u32,
     active: bool,
     initialized: bool,
-    callback: Option<LifecycleCallback>,
     /// xkbcommon context — created once, reused across keymap changes.
     xkb_context: xkbcommon::xkb::Context,
     /// Current keymap state — set when the compositor sends a keymap fd.
@@ -274,6 +241,11 @@ pub struct InputMethodState {
     /// backspace" symptom). The queue guarantees release events
     /// always reach the loop, so `router.on_release` +
     /// `timer.stop()` fire on every release.
+    ///
+    /// Entries are discarded wholesale at an activate/deactivate boundary
+    /// (see [`Self::discard_pending_keys`]): an unrouted key belongs to the
+    /// activation epoch it arrived in and must never cross into the next
+    /// focused field.
     pub pending_keys: Vec<DecodedKeyEvent>,
     /// Keys for which the host already emitted a synthetic release while
     /// entering soft-pause. A later physical release is consumed exactly once,
@@ -285,6 +257,10 @@ pub struct InputMethodState {
     stopped: bool,
     /// Pending text state accumulated since the previous `done`.
     pending: SessionState,
+    /// Whether an activate event arrived during the currently pending batch.
+    pending_had_activate: bool,
+    /// Whether a deactivate event arrived during the currently pending batch.
+    pending_had_deactivate: bool,
     /// Text state committed by the latest `done`.
     current: SessionState,
     /// True once a keymap event has been received for the current grab epoch.
@@ -317,6 +293,80 @@ impl InputMethodState {
         self.active
     }
 
+    /// Current modifier state in the host-wide [`Modifiers`] layout.
+    ///
+    /// The compositor's `mods_depressed` wire value is a *keymap-dependent*
+    /// xkb mod-index mask whose bit positions do not match the host
+    /// [`Modifiers`] constants: on a conventional keymap xkb puts NumLock at
+    /// `1 << 4` and Super (Mod4) at `1 << 6`, while the host constants expect
+    /// Super at `1 << 4` and NumLock at `1 << 5`. Feeding the raw wire mask
+    /// into host policy therefore mis-reads Super (never suppresses
+    /// auto-repeat, invisible to chord detection) and hallucinates NumLock.
+    /// Querying the xkb state by modifier *name* maps the bits correctly for
+    /// any keymap. Physically-held modifiers come from the depressed
+    /// component; lock states come from the locked component so engines keep
+    /// seeing Caps/Num lock.
+    ///
+    /// Before the first keymap arrives there is no xkb state to query; fall
+    /// back to the conventional xkb wire layout, which every mainstream
+    /// keymap uses.
+    pub fn effective_modifiers(&self) -> Modifiers {
+        // Conventional xkb wire bit positions (mod indices in a standard
+        // keymap): Shift=0, Lock=1, Control=2, Mod1(Alt)=3, Mod2(NumLock)=4,
+        // Mod4(Super)=6.
+        const XKB_SHIFT: u32 = 1 << 0;
+        const XKB_CAPS: u32 = 1 << 1;
+        const XKB_CTRL: u32 = 1 << 2;
+        const XKB_ALT: u32 = 1 << 3;
+        const XKB_NUM: u32 = 1 << 4;
+        const XKB_SUPER: u32 = 1 << 6;
+
+        let Some(ref xs) = self.xkb_state else {
+            let mut bits = 0;
+            for (wire, host) in [
+                (XKB_SHIFT, Modifiers::SHIFT),
+                (XKB_CTRL, Modifiers::CTRL),
+                (XKB_ALT, Modifiers::ALT),
+                (XKB_SUPER, Modifiers::SUPER),
+            ] {
+                if self.mods_depressed & wire != 0 {
+                    bits |= host.0;
+                }
+            }
+            for (wire, host) in [
+                (XKB_CAPS, Modifiers::CAPSLOCK),
+                (XKB_NUM, Modifiers::NUMLOCK),
+            ] {
+                if self.mods_locked & wire != 0 {
+                    bits |= host.0;
+                }
+            }
+            return Modifiers(bits);
+        };
+
+        use xkbcommon::xkb;
+        let mut bits = 0;
+        for (name, host) in [
+            (xkb::MOD_NAME_SHIFT, Modifiers::SHIFT),
+            (xkb::MOD_NAME_CTRL, Modifiers::CTRL),
+            (xkb::MOD_NAME_ALT, Modifiers::ALT),
+            (xkb::MOD_NAME_LOGO, Modifiers::SUPER),
+        ] {
+            if xs.mod_name_is_active(name, xkb::STATE_MODS_DEPRESSED) {
+                bits |= host.0;
+            }
+        }
+        for (name, host) in [
+            (xkb::MOD_NAME_CAPS, Modifiers::CAPSLOCK),
+            (xkb::MOD_NAME_NUM, Modifiers::NUMLOCK),
+        ] {
+            if xs.mod_name_is_active(name, xkb::STATE_MODS_LOCKED) {
+                bits |= host.0;
+            }
+        }
+        Modifiers(bits)
+    }
+
     /// Mutable access to the raw input facts for this reactor step.
     pub fn facts_mut(&mut self) -> &mut InputFacts {
         &mut self.facts
@@ -324,7 +374,9 @@ impl InputMethodState {
 
     /// Take the recorded facts so the focus controller can consume them.
     pub fn take_facts(&mut self) -> InputFacts {
-        std::mem::take(&mut self.facts)
+        let mut facts = std::mem::take(&mut self.facts);
+        facts.im_is_active = self.active;
+        facts
     }
 
     /// True if the compositor declared the input method unavailable.
@@ -376,11 +428,6 @@ impl InputMethodState {
     /// The bound `wl_shm` global, if the compositor advertises it.
     pub fn shm(&self) -> Option<&wl_shm::WlShm> {
         self.shm.as_ref()
-    }
-
-    /// Shared release-event registry for the SHM buffer pool.
-    pub fn shm_release_registry(&self) -> &crate::panel_shm::ShmReleaseRegistry {
-        &self.shm_release_registry
     }
 
     /// Reset the positioned-popup anchor generation. Call on focus-in and
@@ -450,6 +497,11 @@ impl InputMethodState {
             drop(grab);
             self.keymap_received_this_epoch = false;
             self.wayland_pending.note_keymap_received(Instant::now());
+            // Synthetic-release markers belong to the destroyed grab's
+            // epoch: the physical releases they awaited can never arrive
+            // now, so retaining them would swallow a legitimate release in
+            // the next epoch.
+            self.synthetic_releases.clear();
         }
     }
 
@@ -509,9 +561,22 @@ impl InputMethodState {
         std::mem::take(&mut self.pending_keys)
     }
 
-    fn fire(&mut self, event: LifecycleEvent) {
-        if let Some(cb) = self.callback.as_mut() {
-            cb(event);
+    /// Drop every queued-but-unrouted key event. Called at an
+    /// activate/deactivate boundary: a key that has not been routed by the
+    /// time the focus boundary arrives belongs to the field that just lost
+    /// (or had not yet gained) focus. Routing it afterwards would inject it
+    /// into whatever field is focused next — the "wwwwww" class of bugs,
+    /// where a shortcut's letter key (Ctrl+W) is routed into the newly
+    /// focused tab and its armed repeat keeps firing.
+    fn discard_pending_keys(&mut self, reason: &'static str) {
+        if !self.pending_keys.is_empty() {
+            tracing::debug!(
+                target: "typio.input.queue",
+                dropped = self.pending_keys.len(),
+                reason,
+                "drop queued keys at focus boundary"
+            );
+            self.pending_keys.clear();
         }
     }
 
@@ -632,18 +697,17 @@ pub struct InputMethodFrontend {
 impl InputMethodFrontend {
     /// Connect to the Wayland display, bind globals, create the
     /// input-method object, and create the lazily allocated CPU Panel.
-    pub fn connect(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
-        let mut frontend = Self::connect_internal(callback)?;
+    pub fn connect() -> Result<Self, ConnectError> {
+        let mut frontend = Self::connect_internal()?;
 
         let surface_ptr = frontend.state.popup_surface_raw_ptr();
         let viewport = frontend.state.panel_viewport.clone();
         let shm = frontend.state.shm.clone();
         let qh = frontend.queue.handle();
-        let registry = frontend.state.shm_release_registry().clone();
         // Canvas and SHM buffers are allocated lazily from the first real
         // content extent. This avoids clearing and downsampling a speculative
         // 512×128 surface for every small indicator or candidate frame.
-        match unsafe { FluxPanel::new_from_surface(surface_ptr, viewport, shm, qh, registry) } {
+        match unsafe { FluxPanel::new_from_surface(surface_ptr, viewport, shm, qh) } {
             Ok(panel) => frontend.panel = Some(panel),
             Err(e) => tracing::warn!(target: "typio.panel.host", "FluxPanel creation failed: {e}"),
         }
@@ -654,7 +718,7 @@ impl InputMethodFrontend {
     /// Shared connection setup. The CPU Panel is created by [`Self::connect`]
     /// after the protocol state is ready; tests use this helper directly to
     /// exercise the state machine without creating flux resources.
-    fn connect_internal(callback: Option<LifecycleCallback>) -> Result<Self, ConnectError> {
+    fn connect_internal() -> Result<Self, ConnectError> {
         let conn = Connection::connect_to_env().map_err(ConnectError::ConnectionFailed)?;
         let (globals, queue) =
             registry_queue_init::<InputMethodState>(&conn).map_err(ConnectError::RegistryFailed)?;
@@ -847,13 +911,11 @@ impl InputMethodFrontend {
             fractional_scale_manager,
             panel_fractional_scale,
             shm,
-            shm_release_registry: crate::panel_shm::new_release_registry(),
             text_input_rect: None,
             composition: CompositionState::default(),
             serial: 0,
             active: false,
             initialized: false,
-            callback,
             xkb_context: xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS),
             xkb_state: None,
             xkb_keymap: None,
@@ -865,6 +927,8 @@ impl InputMethodFrontend {
             facts: InputFacts::default(),
             stopped: false,
             pending: SessionState::default(),
+            pending_had_activate: false,
+            pending_had_deactivate: false,
             current: SessionState::default(),
             keymap_received_this_epoch: false,
             panel_schedule_state: PanelScheduleState::default(),
@@ -884,7 +948,7 @@ impl InputMethodFrontend {
 
     #[cfg(test)]
     fn connect_test() -> Result<Self, ConnectError> {
-        Self::connect_internal(None)
+        Self::connect_internal()
     }
 
     /// Immutable access to the state (serial, active flag, etc.).
@@ -1135,18 +1199,20 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 tracing::debug!(target: "typio.wayland.frontend", "Activate");
                 state.active = true;
                 state.facts.im_activate_seen = true;
+                state.pending_had_activate = true;
+                state.discard_pending_keys("activate");
                 state.pending = SessionState {
                     active: true,
                     ..SessionState::default()
                 };
-                state.fire(LifecycleEvent::Activated);
             }
             Event::Deactivate => {
                 tracing::debug!(target: "typio.wayland.frontend", "Deactivate");
                 state.active = false;
                 state.facts.im_deactivate_seen = true;
+                state.pending_had_deactivate = true;
+                state.discard_pending_keys("deactivate");
                 state.pending.active = false;
-                state.fire(LifecycleEvent::Deactivated);
             }
             Event::SurroundingText {
                 text,
@@ -1156,11 +1222,6 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 state.pending.surrounding_text = Some(text);
                 state.pending.cursor = cursor;
                 state.pending.anchor = anchor;
-                state.fire(LifecycleEvent::SurroundingText {
-                    text: state.pending.surrounding_text.clone().unwrap_or_default(),
-                    cursor,
-                    anchor,
-                });
             }
             Event::TextChangeCause { cause } => {
                 state.pending.text_change_cause = u32::from(cause);
@@ -1176,29 +1237,25 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 };
                 state.pending.content_hint = hint_raw;
                 state.pending.content_purpose = purpose_raw;
-                state.fire(LifecycleEvent::ContentType {
-                    hint: hint_raw,
-                    purpose: purpose_raw,
-                });
             }
             Event::Done => {
                 state.serial = state.serial.wrapping_add(1);
                 state.initialized = true;
-                state.facts.im_done_had_activate = state.facts.im_activate_seen;
-                state.facts.im_done_had_deactivate = state.facts.im_deactivate_seen;
+                state.facts.im_done_had_activate =
+                    state.pending_had_activate || state.facts.im_activate_seen;
+                state.facts.im_done_had_deactivate =
+                    state.pending_had_deactivate || state.facts.im_deactivate_seen;
+                state.pending_had_activate = false;
+                state.pending_had_deactivate = false;
                 state.facts.im_done_serial = state.serial;
                 state.apply_pending_to_current();
                 // Clear per-event facts; the batch facts survive until the
                 // focus controller consumes them later in the reactor step.
                 state.facts.im_activate_seen = false;
                 state.facts.im_deactivate_seen = false;
-                state.fire(LifecycleEvent::Done {
-                    serial: state.serial,
-                });
             }
             Event::Unavailable => {
                 state.stopped = true;
-                state.fire(LifecycleEvent::Unavailable);
             }
         }
     }
@@ -1399,15 +1456,6 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                     .as_ref()
                     .map_or(String::new(), |s| s.key_get_utf8(kc));
 
-                state.fire(LifecycleEvent::Key(DecodedKeyEvent {
-                    keycode: key,
-                    xkb_keycode,
-                    keysym,
-                    unicode: unicode.clone(),
-                    state: raw_state,
-                    time,
-                }));
-
                 // Queue for the event-loop driver. Press events go to the
                 // engine; release events are forwarded to the focused app
                 // and stop the repeat timer. Without queueing releases,
@@ -1471,7 +1519,6 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
             }
             Event::RepeatInfo { rate, delay } => {
                 state.compositor_repeat_info = Some((rate, delay));
-                state.fire(LifecycleEvent::RepeatInfo { rate, delay });
             }
         }
     }
@@ -1486,12 +1533,6 @@ mod tests {
         let e = ConnectError::BindFailed("zwp_input_method_manager_v2", "NotPresent".to_string());
         let s = format!("{e}");
         assert!(s.contains("zwp_input_method_manager_v2"));
-    }
-
-    #[test]
-    fn lifecycle_event_is_debug() {
-        assert!(format!("{:?}", LifecycleEvent::Activated).contains("Activated"));
-        assert!(format!("{:?}", LifecycleEvent::Done { serial: 42 }).contains("42"));
     }
 
     #[test]

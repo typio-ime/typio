@@ -153,12 +153,14 @@ The intended local checkout layout is:
 | `/home/ming/projects/typio/` | This repo: host, runtime, engine protocol, manifest, vet, and client workspace |
 | `/home/ming/projects/typio-engines/typio-engine-*` | Engine repositories |
 | `/home/ming/projects/typio-settings/` | Meson/C settings panel |
-| `/home/ming/projects/optics/` | Vulkan/GPU canvas libraries used by the Panel |
+| `/home/ming/projects/optics/` | Native C monorepo: flux (the host Panel uses its CPU canvas) and flux-text, plus the Iris/Lens GPU stack used by the settings app |
 
 Cross-repo edits are allowed when the fix genuinely belongs in a sibling
 repo. When touching a sibling repo:
 
 - Read its own `AGENTS.md` or `CLAUDE.md` first.
+- Follow `docs/dev/cross-repository-development.md` for linked worktree and
+  local `[patch]` workflows when developing against live Optics sources.
 - Do not bump sibling versions in lockstep unless asked.
 - Keep dependency pin changes deliberate and separate when they affect CI.
 

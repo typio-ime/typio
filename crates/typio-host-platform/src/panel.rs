@@ -56,6 +56,25 @@ const TEXT_COLOR: [u8; 3] = [240, 240, 240];
 const NUMBER_COLOR: [u8; 3] = [145, 145, 152];
 const CANDIDATE_ROW_EXTRA_LEADING: f32 = 4.0;
 
+/// Hard cap on the candidate-row extent, in *logical* pixels.
+///
+/// This is a trust boundary, not a layout preference. The panel width is
+/// derived from engine-supplied candidate strings, and the engine protocol
+/// permits multi-megabyte replies; without a cap a buggy or hostile engine
+/// could imply a multi-gigabyte `fallocate`+`mmap` attempt per frame (the
+/// failure is contained, but the attempted allocation itself is unbounded)
+/// and, short of that, an arbitrarily expensive CPU clear/downsample/copy
+/// per keystroke. 16k logical px ≈ 4k-6k CJK candidates — far beyond any
+/// real page, and ≈64 MiB of ARGB8888 at 1× scale, which is the most the
+/// panel may ever cost.
+const MAX_PANEL_LOGICAL_WIDTH: f32 = 16_384.0;
+/// Hard cap on the panel height in logical pixels (single banner row today;
+/// the cap exists so future multi-row layouts inherit a bound).
+const MAX_PANEL_LOGICAL_HEIGHT: f32 = 4_096.0;
+/// Drawn after the last visible candidate when the page was truncated by
+/// the width cap, so the user can tell clipping happened.
+const OVERFLOW_MARKER: &str = "⋯";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LayoutCacheKey {
     scale_bits: u32,
@@ -99,6 +118,15 @@ pub struct FluxPanel {
     shm_pool: Option<crate::panel_shm::ShmBufferPool>,
     last_layout_key: Option<LayoutCacheKey>,
     last_layout: Vec<(TextMetrics, TextMetrics)>,
+    /// How many candidates the (width-capped) layout actually covers.
+    /// Candidates at or beyond this index are not drawn; the draw pass
+    /// renders an overflow marker instead. Always `<= last_layout.len()`.
+    visible_candidates: usize,
+    /// The exact banner text `prepare_banner` measured (after width-cap
+    /// truncation), so the draw pass renders what was measured.
+    banner_text: Option<String>,
+    /// Whether the last `prepare_banner` truncated the label.
+    banner_truncated: bool,
 }
 
 impl FluxPanel {
@@ -112,7 +140,6 @@ impl FluxPanel {
         viewport: Option<WpViewport>,
         shm: Option<wl_shm::WlShm>,
         qh: QueueHandle<crate::input_method::InputMethodState>,
-        registry: crate::panel_shm::ShmReleaseRegistry,
     ) -> Result<Self, String> {
         if wl_surface_ptr.is_null() {
             return Err("wl_surface is null".into());
@@ -136,9 +163,12 @@ impl FluxPanel {
             wl_surface: wl_surface_ptr,
             shm_pool: shm
                 .as_ref()
-                .map(|s| crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone(), registry)),
+                .map(|s| crate::panel_shm::ShmBufferPool::new(s.clone(), qh.clone())),
             last_layout_key: None,
             last_layout: Vec::new(),
+            visible_candidates: 0,
+            banner_text: None,
+            banner_truncated: false,
         })
     }
 
@@ -286,7 +316,8 @@ impl FluxPanel {
             let mut cx = PANEL_PADDING;
             let y = PANEL_PADDING;
             let row_height = candidate_row_height(&self.last_layout);
-            for (i, _) in candidates.iter().enumerate() {
+            let visible = self.visible_candidates.min(self.last_layout.len());
+            for (i, _) in self.last_layout[..visible].iter().enumerate() {
                 let (num_m, m) = self.last_layout[i];
                 let iw =
                     CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
@@ -311,7 +342,7 @@ impl FluxPanel {
             let mut cx = PANEL_PADDING;
             let y = PANEL_PADDING;
             let row_height = candidate_row_height(&self.last_layout);
-            for (i, candidate) in candidates.iter().enumerate() {
+            for (i, candidate) in candidates[..visible].iter().enumerate() {
                 let (num_m, m) = self.last_layout[i];
                 let iw =
                     CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
@@ -339,6 +370,22 @@ impl FluxPanel {
                     TEXT_COLOR,
                 );
                 cx += iw + CANDIDATE_ITEM_GAP;
+            }
+            // Overflow marker: candidates exist beyond the layout cap.
+            if visible < candidates.len() {
+                let m = self
+                    .text
+                    .measure(OVERFLOW_MARKER, self.font.candidate_size_px());
+                let row_height = candidate_row_height(&self.last_layout);
+                let text_top = y + (row_height - m.height).max(0.0) / 2.0;
+                self.text.draw(
+                    self.canvas,
+                    cx,
+                    text_top,
+                    OVERFLOW_MARKER,
+                    self.font.candidate_size_px(),
+                    NUMBER_COLOR,
+                );
             }
             flux_canvas_cpu_end(self.canvas);
         }
@@ -376,6 +423,11 @@ impl FluxPanel {
 
     /// Cached `(number_metrics, text_metrics)` per candidate (logical px),
     /// re-measured only when the candidate strings or scale change.
+    ///
+    /// The layout is capped to the candidates that fit within
+    /// [`MAX_PANEL_LOGICAL_WIDTH`]; `visible_candidates` records how many
+    /// that is. A page too wide for the cap renders its prefix plus an
+    /// overflow marker instead of an unbounded framebuffer.
     fn ensure_candidate_layout(&mut self, candidates: &[String]) {
         let key = LayoutCacheKey::new(candidates, self.scale);
         if self.last_layout_key == Some(key) {
@@ -391,6 +443,7 @@ impl FluxPanel {
             let m = self.text.measure(candidate, self.font.candidate_size_px());
             self.last_layout.push((num_m, m));
         }
+        self.visible_candidates = visible_candidate_count(&self.last_layout);
         self.last_layout_key = Some(key);
     }
 
@@ -403,14 +456,18 @@ impl FluxPanel {
             let iw = CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
             total_width += iw + CANDIDATE_ITEM_GAP;
         }
-        if !candidates.is_empty() {
+        if !layout.is_empty() {
             total_width = total_width - CANDIDATE_ITEM_GAP + PANEL_PADDING;
         } else {
             total_width += PANEL_PADDING;
         }
+        // The layout fold is capped by construction; clamp again as a
+        // belt-and-braces guard against any future fold change.
+        let total_width = total_width.min(MAX_PANEL_LOGICAL_WIDTH);
 
         let desired_width = (total_width as u32).max(10);
-        let desired_height = (PANEL_PADDING * 2.0 + candidate_row_height(layout)).ceil() as u32;
+        let desired_height = ((PANEL_PADDING * 2.0 + candidate_row_height(layout)).ceil())
+            .min(MAX_PANEL_LOGICAL_HEIGHT) as u32;
         let phys_width = (desired_width as f32 * self.scale).ceil() as u32;
         let phys_height = (desired_height as f32 * self.scale).ceil() as u32;
         self.apply_surface_size(
@@ -613,6 +670,15 @@ impl FluxPanel {
             return false;
         }
         let m = self.prepare_banner(label);
+        // `prepare_banner` may have truncated the label to the width cap;
+        // draw exactly the text it measured, not the raw engine string.
+        let shown: String = if self.banner_truncated {
+            self.banner_text
+                .clone()
+                .unwrap_or_else(|| label.to_string())
+        } else {
+            label.to_string()
+        };
         let Some(buffer_index) = self.acquire_shm_buffer() else {
             return false;
         };
@@ -632,7 +698,7 @@ impl FluxPanel {
                 self.canvas,
                 BANNER_PADDING,
                 text_y,
-                label,
+                &shown,
                 self.font.banner_size_px(),
                 TEXT_COLOR,
             );
@@ -644,11 +710,61 @@ impl FluxPanel {
     }
 
     /// Measure a banner and ensure its framebuffer extent.
+    ///
+    /// A status banner is a short label; an over-long engine string is
+    /// truncated at the width cap with a visible ellipsis rather than
+    /// producing an unbounded framebuffer. The truncation is recorded in
+    /// `banner_text` so the draw pass renders exactly what was measured.
     fn prepare_banner(&mut self, label: &str) -> TextMetrics {
-        let m = self.text.measure(label, self.font.banner_size_px());
+        let ell = "…";
+        let max_text_width = MAX_PANEL_LOGICAL_WIDTH - BANNER_PADDING * 2.0;
+        let full = self.text.measure(label, self.font.banner_size_px());
+        let owned;
+        let shown: &str = if full.width <= max_text_width {
+            label
+        } else {
+            // Find the longest char-boundary prefix that fits beside the
+            // ellipsis. Monotone in prefix length, so a galloping search
+            // costs O(log n) measures; each measure is a cached layout
+            // lookup after the first pass, so this is cheap even for
+            // pathological labels.
+            let ell_m = self.text.measure(ell, self.font.banner_size_px());
+            let budget = (max_text_width - ell_m.width).max(0.0);
+            // Standard galloping search for the longest fitting prefix:
+            // `cut` only advances while `label[..cut]` fits, and `step`
+            // halves whenever a candidate overflows.
+            let mut cut = 0usize;
+            let mut step = label.len().max(1).next_power_of_two();
+            while step > 0 {
+                let mut next = cut + step;
+                if next > label.len() {
+                    next = label.len();
+                }
+                while next > 0 && next < label.len() && !label.is_char_boundary(next) {
+                    next += 1;
+                }
+                if next >= label.len() {
+                    step /= 2;
+                    continue;
+                }
+                let w = self
+                    .text
+                    .measure(&label[..next], self.font.banner_size_px())
+                    .width;
+                if w <= budget {
+                    cut = next;
+                }
+                step /= 2;
+            }
+            owned = format!("{}{}", &label[..cut], ell);
+            owned.as_str()
+        };
+        let m = self.text.measure(shown, self.font.banner_size_px());
+        self.banner_truncated = shown.len() != label.len();
+
         let desired_width = (BANNER_PADDING * 2.0 + m.width).max(10.0).ceil() as u32;
         let banner_row_height = BANNER_PADDING * 2.0 + self.font.banner_size_px() * 1.3;
-        let desired_height = banner_row_height.ceil() as u32;
+        let desired_height = banner_row_height.ceil().min(MAX_PANEL_LOGICAL_HEIGHT) as u32;
         let phys_width = (desired_width as f32 * self.scale).ceil() as u32;
         let phys_height = (desired_height as f32 * self.scale).ceil() as u32;
         self.apply_surface_size(
@@ -669,6 +785,25 @@ fn retained_extent(current: u32, required: u32, quantum: u32) -> u32 {
     } else {
         current
     }
+}
+
+/// How many candidates fit in one row within [`MAX_PANEL_LOGICAL_WIDTH`].
+///
+/// At least one candidate is always kept visible — an empty panel is worse
+/// than a clipped one, and the first item alone can never imply a wider
+/// framebuffer than the cap because `ensure_candidate_size` clamps the fold
+/// afterwards. Split out as a pure function so the trust boundary is
+/// unit-testable without a Wayland connection.
+fn visible_candidate_count(layout: &[(TextMetrics, TextMetrics)]) -> usize {
+    let mut total_width = PANEL_PADDING;
+    for (i, (num_m, m)) in layout.iter().enumerate() {
+        let iw = CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
+        if i > 0 && total_width + iw + CANDIDATE_ITEM_GAP > MAX_PANEL_LOGICAL_WIDTH {
+            return i;
+        }
+        total_width += iw + CANDIDATE_ITEM_GAP;
+    }
+    layout.len()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -868,6 +1003,50 @@ mod tests {
     }
 
     #[test]
+    fn visible_candidate_count_keeps_first_item_and_caps_runaway_pages() {
+        let item = |w: f32| {
+            (
+                TextMetrics {
+                    width: 8.0,
+                    height: 16.0,
+                    baseline: 12.0,
+                },
+                TextMetrics {
+                    width: w,
+                    height: 16.0,
+                    baseline: 12.0,
+                },
+            )
+        };
+        // A modest page fits entirely.
+        let small: Vec<_> = (0..5).map(|_| item(40.0)).collect();
+        assert_eq!(visible_candidate_count(&small), 5);
+        // A page wider than the cap keeps a prefix, not everything — and
+        // never zero.
+        let huge: Vec<_> = (0..4_000).map(|_| item(40.0)).collect();
+        let visible = visible_candidate_count(&huge);
+        assert!(visible > 0);
+        assert!(visible < huge.len());
+        // The kept prefix must actually fit: recompute its width.
+        let mut width = PANEL_PADDING;
+        for (num_m, m) in huge[..visible].iter() {
+            width += CANDIDATE_ITEM_X_PADDING * 2.0
+                + num_m.width
+                + CANDIDATE_NUMBER_GAP
+                + m.width
+                + CANDIDATE_ITEM_GAP;
+        }
+        width = width - CANDIDATE_ITEM_GAP + PANEL_PADDING;
+        assert!(width <= MAX_PANEL_LOGICAL_WIDTH + 100.0); // one item may exceed alone
+        // A single gigantic candidate is still shown (clamped later by
+        // ensure_candidate_size's fold clamp).
+        let one = vec![item(99_999.0)];
+        assert_eq!(visible_candidate_count(&one), 1);
+        // Empty layout: nothing visible.
+        assert_eq!(visible_candidate_count(&[]), 0);
+    }
+
+    #[test]
     fn unavailable_shm_skips_canvas_allocation_and_draw() {
         let mut panel = FluxPanel {
             canvas: ptr::null_mut(),
@@ -888,6 +1067,9 @@ mod tests {
             shm_pool: None,
             last_layout_key: None,
             last_layout: Vec::new(),
+            visible_candidates: 0,
+            banner_text: None,
+            banner_truncated: false,
         };
 
         assert!(!panel.draw_candidates(&["candidate".to_string()], 0, 1));

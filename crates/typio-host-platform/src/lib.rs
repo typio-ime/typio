@@ -16,6 +16,6 @@ pub mod protocols;
 pub mod text_raster;
 
 pub use typio_host_types::{
-    HostSelectionFlags, InputFacts, PanelFontConfig, panel_coordinator, panel_present_gate,
-    panel_scheduler, wayland_pending,
+    HostSelectionFlags, InputFacts, Modifiers, PanelFontConfig, panel_coordinator,
+    panel_present_gate, panel_scheduler, wayland_pending,
 };

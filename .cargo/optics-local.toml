@@ -1,0 +1,29 @@
+# Local-only source patches for cross-repository development.
+#
+# Enable this file only in a linked Typio worktree:
+#   cp .cargo/optics-local.toml .cargo/config.toml
+#   git config core.hooksPath .githooks
+#
+# The generated .cargo/config.toml is ignored by Git. Cargo resolves a local
+# lockfile in that worktree; the repository hook keeps the local lockfile out
+# of commits. Remove the generated file before promoting an Optics release.
+[patch."https://github.com/ming2k/optics"]
+flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
+flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
+lens = { path = "../optics/bindings/lens-rs/crates/lens" }
+lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
+iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }
+
+# Override points for the native C libraries. By default, Meson builds into
+# `../optics/build-release`. When developing Optics alongside Typio, keep
+# this configuration active in your linked worktree so Cargo test runners and
+# binaries link directly against the sibling build tree.
+[env]
+FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
+FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
+LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+LENS_SOURCE_DIR = { value = "../optics", relative = true }
+IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+IRIS_SOURCE_DIR = { value = "../optics", relative = true }

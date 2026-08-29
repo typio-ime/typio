@@ -21,11 +21,12 @@ use crate::input_method::{DecodedKeyEvent, InputMethodState};
 use crate::keyboard_policy::{
     KEY_PAGE_DOWN, KEY_PAGE_UP, KeyTrackState, WL_KEYBOARD_KEY_STATE_PRESSED,
     WL_KEYBOARD_KEY_STATE_RELEASED, effective_modifiers, modifier_bit_for_keysym,
-    release_must_forward, tracking_mark_released_pending, tracking_press_was_forwarded,
-    tracking_reset, tracking_reset_generations,
+    release_must_forward, repeat_should_cancel_on_modifier_transition, repeat_should_run_for_state,
+    tracking_mark_released_pending, tracking_press_was_forwarded, tracking_reset,
+    tracking_reset_generations,
 };
-use crate::repeat_timer::Modifiers;
 use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
+use typio_host_types::{Modifiers, should_repeat_for_modifiers};
 
 /// Maximum number of keys tracked for symmetric press/release. Mirrors
 /// `TYPIO_WL_MAX_TRACKED_KEYS` in the C host.
@@ -67,6 +68,11 @@ pub struct KeyboardRouter {
     repeat_key: Option<DecodedKeyEvent>,
     /// What the repeat timer should do for [`Self::repeat_key`].
     repeat_mode: RepeatMode,
+    /// Modifier mask sampled when the repeat chain was armed. A change in
+    /// the blocking modifiers (Ctrl/Alt/Super) after arming ends the chain
+    /// — the held key has become a chord, or a coalesced `Modifiers` event
+    /// corrected a stale arm-time sample (the "wwwwww" regression).
+    repeat_arm_mods: Modifiers,
     /// Physical modifier state tracked from key events.
     pub(crate) physical_modifiers: Modifiers,
     /// Whether `physical_modifiers` has been seeded from the first xkb
@@ -155,6 +161,7 @@ impl KeyboardRouter {
             pending_output: PendingEngineOutput::default(),
             repeat_key: None,
             repeat_mode: RepeatMode::Forward,
+            repeat_arm_mods: Modifiers::NONE,
             physical_modifiers: Modifiers::NONE,
             modifiers_acquired: false,
             active_generation: 1,
@@ -371,8 +378,7 @@ impl KeyboardRouter {
             })
             .collect();
         let _ = tracking_mark_released_pending(&mut self.key_tracking_states);
-        self.repeat_key = None;
-        self.repeat_mode = RepeatMode::Forward;
+        self.cancel_repeat();
         self.physical_modifiers = Modifiers::NONE;
         self.modifiers_acquired = false;
         self.engine_tracked_mods = Modifiers::NONE;
@@ -392,8 +398,7 @@ impl KeyboardRouter {
         }
         tracking_reset(&mut self.key_tracking_states);
         tracking_reset_generations(&mut self.key_tracking_generations);
-        self.repeat_key = None;
-        self.repeat_mode = RepeatMode::Forward;
+        self.cancel_repeat();
         self.pending_commit_flush = None;
         self.preedit_coalescer.clear();
         // Drop any physical modifier state: a grab handoff crosses a
@@ -1014,20 +1019,34 @@ impl KeyboardRouter {
     /// Marks the keycode [`KeyTrackState::Forwarded`] so a later release
     /// is always paired through the virtual keyboard even if the engine
     /// claims to consume the release (prevents app-side stuck auto-repeat).
-    pub fn on_forward(&mut self, key: DecodedKeyEvent) {
+    ///
+    /// `arm_mods` is the modifier sample at route time; a later blocking
+    /// modifier transition cancels the chain (see [`Self::dispatch_repeat`]).
+    pub fn on_forward(&mut self, key: DecodedKeyEvent, arm_mods: Modifiers) {
         self.set_key_tracking(key.keycode, KeyTrackState::Forwarded);
         self.repeat_key = Some(key);
         self.repeat_mode = RepeatMode::Forward;
+        self.repeat_arm_mods = arm_mods;
     }
 
     /// Record that a key was consumed by the engine. Arms the repeat
     /// timer in `Engine` mode so the main loop will keep re-dispatching
     /// the key with `is_repeat: true` until release.
-    pub fn on_consumed(&mut self, key: DecodedKeyEvent) {
+    pub fn on_consumed(&mut self, key: DecodedKeyEvent, arm_mods: Modifiers) {
         // Press never reached the app; clear any stale forwarded mark.
         self.set_key_tracking(key.keycode, KeyTrackState::Idle);
         self.repeat_key = Some(key);
         self.repeat_mode = RepeatMode::Engine;
+        self.repeat_arm_mods = arm_mods;
+    }
+
+    /// Cancel any armed key-repeat chain: forget the held key, its repeat
+    /// mode, and the arm-time modifier sample. Called at every focus
+    /// boundary and before the timer is disarmed defensively.
+    pub fn cancel_repeat(&mut self) {
+        self.repeat_key = None;
+        self.repeat_mode = RepeatMode::Forward;
+        self.repeat_arm_mods = Modifiers::NONE;
     }
 
     /// True iff the matching press for `keycode` was delivered to the
@@ -1072,13 +1091,34 @@ impl KeyboardRouter {
     /// Record a key release. Clears repeat state if it matches the
     /// currently held key, stopping further repeats.
     pub fn on_release(&mut self, key: &DecodedKeyEvent) {
-        if let Some(ref last) = self.repeat_key {
-            if last.keycode == key.keycode {
-                self.repeat_key = None;
-                self.repeat_mode = RepeatMode::Forward;
-            }
+        if self
+            .repeat_key
+            .as_ref()
+            .is_some_and(|last| last.keycode == key.keycode)
+        {
+            self.cancel_repeat();
         }
         self.clear_key_tracking(key.keycode);
+    }
+
+    /// Pure guard behind [`Self::dispatch_repeat`]: may the armed repeat
+    /// chain still fire, given the key's tracking state and the current
+    /// modifier mask?
+    fn repeat_guard_allows(&self, keycode: u32, current_mods: Modifiers) -> bool {
+        let allowed = repeat_should_run_for_state(self.key_tracking(keycode))
+            && should_repeat_for_modifiers(current_mods)
+            && !repeat_should_cancel_on_modifier_transition(self.repeat_arm_mods, current_mods);
+        if !allowed {
+            tracing::debug!(
+                target: "typio.input.repeat",
+                keycode,
+                tracking = self.key_tracking(keycode).name(),
+                arm_mods = self.repeat_arm_mods.0,
+                current_mods = current_mods.0,
+                "repeat chain cancelled: gesture no longer valid"
+            );
+        }
+        allowed
     }
 
     /// Drive one repeat expiration. Called by the main loop when the repeat
@@ -1098,6 +1138,19 @@ impl KeyboardRouter {
         let Some(key) = self.repeat_key.clone() else {
             return RepeatOutcome::Stopped;
         };
+        // Last-line defence against repeats crossing a focus boundary (the
+        // "wwwwww" regression): stop the chain — before emitting any key —
+        // when the gesture it belongs to is no longer valid. The key's
+        // release was synthesized at a focus boundary (`ReleasedPending`),
+        // a repeat-suppressing modifier is now held, or the blocking
+        // modifier set changed since the chain was armed. The primary
+        // fences are the focus-boundary key-queue discard and the timer
+        // stops in the session glue.
+        let current_mods = Modifiers(xkb_mods_depressed);
+        if !self.repeat_guard_allows(key.keycode, current_mods) {
+            self.cancel_repeat();
+            return RepeatOutcome::Stopped;
+        }
         match self.repeat_mode {
             RepeatMode::Forward => {
                 frontend.forward_key(key.time, key.keycode, key.state);
@@ -1122,8 +1175,7 @@ impl KeyboardRouter {
                     RepeatOutcome::Consumed
                 } else {
                     // Engine declined the repeat — stop further repeats.
-                    self.repeat_key = None;
-                    self.repeat_mode = RepeatMode::Forward;
+                    self.cancel_repeat();
                     RepeatOutcome::Stopped
                 }
             }
@@ -1146,6 +1198,7 @@ mod tests {
                 pending_output: PendingEngineOutput::default(),
                 repeat_key: None,
                 repeat_mode: RepeatMode::Forward,
+                repeat_arm_mods: Modifiers::NONE,
                 physical_modifiers: Modifiers::NONE,
                 modifiers_acquired: false,
                 active_generation: 1,
@@ -1272,8 +1325,7 @@ mod tests {
         let mut router = KeyboardRouter::new_for_test();
         router.key_tracking_states[17] = KeyTrackState::Forwarded;
         router.key_tracking_states[1] = KeyTrackState::Idle;
-        router.key_tracking_states[25] = KeyTrackState::AppShortcut;
-        router.key_tracking_states[3] = KeyTrackState::SuppressedStartup;
+        router.key_tracking_states[25] = KeyTrackState::Forwarded;
         router.repeat_key = Some(DecodedKeyEvent {
             keycode: 17, // W on a typical PC keymap
             xkb_keycode: 25,
@@ -1282,6 +1334,7 @@ mod tests {
             state: 1,
             time: 0,
         });
+        router.repeat_arm_mods = Modifiers::CTRL;
         router.physical_modifiers = Modifiers::CTRL;
         router.pending_commit_flush = Some("commit".to_string());
         router.preedit_coalescer.stage(
@@ -1308,11 +1361,8 @@ mod tests {
             router.key_tracking_states[25],
             KeyTrackState::ReleasedPending
         );
-        assert_eq!(
-            router.key_tracking_states[3],
-            KeyTrackState::SuppressedStartup
-        );
         assert!(router.repeat_key.is_none());
+        assert_eq!(router.repeat_arm_mods, Modifiers::NONE);
         assert_eq!(router.physical_modifiers, Modifiers::NONE);
         assert_eq!(router.pending_commit_flush.as_deref(), Some("commit"));
         assert_eq!(
@@ -1335,7 +1385,7 @@ mod tests {
             state: 1,
             time: 0,
         };
-        router.on_forward(key.clone());
+        router.on_forward(key.clone(), Modifiers::NONE);
         assert!(router.press_was_forwarded(57));
         assert!(release_must_forward(true, true));
         assert!(router.release_should_forward(57, true));
@@ -1355,10 +1405,50 @@ mod tests {
             state: 1,
             time: 0,
         };
-        router.on_consumed(key);
+        router.on_consumed(key, Modifiers::NONE);
         assert!(!router.press_was_forwarded(57));
         assert!(!router.release_should_forward(57, true));
         assert!(router.release_should_forward(57, false));
+    }
+
+    #[test]
+    fn repeat_guard_stops_on_blocking_modifier_transition() {
+        let mut router = KeyboardRouter::new_for_test();
+        let key = DecodedKeyEvent {
+            keycode: 17, // W
+            xkb_keycode: 25,
+            keysym: 0x0077,
+            unicode: "w".to_string(),
+            state: 1,
+            time: 0,
+        };
+        // Chain armed with no modifiers held; Ctrl going down mid-hold
+        // (the held key became a chord) must end it.
+        router.on_forward(key, Modifiers::NONE);
+        assert!(router.repeat_guard_allows(17, Modifiers::NONE));
+        assert!(!router.repeat_guard_allows(17, Modifiers::CTRL));
+        assert!(!router.repeat_guard_allows(17, Modifiers::SUPER));
+        // Shift alone is not a blocking modifier: repeat continues.
+        assert!(router.repeat_guard_allows(17, Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn repeat_guard_stops_for_fenced_key() {
+        let mut router = KeyboardRouter::new_for_test();
+        let key = DecodedKeyEvent {
+            keycode: 17,
+            xkb_keycode: 25,
+            keysym: 0x0077,
+            unicode: "w".to_string(),
+            state: 1,
+            time: 0,
+        };
+        router.on_forward(key, Modifiers::NONE);
+        assert!(router.repeat_guard_allows(17, Modifiers::NONE));
+        // Focus boundary fenced the key: the chain must not fire even
+        // though nothing cleared `repeat_key` yet.
+        router.key_tracking_states[17] = KeyTrackState::ReleasedPending;
+        assert!(!router.repeat_guard_allows(17, Modifiers::NONE));
     }
 
     #[test]

@@ -28,6 +28,36 @@ fn color_rgba(rgb: u32, a: u8) -> u32 {
     u32::from_le_bytes([r, g, b, a])
 }
 
+/// Owns the per-call `flux_text` context and releases it on every exit path.
+///
+/// A `flux_text` owns a 16 MiB host-coverage atlas plus the FreeType /
+/// HarfBuzz / fontconfig backend, so a context that escapes `render` is a
+/// multi-megabyte leak. `render`'s early returns (empty result when a size
+/// produces no visible coverage) previously skipped `flux_text_destroy`
+/// entirely; because an empty pixmap set also defeats `Tray::set_badge`'s
+/// `had_badge` dedup, every tray refresh (each 中/EN mode toggle, engine or
+/// language switch) re-ran `render` and leaked another context.
+struct TextContext(*mut flux_text_sys::flux_text);
+
+impl Drop for TextContext {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { flux_text_destroy(self.0) };
+        }
+    }
+}
+
+/// RAII guard for the per-size CPU canvas inside `render`.
+struct CanvasGuard(*mut flux_sys::flux_canvas);
+
+impl Drop for CanvasGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { flux_canvas_destroy(self.0) };
+        }
+    }
+}
+
 pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
     if text.is_empty() || sizes.is_empty() {
         return Vec::new();
@@ -37,11 +67,12 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         device: std::ptr::null_mut(),
         scale: 1.0,
     };
-    let mut text_ctx = std::ptr::null_mut();
-    unsafe { flux_text_create(&desc, &mut text_ctx) };
-    if text_ctx.is_null() {
+    let mut raw = std::ptr::null_mut();
+    unsafe { flux_text_create(&desc, &mut raw) };
+    if raw.is_null() {
         return Vec::new();
     }
+    let text_ctx = TextContext(raw);
 
     let mut out = Vec::with_capacity(sizes.len());
     for &size in sizes {
@@ -54,6 +85,9 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         if canvas.is_null() {
             continue;
         }
+        // Released by Drop on every path below, including the `vec![0u8; …]`
+        // allocation failure path between create and the manual destroy.
+        let _canvas_guard = CanvasGuard(canvas);
 
         let style = flux_text_style {
             size_px: size as f32 * 0.75, // Scale to fit
@@ -68,7 +102,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         };
 
         unsafe {
-            let m = flux_text_measure(text_ctx, text.as_ptr() as *const i8, text.len(), &style);
+            let m = flux_text_measure(text_ctx.0, text.as_ptr() as *const i8, text.len(), &style);
 
             // Center the text
             let x = (size as f32 - m.width) / 2.0;
@@ -88,7 +122,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
             ];
             for (ox, oy) in offsets {
                 flux_text_draw(
-                    text_ctx,
+                    text_ctx.0,
                     canvas as *mut flux_text_sys::flux_canvas,
                     std::ptr::null_mut(),
                     x + ox,
@@ -101,7 +135,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
 
             // Draw foreground
             flux_text_draw(
-                text_ctx,
+                text_ctx.0,
                 canvas as *mut flux_text_sys::flux_canvas,
                 std::ptr::null_mut(),
                 x,
@@ -154,15 +188,16 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
                     });
                 }
             }
-            flux_canvas_destroy(canvas);
         }
     }
 
     if out.len() != sizes.len() {
+        // Partial coverage: the caller treats an incomplete ladder as "no
+        // badge" (icon fallback). The TextContext guard above releases the
+        // flux-text context on this early return — this path used to leak it.
         return Vec::new();
     }
 
-    unsafe { flux_text_destroy(text_ctx) };
     out
 }
 
@@ -177,6 +212,20 @@ mod tests {
     #[test]
     fn rejects_bad_input() {
         assert!(render("", &[22], 0xFFFFFF).is_empty());
+    }
+
+    #[test]
+    fn partial_ladder_releases_flux_text_context() {
+        // A size-0 entry produces no pixmap, so `out.len() != sizes.len()`
+        // and render returns early via the partial-coverage path. That path
+        // used to skip `flux_text_destroy`, leaking the flux-text context
+        // (16 MiB host-coverage atlas + FreeType/HarfBuzz/fontconfig backend)
+        // on every tray refresh while no badge pixmap dedup was active.
+        // Run it repeatedly: under valgrind/LSAN the old code reports a
+        // definite leak that grows linearly with iterations.
+        for _ in 0..8 {
+            assert!(render("EN", &[0, 22, 0], 0xFFFFFF).is_empty());
+        }
     }
 
     #[test]

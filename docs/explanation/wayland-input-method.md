@@ -72,7 +72,7 @@ The compositor's double-buffer commit point, and where focus facts become lifecy
 
 1. **Serial increment**. `im_serial++`. The serial is the count of `done` events received; it is the commit serial for every `zwp_input_method_v2_commit()` call.
 2. **Apply facts**. The buffered `surrounding_text`, `content_type`, `text_change_cause`, and `active` facts become current atomically.
-3. **Classify the state change.** The focus facts are reduced by the pure `focus_controller` classifier into one action — `FIRST_ACTIVATE`, `DEACTIVATE`, `REACTIVATE`, or `NOOP` — which the per-iteration pipeline in `crates/typio-host/src/app/event_loop.rs` consumes through focus-in, focus-out, and reactivation effects. Diff converges every iteration, so a `NOOP` that still finds a non-routable grab recovers naturally on the next pass; there is no separate reconciler. See [ADR-0018](../adr/0018-focus-transition-classification.md) and [ADR-0003](../adr/0003-session-controller-reduce-diff.md).
+3. **Classify the state change.** The focus facts are reduced by the pure `focus_controller::reduce` into a desired state with edge-triggered focus-in, focus-out, and reactivation flags, which the per-iteration pipeline in `crates/typio-host/src/app/event_loop.rs` consumes through `diff` effects. Diff converges every iteration, so a no-op tick that still finds a non-routable grab recovers naturally on the next pass; there is no separate reconciler. See [ADR-0018](../adr/0018-focus-transition-classification.md) and [ADR-0003](../adr/0003-session-controller-reduce-diff.md).
 
 ### `unavailable`
 
@@ -101,7 +101,7 @@ This is deliberate: two fast key events can be delivered in separate reactor ste
 
 ## Keyboard Grab Lifecycle
 
-The grab and its keymap handshake are **one resource** (`absent → needs_keymap → ready → broken`) that the focus controller creates and repairs on each reactor evaluation; the rules are in [Input-Method Session](input-method-session.md).
+The grab and its keymap handshake are **one resource** (`absent → needs_keymap → ready`) that the focus controller creates and repairs on each reactor evaluation; the rules are in [Input-Method Session](input-method-session.md).
 
 Briefly:
 - Each grab incarnation has a **generation**. A key press claims the current generation, and the matching release is accepted only when the stored per-key generation still matches the active grab generation.
@@ -110,9 +110,21 @@ Briefly:
 - Re-activation retains the grab but synthesizes releases for keys forwarded
   by the old field and stops their repeat chain before routing in the new
   field.
+- Keys queued but not yet routed when an `activate`/`deactivate` boundary
+  arrives are discarded wholesale. An unrouted key belongs to the activation
+  epoch it arrived in; routing it after the boundary would inject it into
+  whatever field is focused next (the "wwwwww" regression, where a
+  shortcut's letter key — Ctrl+W closing a browser tab — was routed into the
+  newly focused field and its armed repeat kept firing).
+- An armed repeat chain is stopped at every focus transition (focus-out,
+  destroy-grab, focus-in, reactivate), and each expiration is re-validated
+  against the key's tracking state and the current modifier mask: a key
+  whose release was synthesized at a boundary, or a blocking-modifier
+  (Ctrl/Alt/Super) transition since the chain was armed, ends the chain
+  before any key is emitted.
 - Unhandled keys are forwarded as original press/release pairs through the virtual keyboard.
 - Modifier state is synced separately; modifier changes do not synthesise releases for unrelated non-modifier keys.
-- Two fail-safe backstops remain: an emergency-exit shortcut and a rejected-press-streak threshold, both releasing the grab.
+- Wedged-grab recovery relies on external fact sources (resume detector, POLLHUP) — see [Focus Controller](focus-controller.md). The C host's emergency-exit shortcut and rejected-press-streak failsafe were not ported.
 
 ## Engine Availability and Fault Isolation
 
@@ -140,6 +152,12 @@ private engine fd. If an engine process crashes, the daemon observes a
 transport failure instead of taking the fault in the Wayland process. Engine
 code runs inside direct engine executables, not inside the daemon.
 
+A poisoned worker is respawned **asynchronously**: the respawn + re-init runs
+on a detached thread and is installed by the next engine call. While a
+recovery is in flight the backend reports no engine, so keyboard keys pass
+through to the application (`NOT_HANDLED`) instead of freezing the main loop
+on a multi-second spawn while the keyboard grab is held.
+
 See the [engine contract](../../crates/typio-core/docs/explanation/engine-contract.md)
 for process isolation, ownership, and poisoned-channel recovery.
 
@@ -156,16 +174,16 @@ declined with `KeyResult::NotHandled`. The virtual-keyboard bridge manages:
 
 A subtle protocol behaviour: the compositor may send `activate` while the daemon is still focused (e.g. the user clicked from one text field to another inside the same window). Treating this as a full `deactivate` → `activate` cycle would tear down the grab, lose the preedit round-trip, and interrupt typing.
 
-The `activate_seen` fact makes this case explicit without that cost. At
-`done`, `classify_done(was=true, now=true, activate_seen=true)` returns
-`REACTIVATE`, which runs `transition_to_reactivate`. The keyboard grab and
+The `activate_seen` fact makes this case explicit without that cost. When a
+`done` batch carried an `activate` while the previous tick was already `YES`,
+`reduce` sets `reactivate` (`focus_controller.rs`). The keyboard grab and
 the engine's input context are **left intact** because they belong to the
 input method, not the field. Transient key ownership does belong to the old
 field, so the daemon synthesizes releases for forwarded keys and stops the
 repeat timer. It then resets the Panel anchor, invalidates the submitted-frame
 cache, and re-presents a non-empty candidate snapshot even when its sequence
-number did not change. A `done` with no `activate` this batch
-(`activate_seen=false`) classifies as `NONE` and changes nothing, so plain
+number did not change. A `done` with no `activate` this batch keeps focus
+state untouched, so plain
 text-state updates during composition never disturb the grab. See
 [ADR-0018](../adr/0018-focus-transition-classification.md).
 

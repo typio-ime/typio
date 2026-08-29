@@ -17,11 +17,25 @@ use typio_host::engine_loader::{EngineLoader, LoadError, SkipReason};
 /// Real manifests shipped by sibling engine repos in this workspace.
 /// Each entry is `(engine_dir, manifest_filename)`.
 const REAL_MANIFESTS: &[(&str, &str)] = &[
+    ("typio-engine-compose", "typio-engine-compose.toml"),
     ("typio-engine-mozc", "typio-engine-mozc.toml"),
     ("typio-engine-rime", "typio-engine-rime.toml"),
     ("typio-engine-sherpa", "typio-engine-sherpa.toml"),
     ("typio-engine-whisper", "typio-engine-whisper.toml"),
 ];
+
+fn resolve_manifest_path(engine_dir: &str, manifest_name: &str) -> Option<PathBuf> {
+    let root = engine_workspace_root().join(engine_dir);
+    let in_build = root.join("build").join(manifest_name);
+    if in_build.exists() {
+        return Some(in_build);
+    }
+    let in_root = root.join(manifest_name);
+    if in_root.exists() {
+        return Some(in_root);
+    }
+    None
+}
 
 fn engine_workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = .../typio/crates/typio-host
@@ -38,17 +52,12 @@ fn engine_workspace_root() -> PathBuf {
 fn all_real_manifests_parse_and_validate() {
     let mut checked = 0;
     for (engine_dir, manifest_name) in REAL_MANIFESTS {
-        let path = engine_workspace_root()
-            .join(engine_dir)
-            .join("build")
-            .join(manifest_name);
-        if !path.exists() {
+        let Some(path) = resolve_manifest_path(engine_dir, manifest_name) else {
             eprintln!(
-                "skipping {engine_dir}: build artifact {} not present",
-                path.display()
+                "skipping {engine_dir}: manifest {manifest_name} not present",
             );
             continue;
-        }
+        };
         let m = typio_host::engine_loader::manifest::EngineManifest::read_from(&path)
             .unwrap_or_else(|e| panic!("failed to parse real manifest {}: {e}", path.display()));
         assert!(
@@ -88,17 +97,12 @@ fn all_real_manifests_register_into_typio_core() {
     let mut registry = typio::core::registry::EngineRegistry::new();
 
     for (engine_dir, manifest_name) in REAL_MANIFESTS {
-        let path = engine_workspace_root()
-            .join(engine_dir)
-            .join("build")
-            .join(manifest_name);
-        if !path.exists() {
+        let Some(path) = resolve_manifest_path(engine_dir, manifest_name) else {
             eprintln!(
-                "skipping {engine_dir}: build artifact {} not present",
-                path.display()
+                "skipping {engine_dir}: manifest {manifest_name} not present",
             );
             continue;
-        }
+        };
         loader
             .load_single(&mut registry, &path)
             .unwrap_or_else(|e| panic!("{engine_dir}: load_single failed: {e}"));
@@ -116,10 +120,7 @@ fn all_real_manifests_register_into_typio_core() {
 fn duplicate_registration_of_same_engine_is_skipped_not_failed() {
     let manifest = REAL_MANIFESTS
         .iter()
-        .find_map(|(dir, name)| {
-            let p = engine_workspace_root().join(dir).join("build").join(name);
-            if p.exists() { Some(p) } else { None }
-        })
+        .find_map(|(dir, name)| resolve_manifest_path(dir, name))
         .expect("at least one engine build artifact must exist for this test");
 
     let mut loader = EngineLoader::with_voice();

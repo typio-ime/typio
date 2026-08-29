@@ -139,6 +139,12 @@ pub struct App {
     #[cfg(feature = "wayland")]
     voice_pending_banner: Option<indicator::VoiceBanner>,
     config_watcher: Option<ConfigWatcher>,
+    /// Last time the idle-worker reaper ran. The reaper itself is cheap,
+    /// but it takes the instance borrow and walks every engine slot, so it
+    /// is throttled to a coarse cadence instead of running per reactor step
+    /// (which fires on every keystroke).
+    #[cfg(feature = "wayland")]
+    last_idle_reap: Option<std::time::Instant>,
     /// Sender half of the daemon event channel. Cloned into the IPC stop
     /// callback and the tray action handler; every send also writes
     /// `event_waker`.
@@ -227,6 +233,8 @@ impl App {
             #[cfg(feature = "wayland")]
             voice_pending_banner: None,
             config_watcher: None,
+            #[cfg(feature = "wayland")]
+            last_idle_reap: None,
             event_tx,
             event_rx: Some(event_rx),
             event_waker,
@@ -414,7 +422,7 @@ impl App {
 
         #[cfg(feature = "wayland")]
         {
-            match InputMethodFrontend::connect(None) {
+            match InputMethodFrontend::connect() {
                 Ok(frontend) => {
                     tracing::info!(target: "typio.startup", "Wayland input-method frontend connected");
                     self.frontend = Some(frontend);
@@ -851,10 +859,12 @@ impl App {
 /// forwarded-key paths so both kinds of key repeat identically.
 /// Auto-repeat is suppressed entirely when a repeat-suppressing
 /// modifier (Ctrl / Alt / Super) is held, or when the compositor
-/// advertises `rate == 0`.
+/// advertises `rate == 0`. `mods_depressed` must already be in the
+/// host-wide [`typio_host_types::Modifiers`] layout (see
+/// `InputMethodState::effective_modifiers`), not the raw xkb wire mask.
 #[cfg(feature = "wayland")]
 fn arm_repeat(timer: &mut RepeatTimer, compositor_info: Option<(i32, i32)>, mods_depressed: u32) {
-    if !repeat_timer::should_repeat_for_modifiers(repeat_timer::Modifiers(mods_depressed)) {
+    if !typio_host_types::should_repeat_for_modifiers(typio_host_types::Modifiers(mods_depressed)) {
         let _ = timer.stop();
         return;
     }
@@ -939,6 +949,8 @@ mod tests {
             #[cfg(feature = "wayland")]
             voice_pending_banner: None,
             config_watcher: None,
+            #[cfg(feature = "wayland")]
+            last_idle_reap: None,
             event_tx: tx,
             event_rx: Some(rx),
             event_waker,

@@ -1,6 +1,7 @@
 //! Platform-neutral host state and policy types shared by typio-host and its
 //! platform integration crates.
 
+pub mod modifiers;
 pub mod panel_coordinator;
 pub mod panel_present_gate;
 pub mod panel_scheduler;
@@ -15,6 +16,7 @@ pub struct InputFacts {
     pub im_done_had_activate: bool,
     pub im_done_had_deactivate: bool,
     pub im_done_serial: u32,
+    pub im_is_active: bool,
     pub connection_alive: bool,
     pub suspend_gap_detected: bool,
     pub engine_present: bool,
@@ -83,6 +85,7 @@ impl PanelFontConfig {
 }
 
 // Compatibility re-exports for modules moved out of typio-host.
+pub use modifiers::*;
 pub use panel_coordinator::*;
 pub use panel_present_gate::*;
 pub use panel_scheduler::*;

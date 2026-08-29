@@ -10,6 +10,7 @@ target/
 # Cargo workspace lockfile is committed for binaries, not libraries.
 # typio-linux is now a binary workspace root → keep Cargo.lock.
 # (Member crates inherit; nothing else to do.)
+.cargo/config.toml
 
 # AI assistant tooling (local, not project artifacts)
 .claude/
@@ -21,6 +22,7 @@ target/
 .gemini/
 .antigravitycli/
 .aider*
+.muta/
 
 # IDE specific files
 .idea/

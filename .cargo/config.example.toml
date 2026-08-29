@@ -1,0 +1,26 @@
+# Example Cargo configuration for local development.
+#
+# To use this configuration locally:
+#   cp .cargo/config.example.toml .cargo/config.toml
+#
+# Note: `.cargo/config.toml` is ignored by Git, allowing individual developers
+# to customize their local toolchain and build acceleration settings without
+# affecting other environments.
+
+[alias]
+xtask = "run --package xtask --"
+
+[build]
+# Optional compiler cache wrapper. Requires `sccache` in your PATH.
+# rustc-wrapper = "sccache"
+
+# Keep bare Cargo builds on the optimized native tree. Explicit shell
+# variables still take precedence, so contributor builds can select the
+# documented debugoptimized tree when needed.
+[env]
+FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
+FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
+LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+LENS_SOURCE_DIR = { value = "../optics", relative = true }
+IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+IRIS_SOURCE_DIR = { value = "../optics", relative = true }

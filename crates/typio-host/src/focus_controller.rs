@@ -82,9 +82,6 @@ pub enum GrabResourceState {
     /// Grab exists and the compositor keymap has been forwarded to vk in the
     /// current epoch. Keys may be routed to the engine.
     Ready,
-    /// The keymap path is unhealthy (timeout, repeated cancellation, fd dup
-    /// failure). The grab must be torn down and rebuilt.
-    Broken,
 }
 
 impl GrabResourceState {
@@ -94,7 +91,6 @@ impl GrabResourceState {
             GrabResourceState::Absent => "ABSENT",
             GrabResourceState::NeedsKeymap => "NEEDS_KEYMAP",
             GrabResourceState::Ready => "READY",
-            GrabResourceState::Broken => "BROKEN",
         }
     }
 }
@@ -157,6 +153,10 @@ pub fn reduce(facts: &InputFacts, prev: &DesiredState) -> DesiredState {
         };
     } else if facts.im_deactivate_seen || facts.im_done_had_deactivate {
         d.grab = GrabWant::SoftPause;
+    } else if facts.im_is_active && facts.engine_present {
+        // Level rule: if the platform reports an active input-method session
+        // and an engine is available, converge on YES.
+        d.grab = GrabWant::Yes;
     } else {
         d.grab = prev.grab;
     }
@@ -169,8 +169,9 @@ pub fn reduce(facts: &InputFacts, prev: &DesiredState) -> DesiredState {
     // means the compositor moved us to a new caret without an intervening
     // deactivate. Preserve the grab (and the in-flight composition);
     // re-anchor the panel to the new caret.
-    d.reactivate =
-        d.grab == GrabWant::Yes && prev.grab == GrabWant::Yes && facts.im_done_had_activate;
+    d.reactivate = d.grab == GrabWant::Yes
+        && prev.grab == GrabWant::Yes
+        && (facts.im_done_had_activate || facts.im_activate_seen);
 
     d
 }
@@ -202,18 +203,14 @@ pub fn diff(desired: &DesiredState, actual: &ActualState) -> EffectSet {
         e.scrub_generation = true;
     }
 
-    // Broken recovery: tear down and rebuild in the same tick.
-    if desired.grab == GrabWant::Yes && actual.grab == GrabResourceState::Broken {
-        e.destroy_grab = true;
-        e.create_grab = true;
-        e.scrub_generation = true;
-    }
-
-    // Focus edges.
-    if desired.focus_in {
+    // Focus convergence: edge-triggered focus_in, plus level reconciliation
+    // if desired is YES but the input context is not yet focused.
+    if desired.focus_in || (desired.grab == GrabWant::Yes && !actual.ic_focused) {
         e.send_focus_in = true;
     }
-    if desired.focus_out {
+    // Focus departure: edge-triggered focus_out, plus level reconciliation
+    // if desired is not YES but the input context is still marked focused.
+    if desired.focus_out || (desired.grab != GrabWant::Yes && actual.ic_focused) {
         e.send_focus_out = true;
         // Leaving an active field abandons any in-flight composition. Discard
         // it engine-side and blank the compositor preedit so a half-typed
@@ -230,81 +227,6 @@ pub fn diff(desired: &DesiredState, actual: &ActualState) -> EffectSet {
     }
 
     e
-}
-
-// ── Done-event classifier (pure helper, for tracing) ─────────────────────
-
-/// Outcome of a `done` event, classified by the relevant focus axes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum DoneAction {
-    /// No focus change.
-    #[default]
-    Noop,
-    /// Was inactive, now active.
-    FirstActivate,
-    /// Was active, now inactive.
-    Deactivate,
-    /// Active, then a real (re)activate.
-    Reactivate,
-}
-
-impl DoneAction {
-    /// Pure name helper, for tracing.
-    pub fn name(self) -> &'static str {
-        match self {
-            DoneAction::Noop => "NOOP",
-            DoneAction::FirstActivate => "FIRST_ACTIVATE",
-            DoneAction::Deactivate => "DEACTIVATE",
-            DoneAction::Reactivate => "REACTIVATE",
-        }
-    }
-}
-
-/// Pure classifier for a `done` event.
-pub fn classify_done(was_active: bool, now_active: bool, activate_seen: bool) -> DoneAction {
-    if now_active && !was_active {
-        return DoneAction::FirstActivate;
-    }
-    if was_active && !now_active {
-        return DoneAction::Deactivate;
-    }
-    // Still active. Only a fresh `activate` in this batch means a genuine
-    // re-activation (a move to a new field); otherwise this `done` is just a
-    // text-state update and must leave focus state untouched.
-    if was_active && now_active && activate_seen {
-        return DoneAction::Reactivate;
-    }
-    DoneAction::Noop
-}
-
-// ── Guard predicates (pure, on a snapshotted actual) ─────────────────────
-
-/// Can the host safely route a key to the engine right now? True iff the
-/// input context is focused AND the grab resource is READY.
-pub fn can_route_keys(actual: &ActualState) -> bool {
-    actual.ic_focused && actual.grab == GrabResourceState::Ready
-}
-
-/// Can the host safely process modifier updates right now? True iff the grab
-/// resource is anything other than ABSENT or BROKEN. Modifiers (and their
-/// keymap handoff) can flow during the NEEDS_KEYMAP window.
-pub fn can_route_modifiers(actual: &ActualState) -> bool {
-    matches!(
-        actual.grab,
-        GrabResourceState::NeedsKeymap | GrabResourceState::Ready
-    )
-}
-
-/// Is the actual state mid-transition (between focus edges)? True iff the
-/// engine is focused but the grab is not yet READY (or is BROKEN). The
-/// keyboard guard's stuck-press failsafe uses this to avoid tearing down the
-/// daemon while a normal activation handshake is still in flight.
-pub fn is_transitioning(actual: &ActualState) -> bool {
-    actual.ic_focused
-        && matches!(
-            actual.grab,
-            GrabResourceState::Absent | GrabResourceState::NeedsKeymap | GrabResourceState::Broken
-        )
 }
 
 #[cfg(test)]
@@ -437,6 +359,22 @@ mod tests {
     }
 
     #[test]
+    fn reduce_im_is_active_converges_on_yes_when_engine_present() {
+        let facts = InputFacts {
+            im_is_active: true,
+            engine_present: true,
+            ..alive()
+        };
+        let prev = DesiredState {
+            grab: GrabWant::None,
+            ..Default::default()
+        };
+        let d = reduce(&facts, &prev);
+        assert_eq!(d.grab, GrabWant::Yes);
+        assert!(d.focus_in);
+    }
+
+    #[test]
     fn reduce_hard_boundary_overrides_deactivate() {
         let facts = InputFacts {
             suspend_gap_detected: true,
@@ -556,22 +494,6 @@ mod tests {
         };
         let a = ActualState::default();
         let e = diff(&d, &a);
-        assert!(e.create_grab);
-        assert!(e.scrub_generation);
-    }
-
-    #[test]
-    fn diff_yes_with_broken_rebuilds() {
-        let d = DesiredState {
-            grab: GrabWant::Yes,
-            ..Default::default()
-        };
-        let a = ActualState {
-            grab: GrabResourceState::Broken,
-            ..Default::default()
-        };
-        let e = diff(&d, &a);
-        assert!(e.destroy_grab);
         assert!(e.create_grab);
         assert!(e.scrub_generation);
     }
@@ -743,81 +665,81 @@ mod tests {
         assert!(!e.create_grab);
     }
 
-    // ── Classifier ───────────────────────────────────────────────────────
-
     #[test]
-    fn classify_done_cases() {
-        assert_eq!(classify_done(false, true, false), DoneAction::FirstActivate);
-        assert_eq!(classify_done(true, false, false), DoneAction::Deactivate);
-        assert_eq!(classify_done(true, true, true), DoneAction::Reactivate);
-        assert_eq!(classify_done(true, true, false), DoneAction::Noop);
-        assert_eq!(classify_done(false, false, true), DoneAction::Noop);
-    }
-
-    // ── Guards ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn can_route_keys_only_when_focused_and_ready() {
-        assert!(can_route_keys(&ActualState {
-            ic_focused: true,
-            grab: GrabResourceState::Ready,
+    fn diff_reconciles_unfocused_when_desired_yes() {
+        let d = DesiredState {
+            grab: GrabWant::Yes,
+            focus_in: false,
             ..Default::default()
-        }));
-        assert!(!can_route_keys(&ActualState {
+        };
+        let a = ActualState {
+            grab: GrabResourceState::Ready,
             ic_focused: false,
-            grab: GrabResourceState::Ready,
             ..Default::default()
-        }));
-        assert!(!can_route_keys(&ActualState {
-            ic_focused: true,
-            grab: GrabResourceState::NeedsKeymap,
-            ..Default::default()
-        }));
+        };
+        let e = diff(&d, &a);
+        assert!(e.send_focus_in);
     }
 
     #[test]
-    fn can_route_modifiers_during_keymap_window() {
-        assert!(can_route_modifiers(&ActualState {
-            grab: GrabResourceState::NeedsKeymap,
+    fn diff_reconciles_focused_when_desired_none() {
+        let d = DesiredState {
+            grab: GrabWant::None,
+            focus_out: false,
             ..Default::default()
-        }));
-        assert!(can_route_modifiers(&ActualState {
-            grab: GrabResourceState::Ready,
-            ..Default::default()
-        }));
-        assert!(!can_route_modifiers(&ActualState {
+        };
+        let a = ActualState {
             grab: GrabResourceState::Absent,
+            ic_focused: true,
             ..Default::default()
-        }));
-        assert!(!can_route_modifiers(&ActualState {
-            grab: GrabResourceState::Broken,
-            ..Default::default()
-        }));
+        };
+        let e = diff(&d, &a);
+        assert!(e.send_focus_out);
+        assert!(e.discard_composition);
+        assert!(e.clear_preedit);
+        assert!(e.commit);
     }
 
     #[test]
-    fn is_transitioning_when_focused_but_not_ready() {
-        assert!(is_transitioning(&ActualState {
-            ic_focused: true,
-            grab: GrabResourceState::NeedsKeymap,
+    fn reduce_reactivate_when_activate_seen_in_stable_yes() {
+        let facts = InputFacts {
+            connection_alive: true,
+            im_activate_seen: true,
+            engine_present: true,
             ..Default::default()
-        }));
-        assert!(!is_transitioning(&ActualState {
-            ic_focused: true,
-            grab: GrabResourceState::Ready,
+        };
+        let prev = DesiredState {
+            grab: GrabWant::Yes,
             ..Default::default()
-        }));
-        assert!(!is_transitioning(&ActualState {
-            ic_focused: false,
-            grab: GrabResourceState::Absent,
+        };
+        let d = reduce(&facts, &prev);
+        assert_eq!(d.grab, GrabWant::Yes);
+        assert!(d.reactivate);
+        assert!(!d.focus_in);
+    }
+
+    #[test]
+    fn reduce_reactivate_when_done_had_activate_in_stable_yes() {
+        let facts = InputFacts {
+            connection_alive: true,
+            im_done_had_activate: true,
+            engine_present: true,
             ..Default::default()
-        }));
+        };
+        let prev = DesiredState {
+            grab: GrabWant::Yes,
+            ..Default::default()
+        };
+        let d = reduce(&facts, &prev);
+        assert_eq!(d.grab, GrabWant::Yes);
+        assert!(d.reactivate);
+        assert!(!d.focus_in);
     }
 
     #[test]
     fn names_round_trip() {
         assert_eq!(GrabWant::SoftPause.name(), "SOFT_PAUSE");
         assert_eq!(GrabResourceState::NeedsKeymap.name(), "NEEDS_KEYMAP");
-        assert_eq!(DoneAction::FirstActivate.name(), "FIRST_ACTIVATE");
+        assert_eq!(GrabResourceState::Ready.name(), "READY");
     }
 }

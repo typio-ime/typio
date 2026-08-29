@@ -5,6 +5,125 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Idle engine worker reaping.** Engines the user once activated but no
+  longer uses no longer stay resident for the daemon's lifetime. A reaper
+  walk (throttled to once a minute) stops the worker process of any engine
+  inactive for 15 minutes; re-activating such an engine transparently
+  re-spawns it. Before this, deactivation was protocol-level only, so every
+  engine ever activated kept a child process and a socketpair alive
+  indefinitely.
+
+- **Valgrind leak gate in CI.** A new `valgrind-leak-gate` job runs the
+  FFI-heavy suites (`icon_badge`, `text_raster`, `panel`) under full leak
+  checking with `--errors-for-leak-kinds=definite`. Suppressions cover only
+  upstream libfontconfig's process-lifetime pattern cache (the same single
+  rationale as optics' `lsan.supp`); a real typio- or flux-side leak fails
+  the gate.
+
+### Changed
+
+- **Poisoned engine workers respawn asynchronously.** A crashed engine is now
+  respawned and re-initialised on a detached thread instead of inside the next
+  `process_key` call on the main loop. While the recovery is in flight, keys
+  pass through to the focused application, so an engine crash can no longer
+  freeze the keyboard for the duration of a spawn + init while the keyboard
+  grab is held. Repeated respawn failures now back off exponentially
+  (1→2→…→64 s), so an engine that crashes on startup is retried roughly once
+  a minute instead of once per keystroke; a successful request resets the
+  backoff, and explicit engine reload clears it.
+
+- **SHM buffer release tracking rides in wayland user-data.** Each panel
+  `wl_buffer`'s busy flag is now passed as the buffer's own user-data at
+  `create_buffer` time and handed straight to the release handler, replacing
+  the global proxy-pointer-keyed registry. This removes an address-reuse
+  race where a late `release` for a destroyed buffer could clear the wrong
+  (new) buffer's flag, and deletes the second bookkeeping structure that
+  had to be kept in sync on every pool reallocation.
+
+- **Bounded panel framebuffer.** The candidate panel and status banner now
+  cap their extent at 16384 logical px wide / 4096 px tall. Candidate rows
+  wider than the cap render a fitting prefix plus a `⋯` overflow marker;
+  over-long banner labels are truncated with `…`. Previously a buggy or
+  hostile engine could imply multi-gigabyte `fallocate`+`mmap` attempts per
+  frame (contained by failure handling, but attempted) and arbitrarily
+  expensive full-frame clears/downsamples per keystroke.
+
+- **One host-wide modifier bit layout.** The platform layer now maps the
+  compositor's keymap-dependent xkb modifier mask to the host `Modifiers`
+  layout by querying xkb modifier names once per event batch. Downstream
+  consumers (engine modifier mask, switch chord, repeat gate) no longer mix
+  raw xkb wire bits with host constants.
+
+- **Tray badge renders dedup on the attempted text.** `set_badge` now
+  remembers the last badge text it tried to render even when the render
+  produced no pixmaps (missing glyph coverage, degraded text backend), so an
+  uncoverable badge is not re-rasterised — a full flux-text context
+  lifecycle — on every tray refresh.
+
+- **Optics cross-repository development worktree setup.** The workspace now
+  declares canonical tagged Git dependencies for Optics (`flux-sys`,
+  `flux-text-sys`, `iris`, `iris-sys`, `lens-sys`), accompanied by
+  `.cargo/optics-local.toml` for local `[patch]` workflows in a linked
+  development worktree (`../typio-dev` on `dev`), `.githooks/pre-commit` to
+  prevent accidental commits of local lockfiles, and
+  `docs/dev/cross-repository-development.md`.
+
+### Removed
+
+- **Dead lifecycle and state-machine code.** Removed the never-wired
+  `boundary` module, the `classify_done`/`DoneAction` classifier and the
+  unused routing-guard predicates superseded by `reduce`/`diff`, the
+  unproducible `GrabResourceState::Broken` readiness state, the six
+  unconstructed `KeyTrackState` variants, the vestigial
+  `LifecycleEvent`/`LifecycleCallback` channel (facts are the real channel),
+  and the dead `sync_physical_modifiers` / chord helper predicates.
+
+### Fixed
+
+- **Level-triggered input context focus reconciliation.** Fixed an intermittent
+  issue where typing would produce engine composition but the candidate popup
+  window remained missing until switching away to another window and back.
+  `FocusController::diff` now reconciles level differences between desired grab
+  state and live `router.is_focused()` / `actual.ic_focused`, ensuring `focus_in`
+  is applied if the input context ever fell out of sync with an active grab.
+  Additionally, `InputMethodState` now tracks pending batch activation across
+  reactor dispatch boundaries so `Event::Done` reliably records activate facts.
+
+- **Tray badge flux-text context leak.** Rendering a language badge whose
+  size ladder produced no visible coverage at some size returned early and
+  skipped `flux_text_destroy`, leaking the full flux-text context (16 MiB
+  host-coverage atlas plus the FreeType/HarfBuzz/fontconfig backend) on
+  every tray refresh. Because an empty pixmap set also disabled the tray's
+  badge dedup, the leak repeated on each mode/engine/language switch —
+  ~130 MiB over a few dozen switches. The context and per-size canvas are
+  now RAII-guarded so every exit path releases them; verified leak-free
+  under valgrind (the only residual definite leak is upstream libfontconfig's
+  process-lifetime pattern cache, already suppressed in `optics`).
+
+- **Repeated shortcut letters after focus switches.** Closing a Chrome tab
+  with Ctrl+W (or any equivalent shortcut-driven focus switch) no longer
+  types `wwwwww…` into the newly focused field. Keys queued but not yet
+  routed when an activate/deactivate boundary arrives are now discarded —
+  an unrouted key belongs to the activation epoch it arrived in — every
+  focus transition (including focus-in) stops the repeat timer and clears
+  the armed chain, the repeat driver refuses to fire while the input method
+  is inactive, and each armed chain is re-validated on every expiration
+  against the key's tracking state and the current blocking-modifier mask.
+
+- **Super now suppresses auto-repeat.** The raw xkb wire mask places Super
+  (Mod4) at a bit position the host layout read as NumLock, so holding Super
+  never suppressed auto-repeat and Super chords were misread. The named-xkb
+  mapping above fixes the bit positions for any keymap.
+
+- **Stale synthetic-release markers across grab epochs.** Destroying a
+  keyboard grab now also clears the synthetic-release set, so a marker left
+  by a fenced key can no longer swallow a legitimate release in the next
+  grab epoch.
+
 ## [0.6.0] - 2026-08-03
 
 ### Added

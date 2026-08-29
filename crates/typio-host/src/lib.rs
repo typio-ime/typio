@@ -24,7 +24,6 @@ pub mod build_info {
 }
 
 pub mod app;
-pub mod boundary;
 pub mod candidate_guard;
 pub mod config_watcher;
 pub mod diagnostics;

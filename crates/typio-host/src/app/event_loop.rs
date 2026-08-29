@@ -16,6 +16,15 @@ use super::App;
 use super::panel_driver::flush_candidate_panel;
 use super::reactor::{PollSource, PollSourceFds, PollSources, PollTimeout};
 
+/// How often the idle-worker reaper walk runs.
+const IDLE_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long an engine must be inactive before its worker process is
+/// stopped. Long enough that ordinary engine switching (中↔EN, a temporary
+/// switch to a voice engine) never triggers a cold respawn on switch-back;
+/// short enough that a daemon left running for days does not keep every
+/// engine the user ever touched resident.
+const IDLE_REAP_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 impl App {
     /// The Wayland main loop. Returns the daemon exit code.
     pub(super) fn run_with_wayland(&mut self, ipc_bus: Option<&Rc<RefCell<IpcBus>>>) -> i32 {
@@ -360,6 +369,31 @@ impl App {
                 };
                 if should_reload {
                     self.reload_config();
+                }
+            }
+
+            // 13. Idle worker reaper. Engines the user once activated but
+            //     no longer uses keep a child process + socketpair alive
+            //     indefinitely (deactivation is protocol-level only). Reap
+            //     them after a long idle period; re-activation transparently
+            //     re-spawns. Throttled to a coarse cadence — the walk takes
+            //     the instance borrow, and this must never land on the
+            //     per-keystroke path.
+            if self
+                .last_idle_reap
+                .is_none_or(|t| t.elapsed() >= IDLE_REAP_INTERVAL)
+            {
+                self.last_idle_reap = Some(Instant::now());
+                if let Some(instance) = self.instance.as_ref() {
+                    if let Some(mut registry) = instance.borrow_mut().registry_rust_mut() {
+                        for name in registry.reap_idle_workers(IDLE_REAP_AFTER) {
+                            tracing::debug!(
+                                target: "typio.lifecycle",
+                                engine = %name,
+                                "idle engine worker stopped"
+                            );
+                        }
+                    }
                 }
             }
         }

@@ -18,6 +18,7 @@ fn main() {
             let status = Command::new("meson")
                 .arg("setup")
                 .arg(&build_dir)
+                .arg("-Dtext=true")
                 .current_dir(&optics_dir)
                 .status()
                 .expect("Failed to run meson setup");
@@ -181,6 +182,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TYPIO_INSTALL_DATADIR");
     println!("cargo:rerun-if-env-changed=TYPIO_ENGINE_DIR");
     println!("cargo:rerun-if-env-changed=DEP_FLUX_RPATHS");
+    println!("cargo:rerun-if-env-changed=DEP_FLUX_TEXT_RPATHS");
 }
 
 fn escape_str(s: &str) -> String {

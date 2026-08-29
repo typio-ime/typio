@@ -6,6 +6,8 @@
 
 use std::time::Instant;
 
+use typio_host_types::Modifiers;
+
 use crate::keyboard::router::RepeatOutcome;
 
 use super::{App, DaemonEvent, arm_repeat, tray::cycle_active_language};
@@ -33,7 +35,25 @@ impl App {
             // it without producing another same-serial intermediate commit.
             router.flush_pending_text_if_commit(state);
 
-            let pending_keys = state.take_pending_keys();
+            let pending_keys = if state.is_active() {
+                state.take_pending_keys()
+            } else {
+                // Defence in depth: keys are only queued while the input
+                // method is active, and activate/deactivate events discard
+                // the queue at the protocol boundary. Anything that still
+                // reached us while inactive belongs to a dead activation
+                // epoch — drop it rather than inject it into whatever field
+                // is focused now.
+                let dropped = state.take_pending_keys();
+                if !dropped.is_empty() {
+                    tracing::debug!(
+                        target: "typio.input.queue",
+                        dropped = dropped.len(),
+                        "drop pending keys while inactive"
+                    );
+                }
+                Vec::new()
+            };
             if !pending_keys.is_empty() {
                 tracing::debug!(
                     target: "typio.input.queue",
@@ -45,8 +65,10 @@ impl App {
             let mut host_nav_updates = 0usize;
             for key in pending_keys {
                 // Snapshot the values we need before any mutable borrows
-                // below — both are cheap `Copy` reads.
-                let mods = state.mods_depressed;
+                // below — both are cheap `Copy` reads. The modifier mask is
+                // mapped from the keymap-dependent xkb wire layout into the
+                // host layout once, here, per key batch.
+                let mods = state.effective_modifiers().0;
                 let compositor_info = state.compositor_repeat_info;
                 if key.state == 1 {
                     // Try host-managed selection (ADR-0012) first.
@@ -113,14 +135,14 @@ impl App {
                         router.drain_commit();
                         router.drain_composition(state, now);
                         router.flush_pending_text_if_commit(state);
-                        router.on_consumed(key.clone());
+                        router.on_consumed(key.clone(), Modifiers(mods));
                         arm_repeat(timer, compositor_info, mods);
                     } else {
                         // Engine declined the key; forward it to the
                         // focused app and arm the timer in forward mode
                         // so the main loop synthesises repeats.
                         state.forward_key(key.time, key.keycode, key.state);
-                        router.on_forward(key.clone());
+                        router.on_forward(key.clone(), Modifiers(mods));
                         arm_repeat(timer, compositor_info, mods);
                     }
                 } else {
@@ -216,7 +238,16 @@ impl App {
                 );
                 return;
             }
-            let mods = state.mods_depressed;
+            let mods = state.effective_modifiers().0;
+            // A repeat chain belongs to the focused field the key was
+            // pressed in. If the input method has gone inactive since the
+            // timer was armed, end the chain instead of injecting synthetic
+            // keys into whatever surface may have focus now.
+            if !state.is_active() {
+                router.cancel_repeat();
+                let _ = timer.stop();
+                return;
+            }
             let seq_before_repeat = state.composition.composition_seq;
             let outcome = router.dispatch_repeat(state, mods, now);
             match outcome {

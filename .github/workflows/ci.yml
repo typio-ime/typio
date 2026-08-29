@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: c6870eaa5ec724d55ae41b316e4e4424e9ccf67f
+  OPTICS_PINNED_REF: bae3e69df5764ec40e712aa23513c683d4ef9198
 
 jobs:
   cargo-check-format-lint:
@@ -115,3 +115,67 @@ jobs:
 
       - name: Audit locked dependencies
         run: cargo audit
+
+  valgrind-leak-gate:
+    name: Valgrind leak gate (FFI render paths)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config valgrind \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libpipewire-0.3-dev \
+            libfreetype6-dev libharfbuzz-dev libfontconfig-dev \
+            libvulkan-dev glslang-tools
+
+      - name: Clone optics (pinned)
+        run: |
+          git clone --filter=blob:none \
+            https://github.com/ming2k/optics.git \
+            ${{ github.workspace }}/../optics
+          git -C ${{ github.workspace }}/../optics checkout --detach \
+            ${{ env.OPTICS_PINNED_REF }}
+
+      - name: Build optics
+        run: |
+          meson setup ${{ github.workspace }}/../optics/build \
+            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
+          meson compile -C ${{ github.workspace }}/../optics/build
+
+      - name: Build leak-sensitive test binaries
+        env:
+          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+        run: |
+          cargo test -p typio-host --lib --no-run
+          cargo test -p typio-host-platform --lib --no-run
+
+      - name: Valgrind (icon_badge / panel / text_raster)
+        env:
+          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          LD_LIBRARY_PATH: ${{ github.workspace }}/../optics/build
+        run: |
+          set -euo pipefail
+          BIN_HOST=$(ls -t target/debug/deps/typio_host-* | grep -v '\.d$' | head -1)
+          BIN_PLAT=$(ls -t target/debug/deps/typio_host_platform-* | grep -v '\.d$' | head -1)
+          # fontconfig's process-lifetime pattern cache is an upstream leak
+          # (same suppression rationale as optics' lsan.supp) — not ours.
+          # Run the FFI-heavy suites under full leak checking; a definite
+          # leak in flux/flux-text lifecycle handling fails the gate.
+          for t in "icon_badge" "text_raster" "panel::"; do
+            valgrind --leak-check=full --show-leak-kinds=definite \
+              --errors-for-leak-kinds=definite --error-exitcode=9 \
+              --suppressions=tools/valgrind-leak-gate.supp \
+              "$BIN_HOST" "$t" 2>&1 | tee /tmp/vg.log | \
+              grep -E "definitely lost|ERROR SUMMARY" || true
+            valgrind --leak-check=full --show-leak-kinds=definite \
+              --errors-for-leak-kinds=definite --error-exitcode=9 \
+              --suppressions=tools/valgrind-leak-gate.supp \
+              "$BIN_PLAT" "$t" 2>&1 | tee /tmp/vg2.log | \
+              grep -E "definitely lost|ERROR SUMMARY" || true
+          done

@@ -47,11 +47,17 @@ libc = "0.2"
 zbus = { version = "5", default-features = true, features = ["blocking-api"] }
 xkbcommon = "0.9"
 
-flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
-iris = { path = "../optics/bindings/iris-rs/crates/iris" }
-iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }
-lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
+# optics (rendering engine and UI stack) Rust bindings.
+# The canonical build resolves the binding sources from the tagged optics
+# monorepo and links the C libraries discovered by pkg-config. A linked
+# development worktree can patch these sources through
+# .cargo/optics-local.toml without making a sibling checkout mandatory for CI
+# or downstream packagers.
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
+flux-text-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
+iris-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"

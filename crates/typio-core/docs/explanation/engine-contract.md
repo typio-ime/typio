@@ -17,7 +17,11 @@ of Wayland, panel rendering, TIP, and daemon scheduling.
    process.
 
 Each response echoes its request id. A transport or decode error poisons the
-worker; the runtime discards it and starts a fresh process on the next use.
+worker; the runtime discards it and starts a fresh process. The respawn runs
+asynchronously on a detached thread and is installed by the next engine use;
+while it is in flight the backend reports no engine, so callers degrade
+gracefully (keyboard keys pass through to the application) instead of
+blocking the caller on a multi-second spawn.
 
 ## Ownership
 

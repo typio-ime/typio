@@ -10,13 +10,11 @@
 //! non-blocking `acquire`, `release`-driven reuse), translated to Rust +
 //! wayland-client 0.31.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use wayland_client::protocol::{wl_buffer, wl_shm, wl_shm_pool};
 use wayland_client::{Dispatch, Proxy, QueueHandle};
@@ -26,35 +24,53 @@ use crate::input_method::InputMethodState;
 /// ARGB8888: 4 bytes per pixel (Wayland's mandatory baseline format).
 const BYTES_PER_PIXEL: usize = 4;
 
-/// Shared registry mapping a `wl_buffer` proxy pointer to its busy flag.
-/// Used by the `Dispatch<wl_buffer>` release handler to clear the right
-/// buffer's busy flag without `wl_proxy` user-data (which wayland-client
-/// 0.31 owns internally for event routing). Cloned (cheap Arc clone) into
-/// each `FluxPanel` so it can register buffers at creation time.
-pub type ShmReleaseRegistry = Arc<Mutex<HashMap<usize, Arc<AtomicBool>>>>;
+/// Per-buffer release state, passed as the `wl_buffer`'s own wayland
+/// user-data at `create_buffer` time and handed back by the
+/// `Dispatch<wl_buffer, BufferReleaseState>` `release` handler.
+///
+/// This replaces an earlier global `HashMap<proxy-pointer, Arc<AtomicBool>>`
+/// registry. That design had two structural defects:
+///
+/// - the key was the raw `wl_proxy` address, which libwayland is free to
+///   reuse for the next `wl_buffer` after destruction, so a late `release`
+///   for a destroyed buffer could clear the *new* buffer's busy flag early;
+/// - the registry itself was a second source of truth that had to be
+///   manually kept in sync on every buffer replacement.
+///
+/// With per-buffer user-data the mapping is owned by the wayland-client
+/// object itself: it is born with the buffer, travels with the exact proxy
+/// that receives `release`, and dies with it. No cross-lookup, no ABA race,
+/// no bookkeeping.
+#[derive(Debug, Default)]
+pub struct BufferReleaseState {
+    busy: AtomicBool,
+}
 
-pub fn new_release_registry() -> ShmReleaseRegistry {
-    Arc::new(Mutex::new(HashMap::new()))
+impl BufferReleaseState {
+    fn clear_busy(&self) {
+        self.busy.store(false, Ordering::Release);
+    }
+    fn mark_busy(&self) {
+        self.busy.store(true, Ordering::Release);
+    }
+    fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
 }
 
 /// One SHM-backed `wl_buffer` with an mmap'd pixel region.
 ///
 /// `busy` tracks whether the compositor still holds this buffer (it was
 /// attached+committed and `wl_buffer.release` has not yet arrived). The flag
-/// is `Arc`-shared with the release registry so the `Dispatch<wl_buffer>`
-/// handler can clear it.
+/// lives in the buffer's own wayland user-data (`BufferReleaseState`), so
+/// the `Dispatch<wl_buffer, BufferReleaseState>` handler clears exactly the
+/// right buffer with no cross-lookup.
 pub struct ShmBuffer {
     mapping: ManuallyDrop<ShmMapping>,
     pool: ManuallyDrop<wl_shm_pool::WlShmPool>,
     buffer: ManuallyDrop<wl_buffer::WlBuffer>,
     width: u32,
     height: u32,
-    busy: Arc<AtomicBool>,
-    /// The release registry this buffer registered itself in, plus the key it
-    /// used (`wl_buffer` proxy pointer). Held so `Drop` can deregister and
-    /// keep the map from accumulating stale entries across pool reallocations.
-    registry: ShmReleaseRegistry,
-    key: usize,
 }
 
 /// Owned `mmap` region over an anonymous `memfd`/`tmpfile`. Unmapped + fd
@@ -177,11 +193,11 @@ impl ShmBuffer {
     /// Create a new SHM buffer of `width × height` (physical px, ARGB8888).
     ///
     /// `shm` is the bound `wl_shm` global. `qh` is the queue that will receive
-    /// the `release` event.
+    /// the `release` event. The buffer's busy flag rides inside the
+    /// `wl_buffer`'s own user-data; there is no separate registry.
     pub fn new(
         shm: &wl_shm::WlShm,
         qh: &QueueHandle<InputMethodState>,
-        registry: &ShmReleaseRegistry,
         width: u32,
         height: u32,
     ) -> Result<Self, ShmError> {
@@ -197,15 +213,8 @@ impl ShmBuffer {
             stride as i32,
             wl_shm::Format::Argb8888,
             qh,
-            (),
+            BufferReleaseState::default(),
         );
-
-        let busy = Arc::new(AtomicBool::new(false));
-        // Register the busy flag in the shared release registry, keyed by
-        // the wl_buffer proxy pointer. The Dispatch<wl_buffer> handler looks
-        // up this key on `release` to clear the flag.
-        let key = buffer.id().as_ptr() as usize;
-        registry.lock().unwrap().insert(key, busy.clone());
 
         Ok(Self {
             mapping: ManuallyDrop::new(mapping),
@@ -213,9 +222,6 @@ impl ShmBuffer {
             buffer: ManuallyDrop::new(buffer),
             width,
             height,
-            busy,
-            registry: registry.clone(),
-            key,
         })
     }
 
@@ -228,7 +234,7 @@ impl ShmBuffer {
 
     /// True while the compositor still holds this buffer.
     pub fn busy(&self) -> bool {
-        self.busy.load(Ordering::Acquire)
+        release_state(&self.buffer).is_busy()
     }
 
     /// The writable pixel pointer (CPU side). Valid while the `ShmBuffer`
@@ -250,24 +256,30 @@ impl ShmBuffer {
     /// Mark this buffer as handed to the compositor. Called right before the
     /// host issues `wl_surface.attach`.
     pub fn mark_busy(&self) {
-        self.busy.store(true, Ordering::Release);
+        release_state(&self.buffer).mark_busy();
     }
+}
+
+/// Read the busy-flag back out of a `wl_buffer`'s wayland user-data.
+///
+/// The user-data was installed at `create_buffer` time as a
+/// `BufferReleaseState`; wayland-client stores it inside a `QueueProxyData`
+/// wrapper and hands it to `Dispatch::event` as `&U`. `Proxy::data::<U>()`
+/// is the public read side of the same slot. A `None` here would mean the
+/// proxy was not created by us — unreachable for pool-owned buffers.
+fn release_state(buffer: &wl_buffer::WlBuffer) -> &BufferReleaseState {
+    buffer
+        .data::<BufferReleaseState>()
+        .expect("wl_buffer created without BufferReleaseState user-data")
 }
 
 impl Drop for ShmBuffer {
     fn drop(&mut self) {
-        // Deregister from the release registry first so the map cannot
-        // accumulate stale entries across pool reallocations (each resize
-        // creates a fresh `wl_buffer` with a new key; without this the old
-        // key would leak forever). Removing the entry before destroying the
-        // proxy is safe: wayland-client won't deliver `release` to a proxy
-        // we're about to destroy, and the key is unique to this buffer.
-        if let Ok(mut reg) = self.registry.lock() {
-            reg.remove(&self.key);
-        }
         // Drop order: buffer first (sends wl_buffer_destroy → compositor
         // releases its ref), then pool, then munmap. ManuallyDrop fields
-        // are dropped explicitly; busy + registry (Arc) auto-drop after.
+        // are dropped explicitly. The release state rides inside the
+        // wl_buffer's own user-data and is freed with the proxy — no
+        // separate registry to deregister from.
         unsafe {
             ManuallyDrop::drop(&mut self.buffer);
             ManuallyDrop::drop(&mut self.pool);
@@ -287,7 +299,6 @@ pub struct ShmBufferPool {
     cap: usize,
     shm: wl_shm::WlShm,
     qh: QueueHandle<InputMethodState>,
-    registry: ShmReleaseRegistry,
 }
 
 impl ShmBufferPool {
@@ -298,17 +309,12 @@ impl ShmBufferPool {
     // reactor step.
     pub const DEFAULT_CAP: usize = 3;
 
-    pub fn new(
-        shm: wl_shm::WlShm,
-        qh: QueueHandle<InputMethodState>,
-        registry: ShmReleaseRegistry,
-    ) -> Self {
+    pub fn new(shm: wl_shm::WlShm, qh: QueueHandle<InputMethodState>) -> Self {
         Self {
             buffers: Vec::new(),
             cap: Self::DEFAULT_CAP,
             shm,
             qh,
-            registry,
         }
     }
 
@@ -324,7 +330,7 @@ impl ShmBufferPool {
         // 2. Replace a free, wrong-sized buffer (in-place realloc).
         for (i, b) in self.buffers.iter_mut().enumerate() {
             if !b.busy() && (b.width() != width || b.height() != height) {
-                match ShmBuffer::new(&self.shm, &self.qh, &self.registry, width, height) {
+                match ShmBuffer::new(&self.shm, &self.qh, width, height) {
                     Ok(new) => {
                         self.buffers[i] = new;
                         return Ok(i);
@@ -335,7 +341,7 @@ impl ShmBufferPool {
         }
         // 3. Grow the pool up to cap.
         if self.buffers.len() < self.cap {
-            match ShmBuffer::new(&self.shm, &self.qh, &self.registry, width, height) {
+            match ShmBuffer::new(&self.shm, &self.qh, width, height) {
                 Ok(new) => {
                     self.buffers.push(new);
                     return Ok(self.buffers.len() - 1);
@@ -406,14 +412,11 @@ impl std::error::Error for ShmError {}
 //
 // `wl_shm`, `wl_shm_pool`, and `wl_buffer` produce only the `release` event
 // (on `wl_buffer`); the other two are global/object-manager objects with no
-// client-visible events. We implement `Dispatch` so wayland-client can route
-// the `release` event back to the matching `ShmBuffer`, clearing its busy
-// flag.
-//
-// We can't get the `ShmBuffer` from the proxy directly, so we look up the
-// buffer by its Wayland id inside the pool stored on `InputMethodState`. The
-// `release` handler walks the pool and clears the matching buffer's busy
-// flag.
+// client-visible events. The buffer's busy flag travels inside the
+// `wl_buffer`'s own wayland user-data (`BufferReleaseState`, installed at
+// `create_buffer` time), so the `release` handler receives the exact state
+// of the exact buffer as its `data` argument — no lookup, no proxy-pointer
+// keying, no possibility of clearing a different buffer's flag.
 
 impl Dispatch<wl_shm::WlShm, ()> for InputMethodState {
     fn event(
@@ -442,22 +445,18 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for InputMethodState {
     }
 }
 
-impl Dispatch<wl_buffer::WlBuffer, ()> for InputMethodState {
+impl Dispatch<wl_buffer::WlBuffer, BufferReleaseState> for InputMethodState {
     fn event(
-        state: &mut Self,
-        proxy: &wl_buffer::WlBuffer,
+        _state: &mut Self,
+        _proxy: &wl_buffer::WlBuffer,
         event: <wl_buffer::WlBuffer as wayland_client::Proxy>::Event,
-        _data: &(),
+        data: &BufferReleaseState,
         _conn: &wayland_client::Connection,
         _qh: &QueueHandle<Self>,
     ) {
         use wayland_client::protocol::wl_buffer::Event;
         if let Event::Release = event {
-            // Look up the busy flag in the shared release registry.
-            let key = proxy.id().as_ptr() as usize;
-            if let Some(busy) = state.shm_release_registry().lock().unwrap().get(&key) {
-                busy.store(false, Ordering::Release);
-            }
+            data.clear_busy();
         }
     }
 }

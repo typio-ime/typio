@@ -94,7 +94,7 @@ reconnect).
 
 It is owned by the **focus controller**, whose `reduce`/`diff`/`apply` pipeline
 converges it onto the desired state derived from input facts. Its readiness
-states (`ABSENT → NEEDS_KEYMAP → READY → BROKEN`), the state diagram, and the
+states (`ABSENT → NEEDS_KEYMAP → READY`), the state diagram, and the
 rules that govern them are the mechanism's single source of truth — see
 [Focus Controller § Actual State](focus-controller.md#actual-state).
 
@@ -190,8 +190,8 @@ No `destroy_grab` effect fires during the soft pause.
 ## Grab Readiness
 
 The keyboard grab and its virtual-keyboard keymap handshake are **one
-resource** with a single readiness state (`absent → needs_keymap → ready →
-broken`) — no separate phase plus vk state machine plus "non-routable grab"
+resource** with a single readiness state (`absent → needs_keymap →
+ready`) — no separate phase plus vk state machine plus "non-routable grab"
 rescue branch. Keys route to the engine only when the resource is `ready`.
 
 The readiness states, their state diagram, and the epoch rules that govern
@@ -202,15 +202,22 @@ during `needs_keymap`) are owned by the focus controller — see
 ## Engine Availability
 
 Grab readiness is necessary but not sufficient. The active keyboard engine also
-has an availability state from `typio-core`:
+has an availability axis (`Uninitialized / Preparing / Ready / Failed`), queried
+over the wire for the IPC surface and voice gating. The key path does not poll
+it per key; instead it relies on the poisoned-channel rule:
 
-- `Ready`: key routing may call `TypioInputContext::process_key`
-- any other value: key press/release is consumed locally as
-  `KeyTrackState::EngineNotReady`
+- a healthy engine answers `process_key` within a 100 ms deadline;
+- a transport error poisons the worker, which is discarded and respawned
+  **asynchronously** — while the respawn + re-init is in flight the backend has
+  no engine, so keys come back `NOT_HANDLED` and are forwarded to the
+  application instead of freezing the main loop on a multi-second spawn;
+- repeated respawn failures back off exponentially (1→2→…→64 s), so an
+  engine that crashes on startup is retried roughly once a minute rather
+  than once per keystroke; the first retry after any successful request is
+  immediate.
 
-This prevents an engine that is still deploying or loading data from returning
-`NOT_HANDLED` and leaking raw keys to the focused application. A not-ready key
-cycle never starts repeat and never emits virtual-keyboard events.
+A key routed during that recovery window never starts a repeat chain against
+the engine and never blocks the grab.
 
 ## Generation Fence
 
@@ -322,8 +329,12 @@ decision:
 - observed lifecycle axes must be used to detect declared-phase drift, not as
   a second mutable phase model
 - no key press/release is processed unless the grab resource is `ready`
-- no key press reaches the engine unless the active keyboard engine is
-  `EngineAvailability::Ready`
+- a poisoned engine worker is never reused; during its asynchronous respawn
+  window keys pass through to the application instead of blocking the main loop
+- an engine inactive for 15 minutes has its worker process stopped by the
+  idle reaper; re-activation transparently re-spawns it (deactivation is
+  otherwise protocol-level only, so without reaping every engine ever
+  activated would stay resident for the daemon's lifetime)
 - modifier-mask updates may be processed while `needs_keymap` to resynchronize
   held modifiers
 - no virtual-keyboard forwarding happens unless vk is explicitly `ready`
@@ -347,17 +358,16 @@ decision:
 
 Session lifecycle regressions should be covered by:
 
-- `focus_controller` tests: `reduce` / `diff` decisions, done-event
-  classification, and guard predicates
-- `state_machine_properties` tests: derived-state convergence and observed-axis
-  divergence handling
+- `focus_controller` tests: `reduce` / `diff` decisions and focus-edge detection
 - `key_tracking` tests: generation fencing and symmetric press/release across
   teardown
 - routing tests: pure `(key, mods, state)` decisions including reserved
   shortcuts
-- vk state-machine tests: `needs_keymap` / `ready` / `broken` / keymap-timeout
+- repeat tests: the armed-chain guard — states that must not repeat
+  (`ReleasedPending`), suppressing modifiers, and post-arm blocking-modifier
   transitions
-- repeat tests: states that must not repeat, including `ENGINE_NOT_READY`
+- platform tests: the activate/deactivate key-queue discard and the
+  xkb→host modifier-mask mapping
 
 Every guard deleted from the old model (startup suppression, boundary carry,
 divergence repair) must first be re-expressed as a failing focus-controller,

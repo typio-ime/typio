@@ -20,6 +20,7 @@ fn main() {
             let status = Command::new("meson")
                 .arg("setup")
                 .arg(&build_dir)
+                .arg("-Dtext=true")
                 .current_dir(&optics_dir)
                 .status()
                 .expect("Failed to run meson setup");

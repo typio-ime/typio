@@ -1,9 +1,0 @@
-[alias]
-xtask = "run --package xtask --"
-
-# Keep bare Cargo builds on the optimized native tree. Explicit shell
-# variables still take precedence, so contributor builds can select the
-# documented debugoptimized tree when needed.
-[env]
-FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
-FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
