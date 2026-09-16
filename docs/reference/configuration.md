@@ -4,7 +4,7 @@ Typio uses two files under `$XDG_CONFIG_HOME/typio` (default `~/.config/typio`):
 
 | File | Owner | What it controls |
 |------|-------|------------------|
-| `core.toml` | **typio-core** runtime | Engine registry, shortcuts, notifications, voice runtime, per-engine settings |
+| `core.toml` | **typio-runtime** | Engine registry, shortcuts, notifications, voice runtime, per-engine settings |
 | `platform.toml` | **typio** (this host) | Panel styling: theme, fonts, colours, layout |
 
 Both files are read from the same directory. The directory itself is created
@@ -35,7 +35,7 @@ custom path, use the `-c` / `--config` command-line flag.
 
 ### `[languages]` — language-first switching
 
-Parsed by typio-core (ADR-0018 / [ADR-0031](../adr/0031-language-first-switching-surface.md)).
+Parsed by typio-runtime (ADR-0018 / [ADR-0031](../adr/0031-language-first-switching-surface.md)).
 The **language** (a BCP-47 tag) is the user-facing switch unit: activating a
 language retargets the keyboard and voice engine slots together.
 
@@ -72,7 +72,7 @@ Guidance:
   to Morocco* (typically Modern Standard Arabic) — a different language.
 - Prefer a **script** subtag (`zh-Hans` / `zh-Hant`) over a region subtag
   (`zh-CN` / `zh-TW`) when the distinction you mean is the writing system.
-- The host treats tags as opaque and passes them to typio-core, which owns
+- The host treats tags as opaque and passes them to typio-runtime, which owns
   resolution and matching (RFC 4647). The only host-side interpretation is the
   tray/indicator endonym lookup, which keys on the **primary subtag** — so any
   `-script` / `-region` suffix still resolves to a display name.
@@ -120,7 +120,7 @@ build); without them the icon falls back to the generic glyph name.
 
 ### `[shortcuts]` — global shortcuts
 
-Parsed by typio-core. All values are shortcut strings such as `Ctrl+Shift` or
+Parsed by typio-runtime. All values are shortcut strings such as `Ctrl+Shift` or
 `Super+v`.
 
 | Key | Default | Description |
@@ -233,10 +233,12 @@ Additional samples are discarded before inference.
 | `panel_theme` | string | `"auto"` | `"auto"` (follow desktop), `"light"`, or `"dark"`. |
 | `candidate_layout` | string | `"horizontal"` | `"horizontal"` or `"vertical"`. |
 | `font_size` | float | `11` | Panel text size in points (6–72). Candidate, index-number and banner sizes are derived from it. |
-| `font_family` | string | `""` | Primary font family for the Panel. When empty the built-in fallback list is used (Noto Sans / Noto Sans CJK SC / …). Otherwise the named family is the "first font": it wins for every codepoint it covers, and missing codepoints fall back to the system fonts that do cover them. Changes apply at the next config reload. |
+| `font_family` | string | `"default"` | Preferred typeface family class for the Panel: `"default"`, `"sans"`, `"serif"`, or `"mono"` (`"sans-serif"` and `"monospace"` are accepted aliases). The class selects which fontconfig preference list is consulted first; per-codepoint fallback still covers characters the class's faces lack, so CJK text renders regardless of class. An unrecognised value logs a warning and falls back to `"default"`. Changes apply at the next config reload. |
 | `panel_mode_indicator` | bool | `false` | Show the engine mode label (e.g. "中" / "A") inside the Panel. |
 | `anchor_probe` | bool | `true` | Send one no-op input-method commit per activation when positioned status UI is waiting for a cursor anchor. |
-| `anchor_probe_timeout_ms` | int | `150` | Milliseconds to wait for anchor readiness before dropping pending positioned status UI (50–1000). |
+| `anchor_probe_timeout_ms` | int | `150` | Milliseconds to wait for anchor readiness before dropping pending positioned status UI. Accepted range 10–1000; a value outside it is replaced by the coordinator's built-in default of 20 ms. |
+| `indicator_enabled` | bool | `true` | Show the transient mode indicator when the active engine's mode changes. |
+| `indicator_duration_ms` | int | `1500` | Milliseconds the transient mode indicator stays visible. A value below 100 falls back to the default; a value above 10000 is capped. |
 
 ### `[display.colors.light]` and `[display.colors.dark]`
 
@@ -261,7 +263,7 @@ channel.
 | File | Hot-reload | Notes |
 |------|------------|-------|
 | `platform.toml` | ✅ Yes | The Wayland frontend watches the config directory via inotify.  A `CLOSE_WRITE`, `MOVED_TO`, or attribute change **to `core.toml` or `platform.toml`** triggers a debounced reload (100 ms); editor swap/backup files and other directory churn are ignored. |
-| `core.toml` | ✅ Yes | typio-core reloads the file on the same inotify event. Invalid files are rejected and the last known-good in-memory config remains active. The frontend then re-queries shortcuts, voice engine, and notification settings. |
+| `core.toml` | ✅ Yes | typio-runtime reloads the file on the same inotify event. Invalid files are rejected and the last known-good in-memory config remains active. The frontend then re-queries shortcuts, voice engine, and notification settings. |
 
 Keys that **require a restart** to take effect:
 

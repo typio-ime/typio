@@ -69,7 +69,7 @@ Build and vet the example from the repository root:
 
 ```bash
 cargo build -p typio-engine-protocol --example hello_worker
-cargo run -p typio-vet -- \
+cargo run -p typio-engine-check -- \
   crates/typio-engine-protocol/examples/typio-engine-hello.toml
 ```
 
@@ -79,9 +79,9 @@ Non-Rust engines implement the same framed process protocol or compile a
 source-level adapter into their worker executable. Such an adapter is an
 implementation detail of that executable, not a versioned Typio binary ABI.
 The installed engine package needs only its worker, manifest, and resources;
-it never links `typio-core` or `libtypio.so`.
+it never links `typio-runtime` or `libtypio.so`.
 
-Run `typio-vet` against every package in CI. It starts the manifest-declared
+Run `typio-engine-check` against every package in CI. It starts the manifest-declared
 worker and validates framing, identity, schema namespace, lifecycle,
 availability, modality behavior, shutdown, and resources at the real process
 boundary.

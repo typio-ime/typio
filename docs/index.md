@@ -1,44 +1,54 @@
 # Typio Documentation
 
-The Linux/Wayland Typio workspace. This repository contains the `typio` daemon,
-the `typioctl` client, the `typio-settings` graphical application, the
-runtime and typed engine-contract crates, the candidate Panel renderer, the UDS
-control surface (TIP v1), system tray integration, and voice capture plumbing.
+Typio is a Wayland-native input-method host for Linux. This repository contains
+the `typio` daemon, the `typioctl` control client, the `typio-settings`
+application, the runtime and typed engine-contract crates, the candidate Panel
+renderer, the TIP control surface, system tray integration, and voice capture.
 
-## Sections
+The documentation below is organised by what you are trying to do. Every
+directory has a charter page describing its scope — start there when you are not
+sure where something belongs.
 
-- **[How-to Guides](how-to/)** — Task-oriented recipes for specific goals.
+## Learn
+
+- [Tutorials](tutorials/index.md) — guided walkthroughs from a cold start
+  - [Your First Typio Session](tutorials/getting-started.md) — install, start, and type with an engine
+
+## Do
+
+- [How-to Guides](how-to/index.md) — recipes for a specific goal
   - [How to Package for Distribution](how-to/package-for-distribution.md)
   - [How to Configure Typio Graphically](how-to/configure-graphically.md)
-  - [Troubleshooting](how-to/troubleshooting.md)
   - [How to Diagnose Candidate-Switching Lag](how-to/diagnose-candidate-lag.md)
-- **[Reference](reference/)** — Lookup-oriented API, config, and protocol documentation.
-  - [Glossary](reference/glossary.md) — Canonical project terms with definitions and sources
-  - [IPC Protocol Reference](reference/ipc-protocol.md) — TIP v1 (UDS + JSON-RPC)
-  - [Configuration Reference](reference/configuration.md) — `core.toml` and `platform.toml` keys, reload behaviour, and file structure
-  - [Engine Discovery Reference](reference/engine-discovery.md) — search path, file-name rules, icons
-  - [Interface Stability Reference](reference/stability.md) — stability tiers for every external interface
-- **[Explanation](explanation/)** — Understanding-oriented design documents.
-  - [Project Scope: Host, Runtime, Engine Protocol, Vet, and Clients](explanation/project-scope.md)
-  - [Wayland Input Method Protocol](explanation/wayland-input-method.md)
-  - [Input-Method Session](explanation/input-method-session.md) — Disambiguates the three layers of "session"
-  - [Focus Controller](explanation/focus-controller.md) — Derived-state, idempotent-diff lifecycle model
-  - [Panel Architecture](explanation/panel-architecture.md)
-  - [Candidate Panel Behavior](explanation/candidate-panel-behavior.md) — UI-level lifecycle: show/hide, anchor, retry, input → visible effect
-  - [Frontend Graphics](explanation/frontend-graphics.md)
-  - [Input-Method Session](explanation/input-method-session.md) — three layers of session, build-up chain, and lifecycle rules
-  - [Event Loop Scheduling](explanation/event-loop-scheduling.md) — CPU render bounds, D-Bus dispatch, config reload, and poll deadlines
-  - [Performance & Idle-Power Strategy](explanation/performance-strategy.md) — event-driven idle, zero wakeups, deadline folding, and how to measure
-  - [Control Surfaces](explanation/control-surfaces.md)
-  - [Security Model](explanation/security-model.md) — trust boundaries, engine trust, and the sandboxing path
-- **[Developer Documentation](dev/)** — Contributor-oriented docs.
-  - [Developer Setup](dev/setup.md)
-  - [Testing](dev/testing.md)
-  - [Code Style](dev/code-style.md)
-  - [Panel Appearance](dev/panel-appearance.md)
-  - [Documentation Governance](dev/documentation/)
+  - [How to Communicate with Typio over UDS](how-to/communicate-over-uds.md)
+  - [How to Write an Engine](how-to/write-an-engine.md)
+  - [Troubleshooting](how-to/troubleshooting.md)
 
-## Quick Links
+## Look up
 
-- [README](../README.md) — Project pitch and quick start
-- [Contributing](../CONTRIBUTING.md) — How to contribute
+- [Reference](reference/index.md) — exact commands, keys, and wire formats
+  - [Command-Line Interface](reference/cli.md) — `typio`, `typioctl`, `typio-settings`
+  - [Configuration](reference/configuration.md) — `core.toml` and `platform.toml`
+  - [IPC Protocol (TIP v3)](reference/ipc-protocol.md) — the control socket
+  - [Engine Protocol](reference/engine-protocol.md) — the manifest-declared worker contract
+  - [Engine Discovery](reference/engine-discovery.md) — where manifests are found
+  - [Interface Stability](reference/stability.md) — the tier of every external interface
+  - [Glossary](reference/glossary.md) — canonical project terms
+
+## Understand
+
+- [Explanation](explanation/index.md) — why the system is shaped this way.
+  Covers the input-method session, the focus controller, Panel architecture and
+  rendering, event-loop scheduling, performance strategy, stall containment, the
+  control surfaces, the configuration system, the security model, and voice input.
+
+## Contribute
+
+- [Architecture Blueprints](architecture/index.md) — how each subsystem works today
+- [Architecture Decision Records](adr/index.md) — the immutable decisions behind it
+- [Repository Governance](governance/index.md) — charters, gates, and the release process
+- [Developer Documentation](dev/index.md), behind the contributor firewall
+  ([INV-CORE-01](governance/documentation/core/invariants.md)): setup, module map,
+  testing, acceptance, code style, and cross-repository development
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — the contribution entry point
+- [README.md](../README.md) — project pitch and quick start

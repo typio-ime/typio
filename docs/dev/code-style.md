@@ -20,6 +20,9 @@
 - Document non-obvious behavior in module (`//!`) or item doc comments,
   especially around complex state transitions
 - Keep generated protocols and renderer details behind narrow module boundaries
+- Keep IPC protocol details behind the narrow IPC boundary of the CLI crate
+  (`crates/typio-control`: the local `src/ipc.rs` of the earlier layout, now the
+  shared `typio-client` crate) instead of inside command handlers
 
 ## Design preferences
 
@@ -29,7 +32,7 @@
 ## Before submitting
 
 - Build succeeds from a clean tree
-- `cargo test -p typio-host -p typio-core -p typio-engine-protocol
-  -p typio-engine-manifest -p typio-vet -p typioctl` passes
+- `cargo test -p typio-daemon -p typio-runtime -p typio-engine-protocol
+  -p typio-engine-manifest -p typio-engine-check -p typio-control` passes
 - User-facing behavior is documented
 - Any new engine or runtime assumptions are written down

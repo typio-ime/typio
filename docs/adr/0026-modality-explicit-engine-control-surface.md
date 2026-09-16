@@ -21,7 +21,7 @@ The framework already separates input modality almost everywhere:
 The IPC control surface (ADR-0008) collapses this back into a kind-agnostic
 `engine.*` namespace:
 
-```
+```text
 engine.use   { name }        -> {}          # kind inferred from the engine's declared type
 engine.next  { kind? }       -> { active }   # kind OPTIONAL → "next of what?" when omitted
 engine.list  {}              -> [{ name, kind, displayName, active }]
@@ -40,7 +40,7 @@ API one-to-one. The guiding principle: **`engine` is a shared implementation
 substrate (packaging, discovery, lifecycle, registry slot); wherever a human or
 external client acts on an engine, the modality is explicit.**
 
-```
+```text
 keyboard.use   { name }   -> {}
 keyboard.next  {}         -> { active }
 keyboard.prev  {}         -> { active }
@@ -51,7 +51,7 @@ voice.prev     {}         -> { active }
 
 `engine.*` keeps only genuinely cross-modality, name-keyed operations:
 
-```
+```text
 engine.list      {}                       -> [{ name, kind, displayName, active }]   # aggregate; unchanged
 engine.describe  { name }                 -> { name, kind, displayName, properties, commands }
 engine.invoke    { name, command, args? } -> { result }

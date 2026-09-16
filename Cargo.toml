@@ -2,15 +2,15 @@
 resolver = "2"
 members = [
     "crates/typio-client",
-    "crates/typio-core",
+    "crates/typio-runtime",
     "crates/typio-engine-manifest",
     "crates/typio-engine-protocol",
-    "crates/typioctl",
+    "crates/typio-control",
     "crates/typio-settings",
-    "crates/typio-host",
+    "crates/typio-daemon",
     "crates/typio-host-platform",
     "crates/typio-host-types",
-    "crates/typio-vet",
+    "crates/typio-engine-check",
     "crates/xtask",
 ]
 
@@ -53,11 +53,11 @@ xkbcommon = "0.9"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
-flux-text-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
-iris-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.29" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
+flux-text-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
+iris-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"
@@ -65,11 +65,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# The framework runtime and engine protocol live in this workspace so host,
-# protocol, and vet changes can land atomically.
-typio-core = { path = "crates/typio-core" }
+# The framework runtime and engine protocol live in this workspace so daemon,
+# protocol, and check changes can land atomically.
+typio-runtime = { path = "crates/typio-runtime" }
 typio-engine-manifest = { path = "crates/typio-engine-manifest" }
 typio-engine-protocol = { path = "crates/typio-engine-protocol" }
+typio-engine-check = { path = "crates/typio-engine-check" }
+typio-daemon = { path = "crates/typio-daemon" }
+typio-control = { path = "crates/typio-control" }
 typio-host-platform = { path = "crates/typio-host-platform" }
 typio-host-types = { path = "crates/typio-host-types" }
 typio-client = { path = "crates/typio-client" }

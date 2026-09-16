@@ -4,7 +4,7 @@
 
 The focus controller is the per-tick control loop that manages typio's
 Wayland input-method **focus and keyboard-grab lifecycle**: grab create/destroy,
-`focus_in`/`focus_out`, keymap epoch scrubbing, and discarding an abandoned
+focus-in and focus-out, keymap epoch scrubbing, and discarding an abandoned
 composition on defocus.
 
 It holds **no stored lifecycle phase**. The only persisted things are raw input
@@ -16,21 +16,19 @@ facts, not a separate branch.
 ## Design Declaration
 
 1. **No stored lifecycle phase.** The only persisted things are raw input facts and live resource handles. Every tick derives what the resources *should* be from what has happened.
-2. **All effects are idempotent and applied as a diff.** Applying the same `desired` twice is a no-op. Recovery is not a separate code path; it is the normal path run against changed facts.
-3. **Decision logic is pure and testable.** `reduce(inputs)` and `diff(desired, actual)` are pure functions. They do not touch the frontend, Wayland, or I/O.
+2. **All effects are idempotent and applied as a diff.** Applying the same desired state twice is a no-op. Recovery is not a separate code path; it is the normal path run against changed facts.
+3. **Decision logic is pure and testable.** The reduce step (facts to desired state) and the diff step (desired against actual to effects) are pure functions. They do not touch the frontend, Wayland, or I/O.
 4. **Observe reads presence, not liveness.** The diff converges the host's own state. It cannot detect a resource that is dead but still present as a client-side proxy. That is a structural limitation of the observation layer, not a bug to be patched inside the diff.
 
 ## Data Flow
 
-Every event-loop iteration runs one step:
+Every event-loop iteration runs one step, in this order:
 
-```c
-facts   = record(inputs)        /* IM events, suspend gap, POLLHUP */
-desired = reduce(facts, prev)   /* pure: what resource config do we want? */
-actual  = observe(resources)    /* live snapshot: what do we have? */
-effects = diff(desired, actual) /* pure: minimal ops to converge */
-apply(effects)                  /* effectful: create/destroy grab, etc. */
-```
+1. **Record** the facts the tick is acting on: input-method events, a suspend gap, connection state.
+2. **Reduce** the facts, together with the previous tick's desired state, into the resource configuration the host wants.
+3. **Observe** the live resources for a snapshot of what the host actually has.
+4. **Diff** the desired state against the actual state to obtain a minimal, idempotent effect set.
+5. **Apply** the effects — create or destroy the grab, deliver focus transitions, and so on.
 
 ### Facts
 
@@ -38,119 +36,119 @@ A fact is a recorded event with exactly one source. Facts are never interpreted 
 
 | Fact | Source |
 |------|--------|
-| `im_activate_seen` | `zwp_input_method_v2::activate` event handler |
-| `im_deactivate_seen` | `zwp_input_method_v2::deactivate` event handler |
-| `im_done_had_activate` | `done()` batch classification (distinguishes reactivation from text-state update) |
-| `im_done_serial` | `zwp_input_method_v2::done(serial)` |
-| `connection_alive` | `POLLHUP` absence on the Wayland socket |
-| `suspend_gap_detected` | System resume detector (logind `PrepareForSleep` or boottime-gap heuristic) |
+| Activation observed | the input-method activation event handler |
+| Deactivation observed | the input-method deactivation event handler |
+| The commit batch carried an activation | classification of the double-buffer commit batch (distinguishes reactivation from a plain text-state update) |
+| Protocol serial of the commit point | the compositor's double-buffer commit event |
+| Connection alive | absence of a hangup on the Wayland socket |
+| Suspend gap detected | the system resume detector (logind sleep notification or boottime-gap heuristic) |
 
 ### Desired State
 
-`reduce(facts, prev)` derives the wanted resource configuration. It uses the previous tick's desired state for edge detection on focus_in/focus_out.
+The reduce step derives the wanted resource configuration. It uses the previous
+tick's desired state for edge detection on focus-in and focus-out.
 
-```c
-typedef enum {
-    GRAB_WANT_NONE,        /* Hard teardown: suspend, reconnect, POLLHUP */
-    GRAB_WANT_SOFT_PAUSE,  /* Normal deactivate: retain grab for reuse */
-    GRAB_WANT_YES,         /* Focus established: grab must exist and be ready */
-} TypioWlGrabWant;
-```
+| Wanted grab | Meaning |
+|-------------|---------|
+| None — hard teardown | The connection is gone, or the system resumed from sleep |
+| Soft pause — retain the grab for reuse | A normal deactivation |
+| Grab — the grab must exist and be ready | Focus is established |
 
-**Reduce rules:**
+The final focus state determines the resource target. A dead connection, a
+suspend gap, or the absence of a keyboard engine requires teardown. Otherwise,
+an active field requires a grab; a deactivated session keeps its grab in a
+soft pause. When several focus events arrive together, their final state wins.
 
-- `!connection_alive || suspend_gap_detected` → `NONE`
-- `im_deactivate_seen` → `SOFT_PAUSE`
-- `im_activate_seen || im_done_had_activate` → `YES`
-- Otherwise → preserve `prev.grab`
-
-**Soft pause.** A normal `deactivate` does **not** destroy the grab. The
-daemon enters `SOFT_PAUSE`, releases forwarded keys, stops repeat, resets
-per-key tracking, and zeros the XKB modifier state — but keeps the grab
-object alive. The next `activate` reuses the existing grab, skipping the
-expensive xkb keymap compile and the `NEEDS_KEYMAP` window that drops keys.
-The soft pause is applied through `keyboard_pause()`.
-
-Only hard boundaries (`suspend_gap_detected` or `connection_alive = false`)
-force `NONE`, which triggers a full teardown.
+**Soft pause.** Normal deactivation releases forwarded keys and stops repeat,
+while retaining the grab and keymap for reuse. Gesture ownership resets; the
+next field starts a new gesture with the current modifier sample.
 
 **Focus edge detection:**
 
-- `focus_in`  = (`grab == YES` && `prev.grab != YES`)
-- `focus_out` = (`grab != YES` && `prev.grab == YES`)
+- focus-in when the wanted grab becomes "grab" and the previous tick's was not
+- focus-out when the wanted grab stops being "grab" and the previous tick's was
 
-The edge detection prevents repeated `focus_in`/`focus_out` calls while the state is stable across multiple ticks.
+The edge detection prevents repeated focus-in and focus-out calls while the
+state is stable across multiple ticks.
 
-**Reactivate.** A fresh `activate` inside a `done` batch while already `YES` —
-the compositor moved focus to a new field in the same window with no
-intervening `deactivate` — sets `reactivate`. The grab and the in-flight
-composition are preserved. Transient key ownership is not: releases are
-synthesized for keys forwarded by the old field and its repeat chain is
+**Reactivate.** A focus boundary observed while the session remains active
+sets the reactivate edge. The boundary remains recorded until the controller
+observes it; ordinary text-state updates cannot erase it. A boundary that has
+already been observed cannot fire again when a text-state batch completes. The grab and the
+in-flight composition are preserved. Transient key ownership is not: releases
+are synthesized for keys forwarded by the old field, and its repeat chain is
 stopped. The Panel anchor is refreshed, and any unchanged candidate snapshot
 is re-presented because the compositor may have unmapped the popup during the
 handoff.
 
 ### Actual State
 
-`observe(resources)` returns a read-only snapshot of live frontend fields. It is **not** a second source of truth.
+The observe step returns a read-only snapshot of the live frontend fields. It
+is **not** a second source of truth.
 
-```c
-typedef enum {
-    GRAB_RES_ABSENT,       /* No keyboard grab object */
-    GRAB_RES_NEEDS_KEYMAP, /* Grab exists, keymap handoff pending */
-    GRAB_RES_READY,        /* Grab exists, keymap synced this epoch */
-} TypioWlGrabResourceState;
-```
+| State | Trigger | Next state |
+|-------|---------|------------|
+| Absent — no grab object | the grab is created | Awaiting keymap |
+| Awaiting keymap — the grab exists, its keymap handoff is pending | the compositor's keymap arrives and is mirrored to the virtual keyboard | Ready |
+| Ready — the grab exists and its keymap is synced for the current epoch | the grab is destroyed | Absent |
 
-```mermaid
-stateDiagram-v2
-    [*] --> ABSENT
-    ABSENT --> NEEDS_KEYMAP : create
-    NEEDS_KEYMAP --> READY : keymap
-    READY --> ABSENT : destroy
-```
-
-The grab resource state merges the keyboard grab object presence with the virtual-keyboard keymap readiness tracked in `crates/typio-host-platform/src/input_method.rs` (`keymap_received_this_epoch`, set by the grab `Keymap` handler once the keymap has been mirrored to the `zwp_virtual_keyboard_v1`). This is one resource with one state, not a phase plus a separate vk state machine.
+The grab resource state merges the grab object's presence with
+virtual-keyboard keymap readiness, tracked by the platform input-method layer
+as "a keymap was received in this epoch". This is one resource with one state,
+not a phase plus a separate virtual-keyboard state machine.
 
 **Readiness rules** (the single source of truth for grab readiness):
 
-- creating/rebuilding the grab starts a new epoch and forces `NEEDS_KEYMAP`
-- old `READY` must never survive into a new grab epoch
-- `READY` requires a compositor keymap observed in the current epoch
-- a timeout in `NEEDS_KEYMAP` is a fail-safe condition — prefer releasing the grab over forwarding through a partially broken path (the stall is diagnosed by `wayland_pending`, which feeds the poll deadline)
-- modifier-mask updates may apply while `NEEDS_KEYMAP` (a grab built while a field stays focused), so held Ctrl/Alt/Super survive grab creation before the first new key press; key presses may not
+- creating or rebuilding the grab starts a new epoch and forces the
+  awaiting-keymap state
+- an old ready state must never survive into a new grab epoch
+- ready requires a compositor keymap observed in the current epoch
+- a timeout while awaiting a keymap is a fail-safe condition — prefer releasing
+  the grab over forwarding through a partially broken path; the stall is
+  diagnosed by the host's record of pending Wayland responses, which feeds the
+  poll deadline
+- modifier-mask updates may apply while awaiting a keymap (a grab built while a
+  field stays focused), so held Ctrl/Alt/Super survive grab creation before the
+  first new key press; key presses may not
 
 ### Effects
 
-`diff(desired, actual)` produces a minimal, idempotent effect set.
+The diff produces a minimal, idempotent effect set:
 
-| Condition | Effects |
-|-----------|---------|
-| `grab == NONE`, actual != `ABSENT` | `destroy_grab`, `scrub_generation`, `discard_composition`, `clear_preedit`, `commit` |
-| `grab == YES \| SOFT_PAUSE`, actual == `ABSENT` | `create_grab`, `scrub_generation` |
-| `focus_in == true` | `send_focus_in` |
-| `focus_out == true` | `send_focus_out`, `discard_composition`, `clear_preedit`, `commit` |
-| `reactivate == true` | `reactivate` (key/repeat fence, Panel re-anchor and re-present) |
+- When a hard teardown is wanted and any grab resource is present: destroy the
+  grab, begin a new keymap epoch, abandon the in-flight composition and its
+  candidate UI, clear the compositor-facing preedit, and commit the pending text
+  transaction.
+- When a grab is wanted — freshly, or after a soft pause — and no grab resource
+  exists: create the grab and begin a new keymap epoch.
+- On a focus-in edge: tell the client that focus entered.
+- On a focus-out edge: tell the client that focus left, abandon the in-flight
+  composition and candidate UI, clear the preedit, and commit the pending text
+  transaction.
+- On a reactivate edge: fence the old field's key and repeat state, then
+  re-anchor and re-present the Panel.
 
-`discard_composition` abandons the engine's in-flight composition and candidate
-UI when a field loses focus, so a half-typed attempt cannot leak into the next
-field or auto-commit into the one being left. Both defocus paths — soft-pause
-(`deactivate`) and hard-teardown (`suspend` / disconnect) — drive it.
+Abandoning the composition drops the engine's in-flight composition and
+candidate UI when a field loses focus, so a half-typed attempt cannot leak into
+the next field or auto-commit into the one being left. Both defocus paths —
+soft pause and hard teardown — drive it.
 
 ### Apply
 
-`apply(effects)` executes in a fixed order in `crates/typio-host/src/session_glue.rs`:
+The effects execute in a fixed order:
 
-1. `discard_composition` — drop the engine's in-flight composition + candidate UI while still focused
-2. `send_focus_out`
-3. `destroy_grab` (runs the same teardown path as `focus_hard_reset_keyboard`)
-4. `clear_preedit`
-5. `commit`
-6. `scrub_generation`
-7. `create_grab`
-8. `send_focus_in`
-9. `reactivate` — fence old-field key/repeat state, then re-anchor and
-   re-present the Panel at the new caret
+1. Abandon the in-flight composition and its candidate UI while focus is still
+   held.
+2. Tell the client that focus left.
+3. Destroy the grab, running the same teardown path as an emergency keyboard
+   reset.
+4. Clear the compositor-facing preedit.
+5. Commit the pending text transaction.
+6. Begin a fresh keymap epoch.
+7. Create the grab.
+8. Tell the client that focus entered.
+9. Reactivate — fence the old field's key and repeat state, then re-anchor and
+   re-present the Panel at the new caret.
 
 The order matters: the abandoned composition is discarded before focus leaves,
 teardown happens before the grab is recreated, and focus enters after the new
@@ -158,53 +156,51 @@ grab is ready.
 
 ## Per-Tick Workflow
 
-```text
-[Wayland dispatch] ──▶ [record facts] ──▶ [reduce] ──▶ [observe] ──▶ [diff] ──▶ [apply]
-                                                            ▲
-                                                            │
-                                                     [live resources]
-```
-
-The pipeline runs once per event-loop iteration, after Wayland events have been dispatched and before auxiliary I/O (D-Bus, config reload, voice). This ordering ensures that input facts are fresh before any non-input work can delay the diff.
+The pipeline runs once per event-loop iteration, after Wayland events have been
+dispatched and before auxiliary I/O (D-Bus, config reload, voice). This ordering
+ensures that input facts are fresh before any non-input work can delay the diff.
 
 ## Blind Spot: Dead-but-Present Resources
 
-The diff is the backstop for the host's own state, not a detector of external silent loss.
+The diff is the backstop for the host's own state, not a detector of external
+silent loss.
 
-### What the diff cannot see
+### What the Diff Cannot See
 
-A resource whose client-side proxy still exists but whose compositor-side state has been silently discarded. The canonical example is a `zwp_input_method_keyboard_grab_v2` object that survives a compositor restart: the client sees a non-null pointer, so `observe()` reports `GRAB_RES_READY`, but the compositor no longer routes key events through it.
+A resource whose client-side proxy still exists but whose compositor-side state
+has been silently discarded. The canonical example is a keyboard-grab protocol
+object that survives a compositor restart: the client sees a non-null handle, so
+observation reports a ready grab, but the compositor no longer routes key events
+through it.
 
-Another example is a stuck Wayland connection: the socket is open (`POLLHUP` absent) but the compositor has stopped processing events. `observe()` reports `connection_alive = true`, so `reduce()` keeps `grab = YES`, and the diff produces no effects. The user cannot type, and the controller sees no reason to act.
+Another example is a stuck Wayland connection: the socket is open, so the
+connection reads as alive, but the compositor has stopped processing events.
+Observation reports nothing wrong, so the desired state keeps the grab, and the
+diff produces no effects. The user cannot type, and the controller sees no
+reason to act.
 
-### Why this is accepted
+### Why This Is Accepted
 
-Detecting silent death requires a liveness probe (heartbeat, roundtrip timeout, or harmless request echo). Any such probe has trade-offs:
+Detecting silent death requires a liveness probe (heartbeat, roundtrip timeout,
+or harmless request echo). Any such probe has trade-offs:
 
 - **False positives** during legitimate idle periods (user away from keyboard) cause unnecessary grab teardown and rebuild, producing visible input stalls.
 - **Protocol interference**: a periodic harmless request may still mutate client state or increase power use.
-- **Threshold problem**: the timeout must be longer than any normal stall (GPU-heavy compositor frame) but short enough that users do not notice the wedge. No single threshold satisfies both.
+- **Threshold problem**: the timeout must be longer than any normal stall (a heavy compositor frame) but short enough that users do not notice the wedge. No single threshold satisfies both.
 
 The accepted mitigation is external fact sources, not the diff:
 
-- **Resume detector**: system suspend/resume is a strong signal that compositor state may be stale. It sets `suspend_gap_detected = true`, forcing a full scrub and rebuild.
-- **POLLHUP**: socket death is unambiguous. It sets `connection_alive = false`, forcing teardown.
-- **Emergency exit shortcut**: a user-facing escape hatch (`release grab + stop daemon`) for the rare case where silent death occurs without suspend or disconnect.
+- **Resume detector**: system suspend/resume is a strong signal that compositor state may be stale. It records a suspend gap, forcing a full scrub and rebuild.
+- **Connection hangup**: socket death is unambiguous. It forces teardown.
+- **Emergency exit shortcut**: a user-facing escape hatch (release grab plus stop the daemon) for the rare case where silent death occurs without suspend or disconnect.
 
-A future liveness probe may be added as a new fact source feeding into `reduce()`, but it does not belong inside `observe()` or `diff()`.
-
-## Module Boundaries
-
-| Module | Responsibility |
-|--------|---------------|
-| `crates/typio-host/src/focus_controller.rs` | `reduce`, `diff`, data structures. Pure, testable without frontend or Wayland. |
-| `crates/typio-host/src/session_glue.rs` | `observe` (reads frontend fields) and `apply` (mutates frontend/Wayland state). Effectful, tied to `InputMethodFrontend`. |
-| `crates/typio-host/src/app/mod.rs` (`FocusDriver::tick`) | Per-tick driver: records facts, calls reduce/observe/diff/apply in order. |
-| `crates/typio-host-platform/src/input_method.rs` | Virtual-keyboard keymap/modifier handoff and readiness gating. The focus controller reads the `keymap_received_this_epoch` flag but does not own the transitions. |
+A future liveness probe may be added as a new fact source feeding into the reduce
+step, but it does not belong inside observation or the diff.
 
 ## See Also
 
 - [ADR-0003: Session Controller — Derived State, Idempotent Diff](../adr/0003-session-controller-reduce-diff.md) — the architectural decision that introduced this model
+- [Input Session Blueprint](../architecture/input-session.md) — the current fact, reduce, and effect implementation
 - [Input-Method Session](input-method-session.md) — the three layers of "session", build-up chain, and lifecycle rules
-- [Event Loop Scheduling](event-loop-scheduling.md) — GPU bounds, D-Bus dispatch, and poll deadlines
-- [Wayland Input Method Protocol](wayland-input-method.md) — the protocol whose events feed `reduce`
+- [Event Loop Scheduling](event-loop-scheduling.md) — frame bounds, D-Bus dispatch, and poll deadlines
+- [Wayland Input Method Protocol](wayland-input-method.md) — the protocol whose events feed the reduce step

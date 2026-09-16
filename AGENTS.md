@@ -1,11 +1,10 @@
 # Agent guidelines
 
-This file is the entry point for AI agents working in this repository. Read
-it before touching anything. It captures project-specific conventions that
-are not derivable from the code alone.
-
-Before writing, modifying, or archiving documentation, read and follow
-`docs/dev/documentation/index.md`.
+This file is the entry point for AI agents working in this repository. It holds
+the machine-facing guardrails: what to read first, which gates must pass, and
+which corrections are never acceptable. Project charters live in
+[`docs/governance/`](docs/governance/index.md); documentation policy lives in
+[`docs/governance/documentation/`](docs/governance/documentation/core/index.md).
 
 ## 1. Pre-flight
 
@@ -19,166 +18,121 @@ git --no-pager log --oneline -15
 git cat-file -t "$(git describe --abbrev=0)"
 
 # Current host version source.
-grep -n '^version =' crates/typio-host/Cargo.toml | head -1
+grep -n '^version =' crates/typio-daemon/Cargo.toml | head -1
 
 # Pending CHANGELOG entries.
 sed -n '/^## \[Unreleased\]/,/^## \[/p' CHANGELOG.md
 ```
 
-If any of these surprise you, stop and reconcile them with the planned
-change. Project convention beats generic defaults.
+If any of these surprise you, stop and reconcile them with the planned change.
+Project convention beats generic defaults.
 
-## 2. Commit Message Conventions
+## 2. Where things live
 
-The repo uses Conventional-Commits-style prefixes observed in history:
+| You need | Read |
+| :--- | :--- |
+| Where a document belongs | [Taxonomy](docs/governance/documentation/core/taxonomy.md) — the 4D coordinate tensor |
+| The hard rules | [Invariants](docs/governance/documentation/core/invariants.md) — numbered `[INV-*]` |
+| Writing style and link rules | [Style](docs/governance/documentation/core/style.md) |
+| Commit, tag, release, version conventions | [Repository Governance](docs/governance/index.md) |
+| How a subsystem works today | [Architecture Blueprints](docs/architecture/index.md) |
+| Why a decision was made | [ADR Index](docs/adr/index.md) |
+| Build, test, acceptance commands | [Developer Setup](docs/dev/setup.md), [Testing](docs/dev/testing.md), [Acceptance](docs/dev/acceptance.md) |
+| Source coordinates | [Module Map](docs/dev/module-map.md) — not `docs/explanation/` |
 
-| Prefix | Use |
-|---|---|
-| `feat:` | New user-visible feature |
-| `fix:` or `fix(scope):` | Bug fix |
-| `test:` or `test(scope):` | Test-only change |
-| `docs:` | Documentation only |
-| `build:` | Build system or dependency wiring |
-| `ci:` | CI config |
-| `release: vX.Y.Z` | Release commit |
-| `subsystem:` | Looser historical form; prefer conventional prefixes |
-
-Rules:
-
-- Subject <= about 70 characters, lowercase, no trailing period.
-- Body wraps at about 72 columns and explains why.
-- Reference ADRs by ID when applicable, such as `(ADR-0035)`.
-- Never add `Co-Authored-By:` or agent attribution.
-- Always commit with `-m "subject"` and optional `-m "body"`; never launch
-  an editor from an agent shell.
-
-## 3. Tag Conventions
-
-All release tags in this repo are annotated:
+## 3. Gates that must pass
 
 ```bash
-git cat-file -t v0.3.3
-# tag
+tools/check-docs.sh                       # documentation invariants + mirror integrity
+cargo fmt -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-Create release tags with an inline message:
+The build needs a native `flux` library from the sibling `optics` checkout; see
+[Developer Setup](docs/dev/setup.md) for the environment variables and
+[Optics Dev Worktree](docs/dev/optics-dev-worktree.md) for the
+local worktree workflow. Never restate those commands in a new file — link.
 
-```bash
-git tag -a vX.Y.Z -m "release: vX.Y.Z"
-```
+`tools/check-docs.sh` is the enforcement point for everything in §2 that can be
+checked mechanically: the contributor firewall, stray root Markdown files,
+implementation coordinates and code blocks in `docs/explanation/`, directories
+without a charter, broken links, and drift in the mirrored governance standard.
+Run it before claiming a documentation change is done.
 
-Do not use `git tag vX.Y.Z`, `git tag -a vX.Y.Z` without `-m`, or
-`git tag -a vX.Y.Z -m ""`.
+## 4. Documentation rules that bite
 
-If an editor opens during a git operation, git is asking for a message.
-Supply `-m` to the command that wanted the message.
+- **One home per fact.** Do not duplicate the README quick start, a build
+  command block, or a table from `docs/reference/` into another file
+  ([INV-CORE-03](docs/governance/documentation/core/invariants.md)). Link instead.
+- **The contributor firewall runs one way.** User-plane pages
+  (`docs/tutorials/`, `docs/how-to/`, `docs/reference/`, `docs/explanation/`)
+  must never link into `docs/dev/`
+  ([INV-CORE-01](docs/governance/documentation/core/invariants.md)). The
+  contributor plane may link outward.
+- **Explanation is conceptual.** No source paths, symbols, signatures, config
+  keys, or fenced code blocks under `docs/explanation/`
+  ([INV-CORE-04](docs/governance/documentation/core/invariants.md)). Coordinates
+  go in `docs/dev/module-map.md`; values go in `docs/reference/`.
+- **Every documentation directory keeps an `index.md`** stating its charter
+  ([INV-CORE-05](docs/governance/documentation/core/invariants.md)).
+- **Accepted ADRs are immutable.** Never edit a decision, its rationale, or its
+  invariants in place; author a superseding record
+  ([INV-ARCH-01](docs/governance/documentation/core/invariants.md)). The only
+  edits permitted to a retired record are pointer corrections.
+- **Never delete a record.** Retired ADRs, concluded proposals, and postmortems
+  are marked and relocated to `archive/`
+  ([INV-TEMP-03](docs/governance/documentation/core/invariants.md)).
+- **`**/archive/**` is cold storage.** Do not load it into context or search it
+  by default, and do not "tidy" it
+  ([INV-TEMP-02](docs/governance/documentation/core/invariants.md)).
+- **Living state moves with the code.** A change to behavior, CLI syntax,
+  configuration, or a public interface updates `docs/architecture/`, the
+  matching Diátaxis page, and `CHANGELOG.md` in the same pull request
+  ([INV-TEMP-01](docs/governance/documentation/core/invariants.md)).
+- **Mirrored governance is read-only here.** `docs/governance/documentation/`
+  is hash-verified against its manifest. Only `contracts.md` is locally
+  editable; everything else changes upstream and is re-synced.
 
-## 4. Release Workflow
-
-A release is two commits plus one tag, in this order:
-
-1. Land substantive commits first. CHANGELOG entries go under
-   `## [Unreleased]`.
-2. Release commit: bump `version = "X.Y.Z"` in
-   `crates/typio-host/Cargo.toml`, update `Cargo.lock`, and move the
-   `## [Unreleased]` block to `## [X.Y.Z] - YYYY-MM-DD` in
-   `CHANGELOG.md`. Use commit title `release: vX.Y.Z`.
-3. Annotated tag `vX.Y.Z` with message `release: vX.Y.Z`.
-4. Push `main` and the tag.
-
-Version bump rules:
-
-- Patch: bug fixes and internal improvements with no user-visible behavior
-  change.
-- Minor: user-visible new feature or behavior.
-- Major: incompatible change.
-
-Patch releases do not need a new empty `## [Unreleased]` placeholder above
-the released block; the next feature commit recreates it.
-
-## 5. Version Source
-
-The host version source is `crates/typio-host/Cargo.toml`:
-
-```toml
-[package]
-name = "typio-host"
-version = "0.4.0-dev"
-```
-
-Do not add a second version source.
-
-## 6. CHANGELOG Format
-
-Use Keep a Changelog order:
-
-`### Added` -> `### Changed` -> `### Deprecated` -> `### Removed` ->
-`### Fixed` -> `### Security`.
-
-Within a section, bullet entries start with a bold lead phrase:
-
-```markdown
-- **Cargo-only host build.** The host daemon now builds and installs through
-  Cargo...
-```
-
-Date format is `YYYY-MM-DD`. Get it from `date -I` or `date +%F`.
-
-## 7. Build, Test, and Verification Gates
-
-Before committing non-trivial host changes:
-
-```bash
-meson setup ../optics/build-release ../optics \
-  -Dtext=true --buildtype=release   # first time only
-meson compile -C ../optics/build-release
-
-export FLUX_BUILD_DIR="$PWD/../optics/build-release"
-export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
-cargo build --release -p typio-host --bin typio
-cargo build --release -p typioctl
-cargo test -p typio-host -p typio-core -p typio-engine-protocol \
-  -p typio-engine-manifest -p typio-vet -p typioctl
-```
-
-`optics` is a native C monorepo with a Meson build tree; `flux` is a
-sibling-repo build prerequisite, not Typio's build system.
-
-## 8. Repo Layout and Cross-Repo Work
-
-The intended local checkout layout is:
+## 5. Repository layout and cross-repo work
 
 | Path | Role |
-|---|---|
-| `/home/ming/projects/typio/` | This repo: host, runtime, engine protocol, manifest, vet, and client workspace |
+| :--- | :--- |
+| `/home/ming/projects/typio/` | This repo: host daemon, runtime, engine protocol, manifest, conformance tool, and client workspace |
 | `/home/ming/projects/typio-engines/typio-engine-*` | Engine repositories |
-| `/home/ming/projects/typio-settings/` | Meson/C settings panel |
-| `/home/ming/projects/optics/` | Native C monorepo: flux (the host Panel uses its CPU canvas) and flux-text, plus the Iris/Lens GPU stack used by the settings app |
+| `/home/ming/projects/typio-settings/` | Legacy Meson/C settings panel (superseded by `crates/typio-settings`) |
+| `/home/ming/projects/optics/` | Native C monorepo: `flux` (the Panel's CPU canvas), `flux-text`, and the Iris/Lens GPU stack used by the settings app |
+| `/home/ming/projects/docs-governance/` | Source of the mirrored documentation standard |
 
-Cross-repo edits are allowed when the fix genuinely belongs in a sibling
-repo. When touching a sibling repo:
+Cross-repo edits are allowed when the fix genuinely belongs in a sibling repo.
+When touching a sibling repo:
 
 - Read its own `AGENTS.md` or `CLAUDE.md` first.
-- Follow `docs/dev/cross-repository-development.md` for linked worktree and
+- Follow `docs/dev/optics-dev-worktree.md` for linked worktree and
   local `[patch]` workflows when developing against live Optics sources.
 - Do not bump sibling versions in lockstep unless asked.
 - Keep dependency pin changes deliberate and separate when they affect CI.
 
-## 9. Common Agent Failure Modes
+## 6. Common agent failure modes
 
 | Symptom | Wrong reaction | Right reaction |
-|---|---|---|
+| :--- | :--- | :--- |
 | `$EDITOR` opens during git | Try pager flags | Supply `-m` to the git command |
 | Cargo test loads old `libflux.so` | Patch around missing symbols | Rebuild `../optics` and check `FLUX_BUILD_DIR` / RUNPATH |
 | Unsure whether a version bump is patch or minor | Default to minor | Default to patch unless behavior changes |
+| A doc seems to need a source path | Put it in `docs/explanation/` | Put it in `docs/dev/module-map.md` and keep the explanation conceptual |
+| A directory has no index | Skip it | Add the charter; the checker will fail otherwise |
 | Missing project fact | Guess | Run the pre-flight and inspect current files |
 
-## 10. Documentation Governance
+## 7. Documentation governance
 
-`docs/dev/documentation/` has routing and style rules. AI agents may read it
-and suggest changes, but must not directly modify files in that directory.
-Other docs, including `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`,
-`AGENTS.md`, and `docs/dev/*.md`, are editable following normal review.
+`docs/governance/documentation/` mirrors the portable `docs-governance`
+standard and is the authority for every documentation decision. AI agents may
+read it and suggest changes, but must not edit it; policy changes are proposed
+upstream and re-synced (see
+[Mirror Provenance](docs/governance/documentation/contracts.md#5-mirror-provenance-and-refresh)).
 
-User-facing behavior changes need both a CHANGELOG entry and, where
-relevant, an update to the matching doc under `docs/`.
+Documentation *outside* that mirror is editable under the rules in §4, which
+means this file, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, and everything
+under `docs/` except the mirror. User-facing behavior changes need both a
+CHANGELOG entry and an update to the matching page under `docs/`.

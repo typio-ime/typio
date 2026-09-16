@@ -31,7 +31,7 @@ directly:
   **blocking** wait, not computation. The on-CPU samples that *did* land were
   dominated by Vulkan **Wayland-WSI swapchain/surface (re)initialisation**:
 
-  ```
+  ```text
   wl_display_roundtrip_queue
     wsi_wl_display_init
       wsi_wl_surface_get_formats

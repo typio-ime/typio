@@ -1,9 +1,9 @@
 //! Frontend-side panel ownership, anchor probing, and positioned-popup readiness.
 //!
-//! Rust port of `src/wayland/panel_coordinator.c`. This module holds the
-//! decision state for the single popup surface: which UI owner (candidate
-//! panel, indicator, voice status) owns it, whether the compositor has
-//! provided a usable cursor anchor, and when to give up waiting for one.
+//! This module holds the decision state for the single popup surface: which UI
+//! owner (candidate panel, indicator, voice status) owns it, whether the
+//! compositor has provided a usable cursor anchor, and when to give up waiting
+//! for one.
 //!
 //! Rendering itself stays in [`crate::panel::FluxPanel`]; this coordinator
 //! only decides *when* rendering should happen and how to handle the anchor
@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-/// Default anchor-probe enable flag. Mirrors `TYPIO_ANCHOR_PROBE_DEFAULT_ENABLED`.
+/// Default anchor-probe enable flag.
 const DEFAULT_ANCHOR_PROBE_ENABLED: bool = true;
 /// Default anchor-probe timeout. Candidate UI should appear immediately even
 /// when a compositor is late with `text_input_rectangle`; a later caret rect
@@ -37,7 +37,7 @@ pub enum UiOwner {
 }
 
 /// Panel-coordinator configuration. Production values are read from the
-/// typio-core config; tests can use defaults.
+/// typio-runtime config; tests can use defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct PanelCoordinatorConfig {
     pub anchor_probe_enabled: bool,
@@ -54,7 +54,7 @@ impl Default for PanelCoordinatorConfig {
 }
 
 impl PanelCoordinatorConfig {
-    /// Build from raw typio-core config values.
+    /// Build from raw typio-runtime config values.
     pub fn from_values(anchor_probe_enabled: bool, anchor_timeout_ms: i64) -> Self {
         let mut timeout = anchor_timeout_ms.clamp(0, i64::MAX) as u64;
         if timeout < MIN_ANCHOR_TIMEOUT_MS {

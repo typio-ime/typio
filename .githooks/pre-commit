@@ -5,26 +5,43 @@ config_path=".cargo/config.toml"
 patch_header='[patch."https://github.com/ming2k/optics"]'
 
 if [ -f "$config_path" ] && grep -Fqx "$patch_header" "$config_path"; then
-    if git diff --cached -U0 -- crates/typio-host/Cargo.toml Cargo.toml | grep -Eq '^\+version = "'; then
+    if git diff --cached -U0 -- crates/typio-daemon/Cargo.toml Cargo.toml | grep -Eq '^\+version = "'; then
         printf '%s\n' \
             "Local Optics mode: refusing a release-shaped commit." \
-            "The staged Cargo.toml bumps the version, but local" \
+            "The staged Cargo.toml bumps the workspace version, but local" \
             "mode cannot produce a committable canonical Cargo.lock." \
-            "Move $config_path aside, regenerate the lockfile in canonical" \
-            "mode, verify with cargo check --locked --workspace, and commit" \
-            "the resulting canonical Cargo.lock alongside the release bump." >&2
+            "Perform release version bumps and canonical lockfile generation" \
+            "directly inside the primary main worktree (../typio/)." >&2
         exit 1
     fi
 
-    if git diff --cached --name-only | grep -Eq '(^|/)Cargo\.lock$'; then
-        printf '%s\n' \
-            "Local Optics mode: refusing to commit Cargo.lock." \
-            "A local [patch] table is active in $config_path, so" \
-            "Cargo.lock currently contains local paths instead of the" \
-            "canonical remote dependency graph." \
-            "Unstage the lockfile before committing: git restore --staged Cargo.lock" \
-            "To promote an Optics release instead, follow the steps in" \
-            "docs/dev/cross-repository-development.md." >&2
-        exit 1
+    excluded=
+
+    if ! git diff --cached --quiet -- Cargo.lock; then
+        git restore --staged -- Cargo.lock
+        excluded="Cargo.lock"
     fi
+
+    if ! git diff --cached --quiet -- "$config_path"; then
+        git restore --staged -- "$config_path"
+        if [ -n "$excluded" ]; then
+            excluded="$excluded and $config_path"
+        else
+            excluded="$config_path"
+        fi
+    fi
+
+    if [ -n "$excluded" ]; then
+        printf '%s\n' \
+            "Local Optics mode: excluded $excluded from this commit." \
+            "Disable $config_path before committing the canonical lockfile."
+    fi
+
+    exit 0
+fi
+
+if git diff --cached --name-only --diff-filter=ACMR \
+    | grep -Eq '(^|/)Cargo\.toml$'; then
+    printf '%s\n' "Canonical Optics mode: validating Cargo.lock."
+    cargo metadata --locked --format-version 1 >/dev/null
 fi

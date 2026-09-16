@@ -29,7 +29,7 @@ Replace the IPC contract with a single, resource-oriented, camelCase JSON-RPC pr
 
 Three resource namespaces plus a connection-level `hello` and an `events.subscribe`. All method names are dotted camelCase strings.
 
-```
+```text
 hello {}
   -> { protocolVersion, daemonVersion, capabilities: [...] }
 

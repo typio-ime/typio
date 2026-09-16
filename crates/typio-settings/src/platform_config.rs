@@ -8,7 +8,15 @@ use toml_edit::{DocumentMut, Item, Table, value};
 pub const DEFAULT_THEME: &str = "auto";
 pub const DEFAULT_LAYOUT: &str = "horizontal";
 pub const DEFAULT_FONT_SIZE: f64 = 11.0;
+pub const DEFAULT_FONT_FAMILY: &str = "default";
 pub const DEFAULT_ANCHOR_TIMEOUT_MS: i64 = 150;
+
+/// Accepted `display.font_family` values, in menu order.
+///
+/// The text stack resolves faces through fontconfig, which exposes a family
+/// *class* rather than an arbitrary family name; this list is the whole set of
+/// values that actually change rendering.
+pub const FONT_FAMILIES: [&str; 4] = ["default", "sans", "serif", "mono"];
 
 pub struct DisplaySettings<'a> {
     pub theme: &'a str,
@@ -58,8 +66,14 @@ impl PlatformConfig {
             .unwrap_or(DEFAULT_FONT_SIZE)
     }
 
+    /// The configured family class. An unset or unrecognised value reads back
+    /// as the default class, matching how the daemon interprets the key.
     pub fn font_family(&self) -> &str {
-        self.string("font_family").unwrap_or("")
+        let value = self.string("font_family").unwrap_or(DEFAULT_FONT_FAMILY);
+        FONT_FAMILIES
+            .into_iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(value))
+            .unwrap_or(DEFAULT_FONT_FAMILY)
     }
 
     pub fn panel_mode_indicator(&self) -> bool {
@@ -168,7 +182,7 @@ mod tests {
             theme: "dark",
             layout: "vertical",
             font_size: 13.0,
-            font_family: "Inter",
+            font_family: "mono",
             panel_mode_indicator: true,
             anchor_probe: false,
             anchor_probe_timeout_ms: 275,
@@ -189,6 +203,18 @@ mod tests {
         assert_eq!(config.theme(), "auto");
         assert_eq!(config.candidate_layout(), "horizontal");
         assert_eq!(config.font_size(), 11.0);
+        assert_eq!(config.font_family(), DEFAULT_FONT_FAMILY);
         assert!(config.anchor_probe());
+    }
+
+    #[test]
+    fn unrecognised_font_family_reads_back_as_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("platform.toml");
+        // A pre-existing free-text family name is not a valid family class.
+        fs::write(&path, "[display]\nfont_family = \"Noto Sans CJK SC\"\n").unwrap();
+
+        let config = PlatformConfig::load_from(path).unwrap();
+        assert_eq!(config.font_family(), DEFAULT_FONT_FAMILY);
     }
 }

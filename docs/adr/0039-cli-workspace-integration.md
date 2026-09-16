@@ -6,6 +6,14 @@
 - **Supersedes**: `crates/typioctl/docs/adr/0002-independent-cli-repository.md`
 - **Amends**: ADR-0038
 
+> **Pointer update (2026-09-11, see [ADR-0051](0051-single-documentation-tree.md)).**
+> This ADR's decision stands. Two of its references are stale: the superseded
+> record `crates/typioctl/docs/adr/0002-independent-cli-repository.md` now lives
+> at [`archive/cli-control/0002-independent-cli-repository.md`](archive/cli-control/0002-independent-cli-repository.md),
+> and `typioctl` historical ADRs are no longer kept under a crate-local `docs/`
+> tree — they are at [`archive/cli-control/`](archive/cli-control/index.md). The
+> crate name is now `typio-control` (binary `typioctl`).
+
 ## Context
 
 ADR-0038 moved `libtypio`, `typio-abi`, and `typio-vet` into the main Typio
@@ -75,6 +83,7 @@ crate once the duplication is being actively changed.
 - Positive: CLI docs can link directly to the daemon IPC reference.
 - Trade-off: the main repository is no longer only the host/framework runtime;
   it also contains the canonical command-line client.
-- Trade-off: `typioctl` historical ADRs remain under `crates/typioctl/docs/adr`
-  as imported records, while new repository-layout decisions live in the root
-  ADR set.
+- Trade-off: `typioctl` historical ADRs are imported records under
+  [`archive/cli-control/`](archive/cli-control/index.md) (originally a
+  crate-local `docs/adr/` tree), while new repository-layout decisions live in
+  the root ADR set.

@@ -87,4 +87,4 @@
 
 - [How to Package for Distribution](../how-to/package-for-distribution.md)
 - [Troubleshooting](../how-to/troubleshooting.md)
-- [Developer Setup](../dev/setup.md#engine-discovery)
+- [Engine Protocol](engine-protocol.md) — the manifest-declared worker contract

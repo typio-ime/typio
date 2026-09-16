@@ -1,5 +1,5 @@
-//! Platform-neutral host state and policy types shared by typio-host and its
-//! platform integration crates.
+//! Platform-neutral host state and policy types shared by the Typio daemon and
+//! its platform integration crates.
 
 pub mod modifiers;
 pub mod panel_coordinator;
@@ -11,10 +11,9 @@ pub mod wayland_pending;
 /// controller.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputFacts {
-    pub im_activate_seen: bool,
-    pub im_deactivate_seen: bool,
-    pub im_done_had_activate: bool,
-    pub im_done_had_deactivate: bool,
+    /// At least one activation boundary occurred since the last observation.
+    /// Text-only `done` events never clear this edge.
+    pub im_focus_changed: bool,
     pub im_done_serial: u32,
     pub im_is_active: bool,
     pub connection_alive: bool,
@@ -34,11 +33,54 @@ bitflags::bitflags! {
     }
 }
 
+/// Typeface family class for the panel text.
+///
+/// This is the real capability boundary of the text stack: flux-text resolves
+/// faces through fontconfig and exposes a *family class* selector, not a
+/// free-form family name. Modelling the setting as a class keeps the
+/// user-facing option honest — every accepted value actually changes the
+/// rendered typeface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FontFamilyClass {
+    /// Let fontconfig pick (its own sans-serif preference list).
+    #[default]
+    Default,
+    /// Sans-serif preference list.
+    Sans,
+    /// Serif preference list.
+    Serif,
+    /// Monospace preference list.
+    Mono,
+}
+
+impl FontFamilyClass {
+    /// Parse the config-file spelling of a family class.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "default" => Some(Self::Default),
+            "sans" | "sans-serif" => Some(Self::Sans),
+            "serif" => Some(Self::Serif),
+            "mono" | "monospace" => Some(Self::Mono),
+            _ => None,
+        }
+    }
+
+    /// The canonical config-file spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Sans => "sans",
+            Self::Serif => "serif",
+            Self::Mono => "mono",
+        }
+    }
+}
+
 /// Font configuration consumed by the candidate panel renderer.
 #[derive(Clone, Debug)]
 pub struct PanelFontConfig {
-    /// User-configured primary family, or empty for built-in fallback.
-    pub family: String,
+    /// User-configured family class.
+    pub family: FontFamilyClass,
     /// Font size in points, clamped by the host config loader.
     pub size_pt: f64,
 }
@@ -46,7 +88,7 @@ pub struct PanelFontConfig {
 impl Default for PanelFontConfig {
     fn default() -> Self {
         Self {
-            family: String::new(),
+            family: FontFamilyClass::default(),
             size_pt: 11.0,
         }
     }
@@ -73,18 +115,10 @@ impl PanelFontConfig {
     pub fn banner_size_px(&self) -> f32 {
         (self.size_pt * 0.94 * (96.0 / 72.0)) as f32
     }
-
-    /// The configured family, or `None` when empty (pure fallback selection).
-    pub fn family_opt(&self) -> Option<String> {
-        if self.family.is_empty() {
-            None
-        } else {
-            Some(self.family.clone())
-        }
-    }
 }
 
-// Compatibility re-exports for modules moved out of typio-host.
+// Flat re-exports: every host type lives at the crate root so callers do not
+// have to track which internal module a type was moved to.
 pub use modifiers::*;
 pub use panel_coordinator::*;
 pub use panel_present_gate::*;

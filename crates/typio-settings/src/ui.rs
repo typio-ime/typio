@@ -6,7 +6,10 @@ use serde_json::json;
 
 use crate::events::{Event, EventWorker};
 use crate::model::{ConfigEntry, Snapshot, rpc};
-use crate::platform_config::{DisplaySettings, PlatformConfig};
+use crate::platform_config::{DisplaySettings, FONT_FAMILIES, PlatformConfig};
+
+/// Menu labels for [`FONT_FAMILIES`], in the same order.
+const FONT_FAMILY_LABELS: [&str; 4] = ["System default", "Sans", "Serif", "Monospace"];
 
 const REFRESH_RETRY: Duration = Duration::from_secs(2);
 const PLATFORM_SAVE_DELAY: Duration = Duration::from_millis(250);
@@ -29,6 +32,7 @@ pub struct AppState {
     events: EventWorker,
     buffers: HashMap<String, TextBuf>,
     dirty: HashSet<String>,
+    expanded_sections: HashSet<String>,
 
     platform: Option<PlatformConfig>,
     platform_error: Option<String>,
@@ -36,7 +40,8 @@ pub struct AppState {
     theme: i32,
     candidate_layout: i32,
     font_size: f32,
-    font_family: TextBuf,
+    /// Index into [`FONT_FAMILIES`].
+    font_family: i32,
     panel_mode_indicator: bool,
     anchor_probe: bool,
     anchor_probe_timeout_ms: f32,
@@ -65,13 +70,14 @@ impl AppState {
             .as_ref()
             .map(|config| config.font_size() as f32)
             .unwrap_or(11.0);
-        let font_family = TextBuf::new(
-            256,
-            platform
-                .as_ref()
-                .map(PlatformConfig::font_family)
-                .unwrap_or(""),
-        );
+        let font_family = FONT_FAMILIES
+            .iter()
+            .position(|candidate| {
+                platform
+                    .as_ref()
+                    .is_some_and(|config| config.font_family() == *candidate)
+            })
+            .unwrap_or(0) as i32;
         let panel_mode_indicator = platform
             .as_ref()
             .is_some_and(PlatformConfig::panel_mode_indicator);
@@ -90,6 +96,7 @@ impl AppState {
             events: EventWorker::start(),
             buffers: HashMap::new(),
             dirty: HashSet::new(),
+            expanded_sections: HashSet::new(),
             platform,
             platform_error,
             platform_save_at: None,
@@ -124,7 +131,7 @@ impl AppState {
                     ..LayoutOpts::default()
                 },
                 |frame| {
-                    frame.title("Typio Settings");
+                    frame.heading("Typio Settings", 1);
                     frame.flex(1.0);
                     frame.spacer(1.0);
                     if self.connected {
@@ -198,7 +205,7 @@ impl AppState {
     }
 
     fn appearance_page(&mut self, frame: &mut Frame) {
-        frame.title("Appearance");
+        frame.heading("Appearance", 2);
         frame.label("Panel rendering and candidate-window behavior.");
         if let Some(error) = &self.platform_error {
             frame.label_sized(&format!("platform.toml is not editable: {error}"), 12.0);
@@ -213,14 +220,14 @@ impl AppState {
         );
         changed |= frame.slider("Font size", &mut self.font_size, 6.0, 72.0);
         frame.label_sized(&format!("{:.0} pt", self.font_size), 12.0);
-        changed |= frame.textfield("Font family", &mut self.font_family);
+        changed |= frame.dropdown("Font family", &mut self.font_family, &FONT_FAMILY_LABELS);
         changed |= frame.checkbox(
             "Show input mode in the panel",
             &mut self.panel_mode_indicator,
         );
 
         frame.separator();
-        frame.title("Placement");
+        frame.heading("Placement", 2);
         changed |= frame.checkbox("Probe the compositor anchor", &mut self.anchor_probe);
         changed |= frame.slider(
             "Anchor probe timeout",
@@ -237,7 +244,7 @@ impl AppState {
     }
 
     fn input_page(&mut self, frame: &mut Frame, action: &mut Option<Action>) {
-        frame.title("Input");
+        frame.heading("Input", 2);
         frame.label("Choose the active language and engines, then tune engine options.");
 
         if !self.snapshot.languages.is_empty() {
@@ -276,17 +283,23 @@ impl AppState {
             })
             .cloned()
             .collect();
-        if !input_config.is_empty() {
-            frame.collapsing("Input behavior", |frame| {
-                self.config_entries(frame, &input_config, action);
-            });
+        if !input_config.is_empty()
+            && Self::section_disclosure(
+                &mut self.expanded_sections,
+                frame,
+                "input_behavior",
+                "Input behavior",
+            )
+        {
+            self.config_entries(frame, &input_config, action);
         }
 
         let engines = self.snapshot.engines.clone();
         for engine in engines {
             let heading = format!("{} · {}", engine.display_name, engine.kind);
             frame.push_id(&engine.name);
-            frame.collapsing(&heading, |frame| {
+            if Self::section_disclosure(&mut self.expanded_sections, frame, &engine.name, &heading)
+            {
                 frame.label_sized(&engine.name, 12.0);
                 if engine.active {
                     frame.label("Active");
@@ -317,13 +330,13 @@ impl AppState {
                         frame.pop_id();
                     }
                 }
-            });
+            }
             frame.pop_id();
         }
     }
 
     fn shortcuts_page(&mut self, frame: &mut Frame, action: &mut Option<Action>) {
-        frame.title("Shortcuts");
+        frame.heading("Shortcuts", 2);
         frame.label("Global Typio key bindings. Use accelerator strings such as Control+Space.");
         let entries: Vec<ConfigEntry> = self
             .snapshot
@@ -340,7 +353,7 @@ impl AppState {
     }
 
     fn advanced_page(&mut self, frame: &mut Frame, action: &mut Option<Action>) {
-        frame.title("Advanced");
+        frame.heading("Advanced", 2);
         frame.label("Schema-backed settings not shown on the other pages.");
         let entries: Vec<ConfigEntry> = self
             .snapshot
@@ -363,10 +376,34 @@ impl AppState {
 
         if !self.snapshot.daemon_status.is_null() {
             frame.separator();
-            frame.collapsing("Daemon status", |frame| {
+            if Self::section_disclosure(
+                &mut self.expanded_sections,
+                frame,
+                "daemon_status",
+                "Daemon status",
+            ) {
                 frame.label_sized(&self.snapshot.daemon_status.to_string(), 12.0);
-            });
+            }
         }
+    }
+
+    fn section_disclosure(
+        expanded: &mut HashSet<String>,
+        frame: &mut Frame,
+        id: &str,
+        label: &str,
+    ) -> bool {
+        let open = expanded.contains(id);
+        let marker = if open { "▾ " } else { "▸ " };
+        let button_text = format!("{marker}{label}");
+        if frame.button_subtle(&button_text) {
+            if open {
+                expanded.remove(id);
+            } else {
+                expanded.insert(id.to_string());
+            }
+        }
+        expanded.contains(id)
     }
 
     fn config_entries(
@@ -592,7 +629,8 @@ impl AppState {
             theme,
             layout,
             font_size: self.font_size as f64,
-            font_family: &self.font_family.as_str(),
+            font_family: FONT_FAMILIES
+                [(self.font_family.max(0) as usize).min(FONT_FAMILIES.len() - 1)],
             panel_mode_indicator: self.panel_mode_indicator,
             anchor_probe: self.anchor_probe,
             anchor_probe_timeout_ms: self.anchor_probe_timeout_ms.round() as i64,

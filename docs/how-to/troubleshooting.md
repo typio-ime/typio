@@ -17,9 +17,8 @@ ls /usr/local/share/typio/engines
 ```
 
 Engine packages are separate repositories. Build one and point the daemon
-at its manifest directory — for example the [compose
-engine](../../typio-engines/typio-engine-compose) with `cargo build --release`, or the
-[rime engine](../../typio-engines/typio-engine-rime) with
+at its manifest directory — for example the compose engine with
+`cargo build --release`, or the rime engine with
 `meson setup build && meson compile -C build`. For development-only
 engines, start the daemon with `typio --engine-dir DIR` (repeatable) or set
 `TYPIO_ENGINE_PATH=DIR1:DIR2`; no per-user directory is scanned by default.
@@ -78,7 +77,7 @@ With the `rime` engine, the daemon renders candidates through the Panel when the
 If edits under `~/.local/share/typio/rime` do not affect candidate behavior, switch to the `rime` engine and run:
 
 ```bash
-typio rime deploy
+typioctl engine do rime deploy
 ```
 
 That asks the daemon to rerun librime deployment and regenerate `~/.local/share/typio/rime/build/*.yaml` from your source YAML files.
@@ -191,7 +190,7 @@ Keyboard trace lines include both raw key data and the resolved text character w
 Current builds expose two complementary diagnostics surfaces:
 
 - continuous logs through stderr (captured by `typio.service` in the user journal for installed builds, or visible in the terminal when running manually with `--verbose`)
-- a `daemon.status` snapshot over the TIP v1 UDS socket, surfaced via
+- a `daemon.status` snapshot over the TIP v3 UDS socket, surfaced via
   `typioctl daemon status`
 
 Use both. Logs show the event history; `daemon.status` shows the current frontend health snapshot.
@@ -211,7 +210,7 @@ Read the live runtime state from the running daemon:
 typioctl daemon status
 ```
 
-The `daemon.status` response (TIP v1 over the UDS socket; see
+The `daemon.status` response (TIP v3 over the UDS socket; see
 [IPC Protocol Reference](../reference/ipc-protocol.md)) includes the
 `runtime.*` fields below.
 
@@ -250,6 +249,20 @@ If the daemon still starts but later all routed input stops working and the tray
 - whether `Ctrl+Shift+Escape` still exits the daemon
 - compositor name and version
 - the last `poll error`, `dispatch failure`, `grab`, `key`, and `im` lines
+
+## Repeated Letters After a Shortcut Changes Focus
+
+If closing a tab with Ctrl+W leaves the next input field receiving repeated
+letters, record the application, compositor, active engine, and whether the
+problem stops when you press and release the same letter once.
+
+Typio fences shortcuts at focus boundaries and pairs every forwarded press
+with a release, including when focus passes through a non-editable area.
+Forwarded keys use the application's normal repeat; consumed input uses the
+engine repeat path. A persistent repetition after release is a defect.
+Include the relevant verbose log interval when reporting it. See
+[Input-Method Session](../explanation/input-method-session.md#keyboard-epochs-and-press-ownership)
+for the ownership model and the recovery commands below to stop the daemon.
 
 ## Emergency Recovery
 

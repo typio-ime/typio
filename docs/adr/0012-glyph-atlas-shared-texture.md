@@ -55,7 +55,7 @@ cure. This ADR records the full chain so the pattern is not repeated.
      `flux_canvas_draw_image_coverage` was linked and the shader recompiled)
      caught the main thread in:
 
-     ```
+     ```text
      typio_flux_fill_layout → build_layout_image → flux_image_create
        → flux_vk_upload_to_image → submit_one_shot_and_wait
          → vkWaitForFences → drmSyncobjWait → ioctl

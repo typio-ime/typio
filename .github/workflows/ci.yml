@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: bae3e69df5764ec40e712aa23513c683d4ef9198
+  OPTICS_PINNED_REF: 3839903c54678fff19ced949e2d775fb6eaacf83
 
 jobs:
   cargo-check-format-lint:
@@ -98,7 +98,6 @@ jobs:
           LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
           IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          # typio-vet tests dlopen against the mock host
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../optics/build
         run: |
           cargo build --workspace
@@ -151,7 +150,7 @@ jobs:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
         run: |
-          cargo test -p typio-host --lib --no-run
+          cargo test -p typio-daemon --lib --no-run
           cargo test -p typio-host-platform --lib --no-run
 
       - name: Valgrind (icon_badge / panel / text_raster)
@@ -161,7 +160,7 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/../optics/build
         run: |
           set -euo pipefail
-          BIN_HOST=$(ls -t target/debug/deps/typio_host-* | grep -v '\.d$' | head -1)
+          BIN_HOST=$(ls -t target/debug/deps/typio_daemon-* | grep -v '\.d$' | head -1)
           BIN_PLAT=$(ls -t target/debug/deps/typio_host_platform-* | grep -v '\.d$' | head -1)
           # fontconfig's process-lifetime pattern cache is an upstream leak
           # (same suppression rationale as optics' lsan.supp) — not ours.

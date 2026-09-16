@@ -4,30 +4,15 @@ Build and install Typio for system-wide or package-manager distribution.
 
 ## Build a Release Binary
 
-Build the native renderer dependency first. These commands run from the
-Typio repository root:
+Build the release binaries with the recipe in
+[README.md](../../README.md#building), using a `release`-type Optics build tree:
+the binary names and the `FLUX_BUILD_DIR` / `FLUX_SOURCE_DIR` contract are
+defined there and are not repeated here. `LENS_BUILD_DIR`/`LENS_SOURCE_DIR` and
+`IRIS_BUILD_DIR`/`IRIS_SOURCE_DIR` must point at the same Optics tree, because
+`typio-settings` links the Lens and Iris stacks from it.
 
-```bash
-meson setup ../optics/build-release ../optics -Dtext=true --buildtype=release
-meson compile -C ../optics/build-release
-```
-
-Build the host daemon:
-
-```bash
-export FLUX_BUILD_DIR="$PWD/../optics/build-release"
-export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
-export LENS_BUILD_DIR="$PWD/../optics/build-release"
-export LENS_SOURCE_DIR="$PWD/../optics"
-export IRIS_BUILD_DIR="$PWD/../optics/build-release"
-export IRIS_SOURCE_DIR="$PWD/../optics"
-cargo build --release -p typio-host --bin typio
-cargo build --release -p typioctl
-cargo build --release -p typio-settings
-```
-
-The output binaries are `target/release/typio`, `target/release/typioctl`, and
-`target/release/typio-settings`.
+**Expected outcome:** `target/release/typio`, `target/release/typioctl`, and
+`target/release/typio-settings` exist.
 
 ## Stage Package Files
 

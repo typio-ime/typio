@@ -66,25 +66,28 @@ on-screen highlight is briefly behind.
 The candidate panel renders text on the CPU via `TextRaster`
 (`crates/typio-host-platform/src/text_raster.rs`): a thin FFI wrapper over **flux-text**
 (`flux-text-sys`: FreeType + HarfBuzz + Fontconfig + FriBidi), exposing
-`flux_text_create` / `flux_text_measure` / `flux_text_draw`. The former
-`ab_glyph`/`rustybuzz`/`fontdb` software rasteriser was retired by
-[ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md); those crates now serve
-only `icon_badge.rs` (tray badges, behind `feature = "systray"`).
+`flux_text_create` / `flux_text_measure` / `flux_text_draw`. Tray language
+badges (`icon_badge.rs`, behind `feature = "systray"`) use the same stack, so
+the workspace has exactly one text backend.
 
 ### Family selection
 
-Font selection is delegated to flux-text's fontconfig backend: the configured
-family (`display.font_family`) is the preferred family, and fontconfig resolves
-per-codepoint fallback (e.g. a Latin family meeting a CJK character) through the
-desktop's `fonts.conf`. `TextRaster::set_preferred_family` is a **no-op**
-retained only for source compatibility with the former `ab_glyph` rasteriser —
-flux-text picks up the preferred family at `flux_text_create` time, and a family
-change is applied by recreating the text context on config reload.
+Font selection is delegated to flux-text's fontconfig backend. The configured
+family class (`display.font_family`) selects which fontconfig preference list is
+consulted first — `default`, `sans`, `serif`, or `mono` — and fontconfig then
+resolves per-codepoint fallback (e.g. a Latin class family meeting a CJK
+character) through the desktop's `fonts.conf`.
+
+A class, rather than an arbitrary family name, is the real capability boundary:
+flux-text exposes `flux_text_set_default_family` with those four values and no
+free-form family selector. `TextRaster::set_preferred_family` applies the class
+to the live text context, so a change takes effect on the next measured or
+drawn run after config reload.
 
 ### Sizing
 
 `display.font_size` (points, 6–72, default 11) drives the candidate, index-number
-and banner sizes via `PanelFontConfig` (`crates/typio-host/src/app/font_config.rs`),
+and banner sizes via `PanelFontConfig` (`crates/typio-daemon/src/app/font_config.rs`),
 converted to logical pixels at 96/72 px/pt. The HiDPI scale is applied
 separately at draw time. `PanelFontConfig` is snapshotted at startup and on every
 config reload, then pushed onto the panel via `FluxPanel::set_font_config`.

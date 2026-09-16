@@ -40,7 +40,7 @@ intermediate conclusions were **incompletely attributed** and the earlier docs
    gdb sampling **during up/down navigation specifically** caught the main
    thread in:
 
-   ```
+   ```text
    build_layout_image → flux_image_create → flux_vk_upload_to_image
      → submit_one_shot_and_wait → vkWaitForFences → drmSyncobjWait → ioctl
    ```

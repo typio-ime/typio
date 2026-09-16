@@ -20,7 +20,7 @@ breaking changes require a major version bump.
 
 | Interface | Tier | Consumers | Reference |
 |-----------|------|-----------|-----------|
-| TIP v1 wire format (UDS framing, JSON-RPC envelope, `protocolVersion` handshake) | Stable | `typioctl`, `typio-settings`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
+| TIP v3 wire format (UDS framing, JSON-RPC envelope, `protocolVersion` handshake) | Stable | `typioctl`, `typio-settings`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
 | TIP method surface (`engine.*`, `keyboard.*`, `voice.*`, `language.*`, `config.*`, `daemon.*`, `events.*`) | Unstable | `typioctl`, `typio-settings`, third-party tools | [IPC Protocol Reference](ipc-protocol.md) |
 | `core.toml` / `platform.toml` keys | Unstable | End users | [Configuration Reference](configuration.md) |
 | Engine manifest format (`typio-engine-*.toml`) | Experimental | Engine package authors | [Engine Discovery Reference](engine-discovery.md) |

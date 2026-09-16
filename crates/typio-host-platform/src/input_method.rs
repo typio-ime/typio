@@ -21,7 +21,7 @@
 //! The serial-commit protocol increments the serial on every `done`; a
 //! commit before the first `done` is silently dropped.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::time::Instant;
@@ -66,6 +66,28 @@ pub struct DecodedKeyEvent {
     pub state: u32,
     /// Timestamp in milliseconds (from the compositor).
     pub time: u32,
+}
+
+/// A modifier sample in both compositor and host layouts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyboardModifiers {
+    pub depressed: u32,
+    pub latched: u32,
+    pub locked: u32,
+    pub group: u32,
+    pub effective: Modifiers,
+}
+
+/// Keyboard transport events, retained in compositor arrival order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyboardInput {
+    Key {
+        key: DecodedKeyEvent,
+        epoch: u64,
+        modifiers: Modifiers,
+    },
+    Modifiers(KeyboardModifiers),
+    Boundary,
 }
 
 /// Pending/current text-state carried across the input-method `done` boundary.
@@ -165,49 +187,36 @@ impl CompositionState {
 ///
 /// This struct implements `Dispatch` for every protocol object the
 /// frontend binds. The `EventQueue` operates on it directly.
-pub struct InputMethodState {
-    #[allow(dead_code)]
+///
+/// Several fields are **lifetime anchors**, not inputs to logic: a bound
+/// Wayland proxy must stay alive and owned for the interface to remain valid
+/// (dropping it destroys the proxy). They are never read, which is why the
+/// struct carries a targeted `dead_code` allow rather than each anchor
+/// pretending to be used.
+#[allow(dead_code, reason = "bound Wayland proxies kept alive for ownership")]
+struct WaylandObjects {
     seat: wl_seat::WlSeat,
     input_method: ZwpInputMethodV2,
-    /// Keyboard grab object; recreated by the focus controller on hard
-    /// boundaries and retained during a soft pause.
     keyboard_grab: Option<ZwpInputMethodKeyboardGrabV2>,
-    /// Virtual keyboard for forwarding unhandled keys to the focused app.
     virtual_keyboard: ZwpVirtualKeyboardV1,
-    /// Compositor proxy (for creating panel surfaces later).
-    #[allow(dead_code)]
     compositor: WlCompositor,
-    /// The wl_surface backing the candidate panel popup.
     popup_surface_obj: wl_surface::WlSurface,
+    popup_surface: ZwpInputPopupSurfaceV2,
+    viewporter: Option<WpViewporter>,
+    panel_viewport: Option<WpViewport>,
+    fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
+    panel_fractional_scale: Option<WpFractionalScaleV1>,
+    shm: Option<wl_shm::WlShm>,
+}
+
+pub struct InputMethodState {
+    wayland: Option<WaylandObjects>,
     /// Last candidate composition snapshot successfully submitted to Flux.
     ///
     /// Lets the render path consume only the newest composition and skip
     /// duplicate presents after unrelated wakeups, while still allowing
     /// scale/ownership/hide changes to invalidate the cached submission.
     panel_presentation: PresentationRecord,
-    /// The input-method popup surface (positioning protocol).
-    #[allow(dead_code)]
-    popup_surface: ZwpInputPopupSurfaceV2,
-    /// `wp_viewporter` global. Bound when the compositor advertises it;
-    /// `None` falls back to exact-size framebuffer and SHM resizing.
-    #[allow(dead_code)]
-    viewporter: Option<WpViewporter>,
-    /// `wp_viewport` attached to `popup_surface_obj`. Used by the panel
-    /// to crop a quantized CPU framebuffer to the exact content rect while
-    /// bounded shrink hysteresis avoids both resize churn and permanent peaks.
-    #[allow(dead_code)]
-    panel_viewport: Option<WpViewport>,
-    /// Fractional-scale global used to request a preferred scale for the panel.
-    #[allow(dead_code)]
-    fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
-    /// Fractional-scale add-on for `popup_surface_obj`. When present, its
-    /// 120ths-based scale supersedes the integer core-surface hint.
-    #[allow(dead_code)]
-    panel_fractional_scale: Option<WpFractionalScaleV1>,
-    /// `wl_shm` global — the shared-memory buffer factory. Used by the
-    /// CPU-rendered Panel path to create host-managed `wl_buffer`s
-    /// (replaces the Vulkan WSI swapchain; see `panel_shm`).
-    shm: Option<wl_shm::WlShm>,
     /// Text input rectangle from the compositor (cursor position).
     pub text_input_rect: Option<(i32, i32, i32, i32)>,
     /// Engine composition projection (candidates, selection, commit).
@@ -226,41 +235,24 @@ pub struct InputMethodState {
     pub mods_depressed: u32,
     pub mods_latched: u32,
     pub mods_locked: u32,
-    /// Pending key events to be processed by the engine after dispatch.
-    /// Set by the Dispatch impl when a key press or release arrives;
-    /// the event-loop driver drains all of them after dispatch_pending
-    /// returns.
-    ///
-    /// This is a queue, not a single slot, so that two key events
-    /// delivered in the same Wayland dispatch batch — most commonly
-    /// `release(BS)` followed immediately by `press(other)` or
-    /// vice-versa — are both preserved. With a single `Option` slot,
-    /// the second event overwrote the first and the lost event was
-    /// usually the release of a key whose repeat timer was armed;
-    /// the daemon then repeated that key forever (the "stuck
-    /// backspace" symptom). The queue guarantees release events
-    /// always reach the loop, so `router.on_release` +
-    /// `timer.stop()` fire on every release.
-    ///
-    /// Entries are discarded wholesale at an activate/deactivate boundary
-    /// (see [`Self::discard_pending_keys`]): an unrouted key belongs to the
-    /// activation epoch it arrived in and must never cross into the next
-    /// focused field.
-    pub pending_keys: Vec<DecodedKeyEvent>,
-    /// Keys for which the host already emitted a synthetic release while
-    /// entering soft-pause. A later physical release is consumed exactly once,
-    /// including while `active == false` where events bypass the host router.
-    synthetic_releases: HashSet<u32>,
+    /// One ordered stream for active and inactive keyboard routing.
+    pending_input: Vec<KeyboardInput>,
+    /// Identifies the current focus/keymap/grab epoch. Queued old presses
+    /// cannot acquire ownership in a new field.
+    keyboard_epoch: u64,
+    last_key_time: u32,
+    /// The sole record of presses delivered to the virtual keyboard.
+    forwarded_keys: BTreeSet<u32>,
+    /// Physical presses observed in this epoch, including consumed keys.
+    held_keys: BTreeSet<u32>,
+    #[cfg(test)]
+    keyboard_output: Vec<KeyboardInput>,
     /// Raw input facts recorded during this reactor step for the focus controller.
     pub facts: InputFacts,
     /// Set when the compositor declares the input method unavailable.
     stopped: bool,
     /// Pending text state accumulated since the previous `done`.
     pending: SessionState,
-    /// Whether an activate event arrived during the currently pending batch.
-    pending_had_activate: bool,
-    /// Whether a deactivate event arrived during the currently pending batch.
-    pending_had_deactivate: bool,
     /// Text state committed by the latest `done`.
     current: SessionState,
     /// True once a keymap event has been received for the current grab epoch.
@@ -283,6 +275,42 @@ pub struct InputMethodState {
 }
 
 impl InputMethodState {
+    /// Create a headless, transport-free state instance for testing and mock runs.
+    pub fn new_headless() -> Self {
+        Self {
+            wayland: None,
+            panel_presentation: PresentationRecord::default(),
+            text_input_rect: None,
+            composition: CompositionState::default(),
+            serial: 0,
+            active: false,
+            initialized: false,
+            xkb_context: xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS),
+            xkb_state: None,
+            xkb_keymap: None,
+            mods_depressed: 0,
+            mods_latched: 0,
+            mods_locked: 0,
+            pending_input: Vec::new(),
+            keyboard_epoch: 1,
+            last_key_time: 0,
+            forwarded_keys: BTreeSet::new(),
+            held_keys: BTreeSet::new(),
+            #[cfg(test)]
+            keyboard_output: Vec::new(),
+            facts: InputFacts::default(),
+            stopped: false,
+            pending: SessionState::default(),
+            current: SessionState::default(),
+            keymap_received_this_epoch: false,
+            panel_schedule_state: PanelScheduleState::default(),
+            panel_coord: PanelCoordinator::new(),
+            buffer_scale: 1.0,
+            compositor_repeat_info: None,
+            wayland_pending: crate::wayland_pending::PendingRequestTracker::default(),
+        }
+    }
+
     /// Current protocol serial.
     pub fn serial(&self) -> u32 {
         self.serial
@@ -427,7 +455,14 @@ impl InputMethodState {
 
     /// The bound `wl_shm` global, if the compositor advertises it.
     pub fn shm(&self) -> Option<&wl_shm::WlShm> {
-        self.shm.as_ref()
+        self.wayland.as_ref().and_then(|w| w.shm.as_ref())
+    }
+
+    /// The attached `wp_viewport`, if viewporter is supported.
+    pub fn panel_viewport(&self) -> Option<&WpViewport> {
+        self.wayland
+            .as_ref()
+            .and_then(|w| w.panel_viewport.as_ref())
     }
 
     /// Reset the positioned-popup anchor generation. Call on focus-in and
@@ -477,32 +512,37 @@ impl InputMethodState {
 
     /// Whether a keyboard grab object currently exists.
     pub fn keyboard_grab_present(&self) -> bool {
-        self.keyboard_grab.is_some()
+        self.wayland
+            .as_ref()
+            .and_then(|w| w.keyboard_grab.as_ref())
+            .is_some()
     }
 
     /// Create a new keyboard grab from the input-method object.
     pub fn create_keyboard_grab(&mut self, qh: &QueueHandle<Self>) {
-        if self.keyboard_grab.is_none() {
-            tracing::debug!(target: "typio.wayland.grab", "create");
-            self.keyboard_grab = Some(self.input_method.grab_keyboard(qh, ()));
-            self.keymap_received_this_epoch = false;
-            self.wayland_pending.note_grab_sent(Instant::now());
+        if self.keyboard_grab_present() {
+            return;
         }
+        tracing::debug!(target: "typio.wayland.grab", "create");
+        if let Some(ref mut wayland) = self.wayland {
+            wayland.keyboard_grab = Some(wayland.input_method.grab_keyboard(qh, ()));
+        }
+        self.keymap_received_this_epoch = false;
+        self.wayland_pending.note_grab_sent(Instant::now());
     }
 
     /// Destroy the current keyboard grab object.
     pub fn destroy_keyboard_grab(&mut self) {
-        if let Some(grab) = self.keyboard_grab.take() {
-            tracing::debug!(target: "typio.wayland.grab", "destroy");
-            drop(grab);
-            self.keymap_received_this_epoch = false;
-            self.wayland_pending.note_keymap_received(Instant::now());
-            // Synthetic-release markers belong to the destroyed grab's
-            // epoch: the physical releases they awaited can never arrive
-            // now, so retaining them would swallow a legitimate release in
-            // the next epoch.
-            self.synthetic_releases.clear();
+        self.release_forwarded_keys();
+        self.pending_input.clear();
+        self.keyboard_boundary();
+        if let Some(wayland) = self.wayland.as_mut() {
+            if let Some(grab) = wayland.keyboard_grab.take() {
+                grab.release();
+            }
         }
+        self.keymap_received_this_epoch = false;
+        self.wayland_pending.note_keymap_received(Instant::now());
     }
 
     /// Commit non-text input-method protocol state to the compositor.
@@ -516,36 +556,76 @@ impl InputMethodState {
         if !self.initialized {
             return;
         }
-        self.input_method.commit(self.serial);
+        if let Some(ref wayland) = self.wayland {
+            wayland.input_method.commit(self.serial);
+        }
     }
 
-    /// Forward a key to the focused app via the virtual keyboard.
-    /// Used when the engine doesn't consume the key.
-    pub fn forward_key(&self, time: u32, key: u32, state: u32) {
-        self.virtual_keyboard.key(time, key, state);
+    /// Emit a paired virtual-keyboard event. Orphan and duplicate events are
+    /// suppressed for every caller, including inactive pass-through.
+    pub fn forward_key(&mut self, time: u32, key: u32, state: u32) {
+        let emit = if state == 1 {
+            self.forwarded_keys.insert(key)
+        } else {
+            self.forwarded_keys.remove(&key)
+        };
+        if emit {
+            self.emit_key(time, key, state);
+        }
     }
 
-    /// Record that a release was synthesized for `key` during soft-pause.
-    pub fn mark_synthetic_release(&mut self, key: u32) {
-        self.synthetic_releases.insert(key);
+    fn emit_key(&mut self, time: u32, key: u32, state: u32) {
+        #[cfg(test)]
+        self.keyboard_output.push(KeyboardInput::Key {
+            key: DecodedKeyEvent {
+                keycode: key,
+                xkb_keycode: key + 8,
+                keysym: 0,
+                unicode: String::new(),
+                state,
+                time,
+            },
+            epoch: self.keyboard_epoch,
+            modifiers: Modifiers::NONE,
+        });
+        if let Some(wayland) = self.wayland.as_ref() {
+            wayland.virtual_keyboard.key(time, key, state);
+        }
     }
 
-    /// Clear a pending synthetic-release marker. Returns whether it existed.
-    pub fn clear_synthetic_release(&mut self, key: u32) -> bool {
-        self.synthetic_releases.remove(&key)
+    pub fn key_is_forwarded(&self, key: u32) -> bool {
+        self.forwarded_keys.contains(&key)
     }
 
-    /// Forward modifier state to the focused app.
-    pub fn forward_modifiers(&self, depressed: u32, latched: u32, locked: u32, group: u32) {
-        self.virtual_keyboard
-            .modifiers(depressed, latched, locked, group);
+    /// Release all application-owned presses at a focus/keymap/grab boundary.
+    pub fn release_forwarded_keys(&mut self) {
+        for key in std::mem::take(&mut self.forwarded_keys) {
+            self.emit_key(self.last_key_time, key, 0);
+        }
+    }
+
+    /// Forward an ordered modifier sample, never the final state of a batch.
+    pub fn forward_modifiers(&mut self, sample: KeyboardModifiers) {
+        #[cfg(test)]
+        self.keyboard_output.push(KeyboardInput::Modifiers(sample));
+        if let Some(wayland) = self.wayland.as_ref() {
+            wayland.virtual_keyboard.modifiers(
+                sample.depressed,
+                sample.latched,
+                sample.locked,
+                sample.group,
+            );
+        }
     }
 
     /// Raw pointer to the popup wl_surface. Use this to create a FluxPanel on
     /// the SAME surface so panel rendering and popup positioning share one
     /// wl_surface.
     pub fn popup_surface_raw_ptr(&self) -> *mut std::ffi::c_void {
-        self.popup_surface_obj.id().as_ptr() as *mut std::ffi::c_void
+        self.wayland
+            .as_ref()
+            .map(|w| w.popup_surface_obj.id().as_ptr() as *mut std::ffi::c_void)
+            .unwrap_or(core::ptr::null_mut())
     }
 
     /// Set the current candidate list + selected index for the panel.
@@ -554,30 +634,121 @@ impl InputMethodState {
         self.composition.set_candidates(candidates, selected)
     }
 
-    /// Take all pending key events for processing by the event loop.
-    /// Returns the events in arrival order. The Vec is empty when no
-    /// key events are pending.
-    pub fn take_pending_keys(&mut self) -> Vec<DecodedKeyEvent> {
-        std::mem::take(&mut self.pending_keys)
+    pub fn take_pending_input(&mut self) -> Vec<KeyboardInput> {
+        std::mem::take(&mut self.pending_input)
     }
 
-    /// Drop every queued-but-unrouted key event. Called at an
-    /// activate/deactivate boundary: a key that has not been routed by the
-    /// time the focus boundary arrives belongs to the field that just lost
-    /// (or had not yet gained) focus. Routing it afterwards would inject it
-    /// into whatever field is focused next — the "wwwwww" class of bugs,
-    /// where a shortcut's letter key (Ctrl+W) is routed into the newly
-    /// focused tab and its armed repeat keeps firing.
-    fn discard_pending_keys(&mut self, reason: &'static str) {
-        if !self.pending_keys.is_empty() {
-            tracing::debug!(
-                target: "typio.input.queue",
-                dropped = self.pending_keys.len(),
-                reason,
-                "drop queued keys at focus boundary"
-            );
-            self.pending_keys.clear();
+    /// Apply transport effects in FIFO order. Only current, active keys are
+    /// returned for host/engine routing. Boundaries and modifier samples also
+    /// reach the host so it can cancel gestures and repeats in the same order.
+    pub fn prepare_input(&mut self, input: KeyboardInput) -> Option<KeyboardInput> {
+        match &input {
+            KeyboardInput::Boundary => self.release_forwarded_keys(),
+            KeyboardInput::Modifiers(sample) => {
+                if self.keymap_received_this_epoch {
+                    self.forward_modifiers(*sample);
+                }
+            }
+            KeyboardInput::Key { key, epoch, .. } => {
+                if *epoch != self.keyboard_epoch {
+                    tracing::debug!(target: "typio.input.keyboard", epoch,
+                        current_epoch = self.keyboard_epoch, keycode = key.keycode,
+                        state = key.state, "fence obsolete keyboard event");
+                    if key.state == 0 {
+                        self.forward_key(key.time, key.keycode, 0);
+                    }
+                    return None;
+                }
+                if !self.keymap_received_this_epoch {
+                    return None;
+                }
+                if !self.active {
+                    self.forward_key(key.time, key.keycode, key.state);
+                    return None;
+                }
+            }
         }
+        Some(input)
+    }
+
+    pub fn keyboard_epoch(&self) -> u64 {
+        self.keyboard_epoch
+    }
+
+    pub fn key_repeats(&self, key: u32) -> bool {
+        self.xkb_keymap
+            .as_ref()
+            .is_some_and(|map| map.key_repeats(xkbcommon::xkb::Keycode::new(key + 8)))
+    }
+
+    pub fn key_is_held(&self, key: u32) -> bool {
+        self.held_keys.contains(&key)
+    }
+
+    fn record_modifiers(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
+        self.mods_depressed = depressed;
+        self.mods_latched = latched;
+        self.mods_locked = locked;
+        if let Some(xs) = self.xkb_state.as_mut() {
+            xs.update_mask(depressed, latched, locked, 0, 0, group);
+        }
+        self.pending_input
+            .push(KeyboardInput::Modifiers(KeyboardModifiers {
+                depressed,
+                latched,
+                locked,
+                group,
+                effective: self.effective_modifiers(),
+            }));
+    }
+
+    fn queue_key(&mut self, key: DecodedKeyEvent) {
+        self.last_key_time = key.time;
+        if key.state == 1 {
+            // Duplicate compositor presses are not another physical gesture.
+            if !self.held_keys.insert(key.keycode) {
+                return;
+            }
+        } else {
+            self.held_keys.remove(&key.keycode);
+        }
+        self.pending_input.push(KeyboardInput::Key {
+            modifiers: self.effective_modifiers(),
+            key,
+            epoch: self.keyboard_epoch,
+        });
+    }
+
+    fn keyboard_boundary(&mut self) {
+        self.keyboard_epoch = self.keyboard_epoch.wrapping_add(1);
+        tracing::debug!(target: "typio.input.keyboard", epoch = self.keyboard_epoch,
+            queued = self.pending_input.len(), "keyboard boundary recorded");
+        self.held_keys.clear();
+        self.pending_input.push(KeyboardInput::Boundary);
+    }
+
+    fn activate(&mut self) {
+        self.active = true;
+        self.facts.im_focus_changed = true;
+        self.keyboard_boundary();
+        self.pending = SessionState {
+            active: true,
+            ..SessionState::default()
+        };
+    }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+        self.facts.im_focus_changed = true;
+        self.keyboard_boundary();
+        self.pending.active = false;
+    }
+
+    fn done(&mut self) {
+        self.serial = self.serial.wrapping_add(1);
+        self.initialized = true;
+        self.facts.im_done_serial = self.serial;
+        self.apply_pending_to_current();
     }
 
     /// Drain commit text staged by platform-local producers. If non-empty, the
@@ -607,14 +778,19 @@ impl InputMethodState {
         if commit_text.is_none() && preedit.is_none() {
             return;
         }
-        if let Some(text) = commit_text {
-            self.input_method.commit_string(text.to_string());
+        if let Some(ref wayland) = self.wayland {
+            if let Some(text) = commit_text {
+                wayland.input_method.commit_string(text.to_string());
+            }
+            if let Some((text, cursor)) = preedit {
+                wayland.input_method.set_preedit_string(
+                    text.to_string(),
+                    cursor as i32,
+                    cursor as i32,
+                );
+            }
+            wayland.input_method.commit(self.serial);
         }
-        if let Some((text, cursor)) = preedit {
-            self.input_method
-                .set_preedit_string(text.to_string(), cursor as i32, cursor as i32);
-        }
-        self.input_method.commit(self.serial);
     }
 
     /// Load an XKB keymap from a compositor-provided file descriptor.
@@ -690,20 +866,30 @@ pub struct InputMethodFrontend {
     //   4. conn      — closes the display socket last
     panel: Option<FluxPanel>,
     state: InputMethodState,
-    queue: EventQueue<InputMethodState>,
-    conn: Connection,
+    queue: Option<EventQueue<InputMethodState>>,
+    conn: Option<Connection>,
 }
 
 impl InputMethodFrontend {
+    /// Create a headless, transport-free frontend instance for testing and mock runs.
+    pub fn new_headless() -> Self {
+        Self {
+            panel: None,
+            state: InputMethodState::new_headless(),
+            queue: None,
+            conn: None,
+        }
+    }
+
     /// Connect to the Wayland display, bind globals, create the
     /// input-method object, and create the lazily allocated CPU Panel.
     pub fn connect() -> Result<Self, ConnectError> {
         let mut frontend = Self::connect_internal()?;
 
         let surface_ptr = frontend.state.popup_surface_raw_ptr();
-        let viewport = frontend.state.panel_viewport.clone();
-        let shm = frontend.state.shm.clone();
-        let qh = frontend.queue.handle();
+        let viewport = frontend.state.panel_viewport().cloned();
+        let shm = frontend.state.shm().cloned();
+        let qh = frontend.queue.as_ref().expect("queue present").handle();
         // Canvas and SHM buffers are allocated lazily from the first real
         // content extent. This avoids clearing and downsampling a speculative
         // 512×128 surface for every small indicator or candidate frame.
@@ -897,20 +1083,24 @@ impl InputMethodFrontend {
         // Create the popup surface (for the candidate panel).
         let popup_surface = input_method.get_input_popup_surface(&popup_surface_obj, &qh, ());
 
-        let state = InputMethodState {
+        let wayland = WaylandObjects {
             seat,
             input_method,
             keyboard_grab,
             virtual_keyboard,
             compositor,
             popup_surface_obj,
-            panel_presentation: PresentationRecord::default(),
             popup_surface,
             viewporter,
             panel_viewport,
             fractional_scale_manager,
             panel_fractional_scale,
             shm,
+        };
+
+        let state = InputMethodState {
+            wayland: Some(wayland),
+            panel_presentation: PresentationRecord::default(),
             text_input_rect: None,
             composition: CompositionState::default(),
             serial: 0,
@@ -922,13 +1112,16 @@ impl InputMethodFrontend {
             mods_depressed: 0,
             mods_latched: 0,
             mods_locked: 0,
-            pending_keys: Vec::new(),
-            synthetic_releases: HashSet::new(),
+            pending_input: Vec::new(),
+            keyboard_epoch: 1,
+            last_key_time: 0,
+            forwarded_keys: BTreeSet::new(),
+            held_keys: BTreeSet::new(),
+            #[cfg(test)]
+            keyboard_output: Vec::new(),
             facts: InputFacts::default(),
             stopped: false,
             pending: SessionState::default(),
-            pending_had_activate: false,
-            pending_had_deactivate: false,
             current: SessionState::default(),
             keymap_received_this_epoch: false,
             panel_schedule_state: PanelScheduleState::default(),
@@ -939,8 +1132,8 @@ impl InputMethodFrontend {
         };
 
         Ok(Self {
-            conn,
-            queue,
+            conn: Some(conn),
+            queue: Some(queue),
             state,
             panel: None,
         })
@@ -948,7 +1141,7 @@ impl InputMethodFrontend {
 
     #[cfg(test)]
     fn connect_test() -> Result<Self, ConnectError> {
-        Self::connect_internal()
+        Self::connect_internal().or_else(|_| Ok(Self::new_headless()))
     }
 
     /// Immutable access to the state (serial, active flag, etc.).
@@ -978,8 +1171,10 @@ impl InputMethodFrontend {
 
     /// Create a new keyboard grab object.
     pub fn create_keyboard_grab(&mut self) {
-        let qh = self.queue.handle();
-        self.state.create_keyboard_grab(&qh);
+        if let Some(ref queue) = self.queue {
+            let qh = queue.handle();
+            self.state.create_keyboard_grab(&qh);
+        }
     }
 
     /// Destroy the current keyboard grab object.
@@ -994,36 +1189,44 @@ impl InputMethodFrontend {
 
     /// The Wayland connection's file descriptor for external event loops.
     pub fn fd(&self) -> i32 {
-        self.queue.as_fd().as_raw_fd()
+        self.queue
+            .as_ref()
+            .map(|q| q.as_fd().as_raw_fd())
+            .unwrap_or(-1)
     }
 
     /// Non-blocking dispatch of pending Wayland events.
     pub fn dispatch(&mut self) -> io::Result<()> {
-        // Split borrow: `self.queue` and `self.state` are disjoint fields.
-        self.queue
-            .dispatch_pending(&mut self.state)
-            .map_err(|e| io::Error::other(format!("dispatch: {e}")))?;
+        if let Some(ref mut queue) = self.queue {
+            queue
+                .dispatch_pending(&mut self.state)
+                .map_err(|e| io::Error::other(format!("dispatch: {e}")))?;
+        }
         Ok(())
     }
 
     /// Flush pending Wayland requests to the compositor.
     pub fn flush(&self) -> io::Result<()> {
-        self.conn
-            .flush()
-            .map_err(|e| io::Error::other(format!("flush: {e}")))
+        if let Some(ref conn) = self.conn {
+            conn.flush()
+                .map_err(|e| io::Error::other(format!("flush: {e}")))?;
+        }
+        Ok(())
     }
 
     /// Prepare a read from the Wayland socket, dispatching any already-queued
     /// events first. Mirrors `wl_display_prepare_read` + `dispatch_pending` in
     /// the C event loop.
     pub fn prepare_read_loop(&mut self) -> io::Result<(ReadEventsGuard, bool)> {
+        let Some(ref mut queue) = self.queue else {
+            return Err(io::Error::other("no live wayland queue in headless mode"));
+        };
         let mut dispatched_any = false;
         loop {
-            match self.queue.prepare_read() {
+            match queue.prepare_read() {
                 Some(guard) => return Ok((guard, dispatched_any)),
                 None => {
-                    let count = self
-                        .queue
+                    let count = queue
                         .dispatch_pending(&mut self.state)
                         .map_err(|e| io::Error::other(format!("dispatch: {e}")))?;
                     if count > 0 {
@@ -1037,10 +1240,13 @@ impl InputMethodFrontend {
     /// Read events from the Wayland socket and dispatch any pending events
     /// that arrive. Consumes the read guard returned by `prepare_read_loop`.
     pub fn read_and_dispatch(&mut self, guard: ReadEventsGuard) -> io::Result<()> {
+        let Some(ref mut queue) = self.queue else {
+            return Err(io::Error::other("no live wayland queue in headless mode"));
+        };
         guard
             .read()
             .map_err(|e| io::Error::other(format!("read: {e}")))?;
-        self.queue
+        queue
             .dispatch_pending(&mut self.state)
             .map_err(|e| io::Error::other(format!("dispatch: {e}")))?;
         Ok(())
@@ -1049,12 +1255,17 @@ impl InputMethodFrontend {
     /// Blocking event loop. Runs until the connection drops.
     /// Automatically flushes pending commit text after each dispatch.
     pub fn run(&mut self) -> io::Result<()> {
+        let Some(ref conn) = self.conn else {
+            return Ok(());
+        };
+        let Some(ref mut queue) = self.queue else {
+            return Ok(());
+        };
         loop {
-            self.conn
-                .flush()
+            conn.flush()
                 .map_err(|e| io::Error::other(format!("flush: {e}")))?;
 
-            self.queue
+            queue
                 .dispatch_pending(&mut self.state)
                 .map_err(|e| io::Error::other(format!("dispatch: {e}")))?;
 
@@ -1063,8 +1274,8 @@ impl InputMethodFrontend {
                 self.state.text_transaction_and_flush(Some(&text), None);
             }
 
-            if let Some(read_guard) = self.queue.prepare_read() {
-                let fd = self.fd();
+            if let Some(read_guard) = queue.prepare_read() {
+                let fd = queue.as_fd().as_raw_fd();
                 let mut pollfd = libc::pollfd {
                     fd,
                     events: libc::POLLIN,
@@ -1197,22 +1408,11 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
         match event {
             Event::Activate => {
                 tracing::debug!(target: "typio.wayland.frontend", "Activate");
-                state.active = true;
-                state.facts.im_activate_seen = true;
-                state.pending_had_activate = true;
-                state.discard_pending_keys("activate");
-                state.pending = SessionState {
-                    active: true,
-                    ..SessionState::default()
-                };
+                state.activate();
             }
             Event::Deactivate => {
                 tracing::debug!(target: "typio.wayland.frontend", "Deactivate");
-                state.active = false;
-                state.facts.im_deactivate_seen = true;
-                state.pending_had_deactivate = true;
-                state.discard_pending_keys("deactivate");
-                state.pending.active = false;
+                state.deactivate();
             }
             Event::SurroundingText {
                 text,
@@ -1238,22 +1438,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for InputMethodState {
                 state.pending.content_hint = hint_raw;
                 state.pending.content_purpose = purpose_raw;
             }
-            Event::Done => {
-                state.serial = state.serial.wrapping_add(1);
-                state.initialized = true;
-                state.facts.im_done_had_activate =
-                    state.pending_had_activate || state.facts.im_activate_seen;
-                state.facts.im_done_had_deactivate =
-                    state.pending_had_deactivate || state.facts.im_deactivate_seen;
-                state.pending_had_activate = false;
-                state.pending_had_deactivate = false;
-                state.facts.im_done_serial = state.serial;
-                state.apply_pending_to_current();
-                // Clear per-event facts; the batch facts survive until the
-                // focus controller consumes them later in the reactor step.
-                state.facts.im_activate_seen = false;
-                state.facts.im_deactivate_seen = false;
-            }
+            Event::Done => state.done(),
             Event::Unavailable => {
                 state.stopped = true;
             }
@@ -1351,7 +1536,12 @@ impl Dispatch<wl_surface::WlSurface, ()> for InputMethodState {
             // Fractional-scale requires wl_surface.buffer_scale to remain 1
             // and provides a more precise render density than this integer
             // core event.
-            if state.panel_fractional_scale.is_none() {
+            let has_fractional = state
+                .wayland
+                .as_ref()
+                .and_then(|w| w.panel_fractional_scale.as_ref())
+                .is_some();
+            if !has_fractional {
                 state.update_panel_scale(factor as f32);
                 proxy.set_buffer_scale(factor);
             }
@@ -1388,20 +1578,31 @@ impl Dispatch<ZwpInputPopupSurfaceV2, ()> for InputMethodState {
 impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
     fn event(
         state: &mut Self,
-        _proxy: &ZwpInputMethodKeyboardGrabV2,
+        proxy: &ZwpInputMethodKeyboardGrabV2,
         event: zwp_input_method_keyboard_grab_v2::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
         use zwp_input_method_keyboard_grab_v2::Event;
+        if state
+            .wayland
+            .as_ref()
+            .and_then(|w| w.keyboard_grab.as_ref())
+            != Some(proxy)
+        {
+            return;
+        }
         match event {
             Event::Keymap { format, fd, size } => {
                 tracing::debug!(
                     target: "typio.wayland.keymap",
                     "Keymap event received, format={format:?} size={size}"
                 );
-                state.keymap_received_this_epoch = true;
+                state.release_forwarded_keys();
+                state.pending_input.clear();
+                state.keyboard_boundary();
+                state.keymap_received_this_epoch = false;
                 state.wayland_pending.note_keymap_received(Instant::now());
                 let fmt_raw: u32 = match &format {
                     wayland_client::WEnum::Value(v) => *v as u32,
@@ -1416,14 +1617,24 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                 // `load_keymap_from_fd` consumes the fd, so dup it first.
                 // The wayland backend dups the fd again when serializing the
                 // request, so it is safe to drop `vk_fd` right after the call.
-                match fd.try_clone() {
-                    Ok(vk_fd) => state.virtual_keyboard.keymap(fmt_raw, vk_fd.as_fd(), size),
-                    Err(e) => tracing::warn!(
-                        target: "typio.wayland.keymap",
-                        "dup keymap fd for vk failed: {e}"
-                    ),
+                if let Some(ref wayland) = state.wayland {
+                    match fd.try_clone() {
+                        Ok(vk_fd) => wayland
+                            .virtual_keyboard
+                            .keymap(fmt_raw, vk_fd.as_fd(), size),
+                        Err(e) => {
+                            tracing::warn!(target: "typio.wayland.keymap", "dup keymap fd for vk failed: {e}");
+                            return;
+                        }
+                    }
                 }
+                state.xkb_state = None;
+                state.xkb_keymap = None;
+                state.mods_depressed = 0;
+                state.mods_latched = 0;
+                state.mods_locked = 0;
                 state.load_keymap_from_fd(fd, size);
+                state.keymap_received_this_epoch = state.xkb_state.is_some();
             }
             Event::Key {
                 time,
@@ -1456,42 +1667,14 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                     .as_ref()
                     .map_or(String::new(), |s| s.key_get_utf8(kc));
 
-                // Queue for the event-loop driver. Press events go to the
-                // engine; release events are forwarded to the focused app
-                // and stop the repeat timer. Without queueing releases,
-                // the timer fires forever after a single press.
-                //
-                // Multiple events may arrive in the same Wayland dispatch
-                // batch (e.g. `release(BS)` immediately followed by
-                // `press(other)`); all are queued in arrival order so the
-                // loop sees every release and can disarm the repeat timer.
-                // A single-slot overwrite here was the root cause of the
-                // occasional "stuck backspace" — the release was lost and
-                // the timer kept firing the consumed press forever.
-                //
-                // When the text field is deactivated (state.active == false)
-                // the grab may still be retained as a soft pause. Forward
-                // the key directly to the virtual keyboard so shortcuts and
-                // regular keys still reach the focused application instead
-                // of being silently swallowed by the retained grab.
-                if raw_state == 1 {
-                    // A fresh press proves any older unmatched release marker
-                    // for this key is stale (for example after device removal).
-                    state.clear_synthetic_release(key);
-                }
-
-                if state.active {
-                    state.pending_keys.push(DecodedKeyEvent {
-                        keycode: key,
-                        xkb_keycode,
-                        keysym,
-                        unicode,
-                        state: raw_state,
-                        time,
-                    });
-                } else if raw_state != 0 || !state.clear_synthetic_release(key) {
-                    state.forward_key(time, key, raw_state);
-                }
+                state.queue_key(DecodedKeyEvent {
+                    keycode: key,
+                    xkb_keycode,
+                    keysym,
+                    unicode,
+                    state: raw_state,
+                    time,
+                });
             }
             Event::Modifiers {
                 mods_depressed,
@@ -1500,22 +1683,7 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for InputMethodState {
                 group,
                 serial: _,
             } => {
-                state.mods_depressed = mods_depressed;
-                state.mods_latched = mods_latched;
-                state.mods_locked = mods_locked;
-                if let Some(ref mut xs) = state.xkb_state {
-                    xs.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
-                }
-                // Mirror the grab's modifier state to the virtual keyboard
-                // so the focused app sees Ctrl/Alt/Shift held when a
-                // forwarded key arrives. Without this, Ctrl-C arrives as a
-                // bare 'c'. The grab always delivers Keymap before the
-                // first Modifiers, so vk keymap is already set by this
-                // point (vk.modifiers requires a keymap or the compositor
-                // rejects it with protocol error 0).
-                state
-                    .virtual_keyboard
-                    .modifiers(mods_depressed, mods_latched, mods_locked, group);
+                state.record_modifiers(mods_depressed, mods_latched, mods_locked, group);
             }
             Event::RepeatInfo { rate, delay } => {
                 state.compositor_repeat_info = Some((rate, delay));
@@ -1581,10 +1749,7 @@ mod tests {
 
     #[test]
     fn state_helpers_round_trip() {
-        let Ok(mut frontend) = InputMethodFrontend::connect_test() else {
-            eprintln!("skipping input_method state-helper test: no Wayland display");
-            return;
-        };
+        let mut frontend = InputMethodFrontend::connect_test().expect("connect_test");
 
         let state = frontend.state_mut();
         assert_eq!(state.serial(), 0);
@@ -1630,25 +1795,258 @@ mod tests {
             time: 130,
         };
 
-        // Single-event drain.
-        state.pending_keys.push(press.clone());
-        assert_eq!(state.take_pending_keys(), vec![press.clone()]);
-        assert!(state.take_pending_keys().is_empty());
-
-        // Multi-event drain preserves arrival order. Regression test for
-        // the "stuck backspace" bug: a single-slot Option overwrote the
-        // release when a second event arrived in the same Wayland
-        // dispatch batch, leaving the repeat timer armed forever.
-        state.pending_keys.push(press.clone());
-        state.pending_keys.push(release.clone());
-        assert_eq!(
-            state.take_pending_keys(),
-            vec![press.clone(), release.clone()]
-        );
-        assert!(state.take_pending_keys().is_empty());
+        state.queue_key(press.clone());
+        state.queue_key(release.clone());
+        let keys: Vec<_> = state
+            .take_pending_input()
+            .into_iter()
+            .filter_map(|input| {
+                if let KeyboardInput::Key { key, .. } = input {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(keys, vec![press, release]);
+        assert!(state.take_pending_input().is_empty());
 
         state.composition.set_pending_commit("hello".to_string());
         assert_eq!(state.take_pending_commit(), Some("hello".to_string()));
         assert!(state.take_pending_commit().is_none());
+    }
+
+    #[test]
+    fn headless_frontend_operations() {
+        let mut frontend = InputMethodFrontend::new_headless();
+        assert_eq!(frontend.fd(), -1);
+        assert!(frontend.dispatch().is_ok());
+        assert!(frontend.flush().is_ok());
+        assert!(!frontend.keyboard_grab_present());
+        frontend.create_keyboard_grab();
+        assert!(!frontend.keyboard_grab_present());
+        frontend.destroy_keyboard_grab();
+        assert_eq!(
+            frontend.state().popup_surface_raw_ptr(),
+            core::ptr::null_mut()
+        );
+        assert!(frontend.state().shm().is_none());
+        assert!(frontend.state().panel_viewport().is_none());
+
+        let state = frontend.state_mut();
+        state.forward_key(0, 30, 1);
+        state.forward_modifiers(KeyboardModifiers::default());
+        state.commit_protocol_state();
+        state.text_transaction_and_flush(Some("test"), None);
+    }
+    fn keyboard_state() -> InputMethodState {
+        let mut state = InputMethodState::new_headless();
+        state.keymap_received_this_epoch = true;
+        state
+    }
+
+    fn letter(state: u32) -> DecodedKeyEvent {
+        DecodedKeyEvent {
+            keycode: 17,
+            xkb_keycode: 25,
+            keysym: 0x77,
+            unicode: "w".into(),
+            state,
+            time: 100 + state,
+        }
+    }
+
+    // Exercise the same transport preparation used by the daemon. The engine
+    // declines keys in this fixture, so every routable press is forwarded.
+    fn drain_keyboard(state: &mut InputMethodState) {
+        for input in state.take_pending_input() {
+            if let Some(KeyboardInput::Key { key, .. }) = state.prepare_input(input) {
+                state.forward_key(key.time, key.keycode, key.state);
+            }
+        }
+    }
+
+    #[test]
+    fn text_only_done_cannot_erase_or_replay_a_focus_boundary() {
+        let mut state = keyboard_state();
+        state.deactivate();
+        state.done();
+        state.activate();
+        state.done();
+        state.done();
+        let facts = state.take_facts();
+        assert!(facts.im_focus_changed);
+        assert!(facts.im_is_active);
+        assert_eq!(facts.im_done_serial, 3);
+        state.done();
+        assert!(!state.take_facts().im_focus_changed);
+        state.deactivate();
+        assert!(state.take_facts().im_focus_changed);
+        state.done();
+        assert!(!state.take_facts().im_focus_changed);
+    }
+
+    #[test]
+    fn last_focus_event_wins_in_both_orders() {
+        let mut state = keyboard_state();
+        state.activate();
+        state.deactivate();
+        state.done();
+        let facts = state.take_facts();
+        assert!(facts.im_focus_changed);
+        assert!(!facts.im_is_active);
+        state.deactivate();
+        state.activate();
+        state.done();
+        let facts = state.take_facts();
+        assert!(facts.im_focus_changed);
+        assert!(facts.im_is_active);
+    }
+
+    #[test]
+    fn modifier_samples_and_keys_keep_arrival_order() {
+        let mut state = keyboard_state();
+        state.activate();
+        state.done();
+        drain_keyboard(&mut state);
+        state.record_modifiers(4, 0, 0, 0); // default xkb Control wire bit
+        state.queue_key(letter(1));
+        state.record_modifiers(0, 0, 0, 0);
+        state.queue_key(letter(0));
+        assert!(
+            state.keyboard_output.is_empty(),
+            "callbacks must not emit modifiers ahead of keys"
+        );
+        let input = state.take_pending_input();
+        assert!(
+            matches!(&input[1], KeyboardInput::Key { modifiers, .. } if *modifiers == Modifiers::CTRL)
+        );
+        for event in input {
+            if let Some(KeyboardInput::Key { key, .. }) = state.prepare_input(event) {
+                state.forward_key(key.time, key.keycode, key.state);
+            }
+        }
+        assert!(
+            matches!(&state.keyboard_output[0], KeyboardInput::Modifiers(m) if m.depressed == 4)
+        );
+        assert!(
+            matches!(&state.keyboard_output[1], KeyboardInput::Key { key, .. } if key.state == 1)
+        );
+        assert!(
+            matches!(&state.keyboard_output[2], KeyboardInput::Modifiers(m) if m.depressed == 0)
+        );
+        assert!(
+            matches!(&state.keyboard_output[3], KeyboardInput::Key { key, .. } if key.state == 0)
+        );
+    }
+
+    #[test]
+    fn inactive_press_and_active_release_share_one_ledger() {
+        let mut state = keyboard_state();
+        state.queue_key(letter(1));
+        drain_keyboard(&mut state);
+        assert!(state.key_is_forwarded(17));
+        state.activate();
+        state.done();
+        state.queue_key(letter(0));
+        drain_keyboard(&mut state);
+        assert!(!state.key_is_forwarded(17));
+        let keys: Vec<_> = state
+            .keyboard_output
+            .iter()
+            .filter_map(|event| {
+                if let KeyboardInput::Key { key, .. } = event {
+                    Some(key.state)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [1, 0],
+            "synthetic and physical releases must not duplicate"
+        );
+        state.deactivate();
+        state.queue_key(letter(1));
+        drain_keyboard(&mut state);
+        assert!(
+            state.key_is_forwarded(17),
+            "fresh press must not inherit a release marker"
+        );
+        state.queue_key(letter(0));
+        drain_keyboard(&mut state);
+        assert!(!state.key_is_forwarded(17));
+    }
+
+    #[test]
+    fn grab_teardown_releases_forwarded_keys_and_fences_queued_presses() {
+        let mut state = keyboard_state();
+        state.queue_key(letter(1));
+        drain_keyboard(&mut state);
+        state.destroy_keyboard_grab();
+        state.queue_key(letter(1));
+        drain_keyboard(&mut state);
+        assert!(state.forwarded_keys.is_empty());
+        assert!(!state.keymap_received_this_epoch);
+    }
+
+    #[test]
+    fn shortcut_handoff_is_paired_for_every_dispatch_partition() {
+        // Every possible placement of reactor drains in one physical Ctrl+W
+        // gesture. Covers a queued release before a boundary, two done events
+        // before observation, inactive release, and one-event dispatches.
+        for release_before_boundary in [false, true] {
+            for partition in 0..(1u32 << 10) {
+                let mut state = keyboard_state();
+                state.activate();
+                state.done();
+                drain_keyboard(&mut state);
+                state.take_facts();
+                for step in 0..11 {
+                    match step {
+                        0 => state.record_modifiers(4, 0, 0, 0),
+                        1 => state.queue_key(letter(1)),
+                        2 if release_before_boundary => state.queue_key(letter(0)),
+                        3 => state.deactivate(),
+                        4 => state.done(),
+                        5 => state.activate(),
+                        6 | 7 | 10 => state.done(),
+                        8 => state.record_modifiers(0, 0, 0, 0),
+                        9 if !release_before_boundary => state.queue_key(letter(0)),
+                        _ => {}
+                    }
+                    if partition & (1 << step) != 0 {
+                        drain_keyboard(&mut state);
+                        state.take_facts();
+                    }
+                }
+                drain_keyboard(&mut state);
+                assert!(state.forwarded_keys.is_empty(), "partition {partition}");
+                assert!(!state.key_is_held(17));
+                let mut held = false;
+                let mut modifiers = 0;
+                for event in state.keyboard_output {
+                    match event {
+                        KeyboardInput::Modifiers(sample) => modifiers = sample.depressed,
+                        KeyboardInput::Key { key, .. } => {
+                            if key.state == 1 {
+                                assert!(!held, "duplicate press in partition {partition}");
+                                assert_eq!(
+                                    modifiers, 4,
+                                    "shortcut lost Ctrl in partition {partition}"
+                                );
+                                held = true;
+                            } else {
+                                assert!(held, "orphan release in partition {partition}");
+                                held = false;
+                            }
+                        }
+                        KeyboardInput::Boundary => unreachable!(),
+                    }
+                }
+                assert!(!held, "stuck w in partition {partition}");
+            }
+        }
     }
 }

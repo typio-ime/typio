@@ -5,9 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] - 2026-09-16
 
 ### Added
+
+- **Headless platform state decoupling and CI test resilience.** `InputMethodFrontend` and
+  `InputMethodState` now encapsulate Wayland transport proxies behind an optional container and
+  provide `new_headless()` constructors. State machine helpers and FIFO key queues run
+  deterministically in headless containers without skipping tests (ADR-0047).
 
 - **Idle engine worker reaping.** Engines the user once activated but no
   longer uses no longer stay resident for the daemon's lifetime. A reaper
@@ -25,6 +30,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gate.
 
 ### Changed
+
+- **Optics v0.0.42 API alignment.** Rust dependency tags and the CI native
+  revision now select the same release. Canvas and text ownership use the
+  release APIs; panel backgrounds use geometry and brush drawing.
+
+
+- **Documentation governance upgraded to `docs-governance` v5.1.0.** The
+  superseded v2 rules under `docs/dev/documentation/` are replaced by the
+  mirrored standard at `docs/governance/documentation/` (protocol 5.1.0), with
+  the `architecture` and `validation` profiles active and the RFC workflow
+  deliberately not adopted. The repository now has one documentation tree:
+  per-crate trees under `crates/typio-runtime/docs/` and
+  `crates/typio-control/docs/` are retired, their living pages moved into the
+  Diátaxis quadrants and their historical records preserved in
+  `docs/adr/archive/` (ADR-0051).
+
+- **Architecture blueprints and a decision registry.** Six living subsystem
+  blueprints under `docs/architecture/` now describe how the system works today
+  (panel rendering, input session, daemon lifecycle, engine runtime, control
+  plane, workspace topology), and `docs/adr/index.md` records a decision summary
+  and primary invariant per ADR so a reader can filter records before loading
+  them.
+
+- **`tools/check-docs.sh` enforces the documentation invariants.** A
+  self-contained checker (bash plus the Python standard library, no network)
+  verifies the governance mirror against its manifest and then enforces the
+  contributor firewall, root-file exceptions, conceptual purity of
+  `docs/explanation/`, directory registries, ADR registry completeness, heading
+  and fence style, and relative-link integrity. It runs in CI via the new
+  Documentation Governance workflow.
+
+- **Contributor documentation restructured.** `docs/dev/` gained a charter
+  index, an implementation-coordinate module map, an acceptance document with
+  real cold-start user journeys, and a testing guide covering suite commands,
+  the environment matrix, and CI gates. Implementation coordinates and code
+  blocks were removed from `docs/explanation/`, which now stays conceptual, and
+  the retired-watchdog page became a stall-containment explanation.
+
+- **Panel typeface family is now a real setting.** `display.font_family` was documented as an
+  arbitrary primary family name and exposed as a free-text field in the settings application,
+  but the implementation was an empty function: the setting persisted and had no effect. The
+  text stack exposes a fontconfig *family class*, not a free-form family selector, so the
+  setting is now modelled as exactly that — `default`, `sans`, `serif`, or `mono` — applied
+  through `flux_text_set_default_family`, with a dropdown in the settings app and per-codepoint
+  fallback unchanged. An unrecognised value logs a warning and falls back to `default`
+  (ADR-0050; supersedes the arbitrary-family reading of ADR-0016).
+
+- **Configuration is TOML-only.** Removed the undocumented "INI-like" fallback dialect that
+  `Config::parse` tried when a TOML parse failed. It could mask a malformed file as a
+  successfully-loaded partial configuration instead of reporting a parse error, and nothing in
+  the project documented or wrote it. A non-TOML document is now always `ConfigError::Parse`
+  (ADR-0049).
+
+- **One documentation tree.** The per-crate `docs/` trees under `crates/typio-runtime/` and
+  `crates/typio-control/` are retired. Live content moved to the repository `docs/` tree
+  (engine protocol reference, engine contract, configuration system, voice input, engine-author
+  guide, CLI reference); historical decisions moved to `docs/adr/archive/framework-core/` and
+  `docs/adr/archive/cli-control/` with numbering preserved; the duplicated `dev/`, `how-to/`,
+  and `reference/` pages were superseded by `docs/dev/`, `docs/how-to/`, and `docs/reference/`
+  (ADR-0051).
+
+- **Historical porting notes removed from shipping source.** Module docs and comments across the
+  daemon, runtime, and platform crates described each module as a "port" of a C file that no
+  longer exists in the repository, and compared current behaviour against a "C version" that
+  cannot be read. These now describe what the module *is*. The same pass removed stale crate
+  names (`typio-core`, `typio-host`, `typioctl`, `typio-vet`, `typio-wayland`) from source
+  comments, crate descriptions, and build scripts.
+
+- **`TIP v1` corrected to `TIP v3` in user-facing documentation.** The wire protocol has been
+  version 3 since ADR-0031 (`language.*` namespace, `daemon.status.activeLanguage`,
+  `language.changed`), and the reference page already documented v3 behaviour under a v1 title.
+  `docs/index.md`, `docs/reference/{cli,ipc-protocol,glossary,stability}.md`,
+  `docs/how-to/{troubleshooting,communicate-over-uds}.md` now say v3.
+
+- **Modern Optics v0.0.37 and Lens alignment.** `typio-settings` now aligns with modern Optics
+  v0.0.30+ component architecture (ADR-0081/ADR-0082 in Optics), replacing deprecated title and
+  collapsing primitives with explicit heading levels and state-managed section disclosures.
+  Workspace dependencies and CI pinning updated to Optics `v0.0.37` (ADR-0048).
+
+- **Tightened 50 ms keystroke budget.** Replaced the broad 100 ms timeout for `process-key`
+  with a dedicated 50 ms `ENGINE_KEY_TIMEOUT`, halving worst-case event-loop freeze under engine
+  stalls before asynchronous poison recovery kicks in (ADR-0048).
+
+- **Crate nomenclature alignment.** Renamed workspace crates to accurately
+  reflect their system responsibilities: `typio-core` is renamed to
+  `typio-runtime` (headless state machine and engine scheduler), `typio-host`
+  is renamed to `typio-daemon` (producing the `typio` daemon binary), `typioctl`
+  is renamed to `typio-control` (producing the `typioctl` control CLI binary),
+  and `typio-vet` is renamed to `typio-engine-check` (producing the
+  `typio-engine-check` binary for engine conformance and validation).
 
 - **Poisoned engine workers respawn asynchronously.** A crashed engine is now
   respawned and re-initialised on a detached thread instead of inside the next
@@ -70,7 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.cargo/optics-local.toml` for local `[patch]` workflows in a linked
   development worktree (`../typio-dev` on `dev`), `.githooks/pre-commit` to
   prevent accidental commits of local lockfiles, and
-  `docs/dev/cross-repository-development.md`.
+  `docs/dev/optics-dev-worktree.md`.
 
 ### Removed
 
@@ -82,7 +177,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LifecycleEvent`/`LifecycleCallback` channel (facts are the real channel),
   and the dead `sync_physical_modifiers` / chord helper predicates.
 
+- **Legacy configuration dialect and other dead shims.** Removed the INI-like
+  parser (`config/parse.rs`), the unimplemented `TextRaster::set_preferred_family`
+  no-op, the unused `LISTEN_BACKLOG` constant, and the never-consumed
+  `foreign_toplevel_v1` protocol bindings together with the vendored
+  `protocols/ext-foreign-toplevel-list-v1.xml` (ADR-0049/ADR-0050).
+
+- **Blanket lint escape hatches.** The crate-wide `#![allow(unsafe_op_in_unsafe_fn)]`
+  in `typio-daemon` and `typio-host-platform` is gone; the five remaining
+  `unsafe fn` bodies in the panel now carry explicit `unsafe {}` blocks with
+  `# Safety` contracts. The blanket `#![allow(dead_code)]` on generated build
+  info and on the protocol bindings is gone; the one remaining allow is scoped
+  to `WaylandObjects` with a stated reason (bound proxies kept alive for
+  ownership).
+
 ### Fixed
+
+- **Shortcut handoffs preserve keyboard event order and press ownership.**
+  Multiple text-state `done` events no longer erase a focus boundary. Keys,
+  modifier samples, and boundaries share one ordered stream, including while
+  inactive. One virtual-keyboard ledger pairs releases and fences obsolete
+  presses. Removed duplicate synthetic-release markers and unused per-key
+  generation arrays. Forwarded keys use application-native repeat; host repeat
+  is limited to consumed, XKB-repeatable, physically held keys and stops on
+  focus or blocking-modifier changes. Regression coverage exercises 2,048
+  dispatch partitions of Ctrl+W handoffs (ADR-0052).
+
+
+- **Undocumented panel indicator settings.** `display.indicator_enabled` and
+  `display.indicator_duration_ms` were read by the daemon but absent from the
+  configuration reference, so the only documented way to control the transient
+  mode indicator was to read the source. Both keys are now documented, along
+  with the real accepted range and fallback behaviour of
+  `display.anchor_probe_timeout_ms`, which the reference had stated incorrectly.
+
+- **Documentation corrected against the code.** The retired-watchdog page, the
+  modifier-key path, the Panel source map, and the engine-contract key results
+  now match the implementation; where behaviour diverges from an accepted ADR
+  (modifier `PASS_THROUGH` handling, `Restart=` in the systemd unit), the
+  divergence is stated in the page and in the matching blueprint rather than
+  being papered over.
 
 - **Level-triggered input context focus reconciliation.** Fixed an intermittent
   issue where typing would produce engine composition but the candidate popup
@@ -104,25 +238,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under valgrind (the only residual definite leak is upstream libfontconfig's
   process-lifetime pattern cache, already suppressed in `optics`).
 
-- **Repeated shortcut letters after focus switches.** Closing a Chrome tab
-  with Ctrl+W (or any equivalent shortcut-driven focus switch) no longer
-  types `wwwwww…` into the newly focused field. Keys queued but not yet
-  routed when an activate/deactivate boundary arrives are now discarded —
-  an unrouted key belongs to the activation epoch it arrived in — every
-  focus transition (including focus-in) stops the repeat timer and clears
-  the armed chain, the repeat driver refuses to fire while the input method
-  is inactive, and each armed chain is re-validated on every expiration
-  against the key's tracking state and the current blocking-modifier mask.
-
 - **Super now suppresses auto-repeat.** The raw xkb wire mask places Super
   (Mod4) at a bit position the host layout read as NumLock, so holding Super
   never suppressed auto-repeat and Super chords were misread. The named-xkb
   mapping above fixes the bit positions for any keymap.
-
-- **Stale synthetic-release markers across grab epochs.** Destroying a
-  keyboard grab now also clears the synthetic-release set, so a marker left
-  by a fenced key can no longer swallow a legitimate release in the next
-  grab epoch.
 
 ## [0.6.0] - 2026-08-03
 

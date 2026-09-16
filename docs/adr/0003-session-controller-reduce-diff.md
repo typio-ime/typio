@@ -35,7 +35,7 @@ An earlier design used a stored phase FSM (`INACTIVE → ACTIVATING → ACTIVE �
 
 There is **no stored lifecycle phase.** The only persisted things are *raw input facts* and *live resource handles*. Every event and every loop tick runs one step:
 
-```
+```text
 inputs  : recorded facts        (IM activate/deactivate/done(serial), focus,
                                   surrounding text, content-type, engine-present,
                                   suspend gap, connection up/down)

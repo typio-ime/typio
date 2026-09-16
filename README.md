@@ -1,37 +1,40 @@
 # typio
 
-**Typio for Linux** — a Wayland-native input method host for the
-[Typio](https://github.com/) input method framework. Installs the `typio`
-daemon, the `typioctl` command-line client, and the `typio-settings` graphical
-settings application.
+**Typio for Linux** — a Wayland-native input method host for the Typio input
+method framework. Installs the `typio` daemon, the `typioctl` command-line
+client, and the `typio-settings` graphical settings application.
 
 > Currently Wayland-only (`text-input-v2` / `input-method-v2`). X11 is not
 > supported and not planned — this host targets the modern Wayland desktop.
 
-It embeds the workspace `typio-core` crate and provides the platform adapter layer:
-the Wayland text-input/input-method v2 client, virtual-keyboard bridge,
-the candidate Panel (CPU-rendered over `wl_shm`; see `docs/adr/0040-cpu-canvas-render-shm-buffers.md`), the UDS control socket,
-the StatusNotifierItem tray, and PipeWire voice capture. It translates
-Wayland events into owned typio-core values and applies core output events
-back to the compositor. (The old D-Bus status interface was removed in
-ADR-0008; the tray speaks SNI over D-Bus via zbus when the `systray`
-Cargo feature is enabled.)
+## Key capabilities
 
-Engine discovery is host-owned: at startup `typio` scans
-`<datadir>/typio/engines` for `typio-engine-*.toml` manifests and registers
-direct worker processes with typio-core. Core itself contains no engine search
-paths.
+- **Wayland-native input method.** Speaks `zwp_input_method_v2` directly and
+  drives a virtual keyboard, so it works on a stock Wayland desktop without a
+  portal or an IBus compatibility layer.
+- **Isolated engine processes.** Every engine is a worker process behind a typed
+  protocol on a private descriptor: no `dlopen`, no shared library, no C ABI,
+  and an engine crash cannot take the daemon with it (ADR-0046).
+- **A CPU-rendered candidate Panel.** Candidates, mode indicators, and voice
+  status share one input-popup surface rendered over shared memory, with no GPU
+  device or per-frame readback in the Panel path (ADR-0040).
+- **One control surface.** The `typioctl` client, the settings application, and
+  any third-party integration all drive the daemon through the same
+  length-prefixed JSON-RPC socket (TIP v3), so the CLI and the GUI cannot
+  disagree about state (ADR-0008, ADR-0045).
+- **An idle daemon that stays idle.** The event loop blocks on `poll(2)` with no
+  periodic tick, so an unused input method costs no wakeups (ADR-0024).
 
 ## Building
 
 Requires Wayland, xkbcommon, fontconfig/harfbuzz/freetype, PipeWire for voice
-capture, and the optics graphics stack. `typio-core`,
-`typio-engine-protocol`, `typio-engine-manifest`, `typio-vet`, `typioctl`,
-and `typio-settings` are workspace crates in this repository.
+capture, and the optics graphics stack. `typio-runtime`,
+`typio-engine-protocol`, `typio-engine-manifest`, `typio-engine-check`,
+`typio-control`, `typio-client`, and `typio-settings` are workspace crates in
+this repository.
 
-The host build is Cargo. `flux` is still a native C library, so build the
-sibling flux checkout first until flux has its own Cargo-native library
-build.
+The daemon build is Cargo. `flux` is still a native C library, so build the
+sibling flux checkout first until flux has its own Cargo-native library build.
 
 ```bash
 # Build the native dependencies first (from the Typio repo root).
@@ -45,10 +48,10 @@ export LENS_BUILD_DIR="$PWD/../optics/build-release"
 export LENS_SOURCE_DIR="$PWD/../optics"
 export IRIS_BUILD_DIR="$PWD/../optics/build-release"
 export IRIS_SOURCE_DIR="$PWD/../optics"
-cargo build --release -p typio-host
-cargo build --release -p typioctl
+cargo build --release -p typio-daemon --bin typio
+cargo build --release -p typio-control --bin typioctl
 cargo build --release -p typio-settings
-cargo test -p typio-host
+cargo test -p typio-daemon
 ```
 
 The binaries are produced at `target/release/typio`,
@@ -56,13 +59,14 @@ The binaries are produced at `target/release/typio`,
 along with the systemd service, desktop metadata, icons, and example configs
 with `cargo xtask install`.
 
-See [`docs/dev/setup.md`](docs/dev/setup.md) for the full setup steps and
-additional options.
+See [How to Package for Distribution](docs/how-to/package-for-distribution.md)
+for installable layouts and a packaging checklist, and
+[Developer Setup](docs/dev/setup.md) for the contributor loop.
 
-Cargo features: `--features systray` enables the StatusNotifierItem tray
-(via zbus). Voice capture ships with the default `wayland` feature and runs
-PipeWire's `pw-record` as a subprocess; voice engines run as worker processes
-at runtime.
+Cargo features: `--features systray` enables the StatusNotifierItem tray (via
+zbus). Voice capture ships with the default `wayland` feature and runs
+PipeWire's `pw-record` as a subprocess; voice engines run as worker processes at
+runtime.
 
 ## Running
 
@@ -72,7 +76,12 @@ typio --verbose                # run the daemon with debug logging
 
 `typio` is the daemon. Inspecting and controlling a running instance (engines,
 config, status) is the job of the workspace `typioctl` client, which talks to
-the daemon over its UDS socket.
+the daemon over its UDS socket:
+
+```bash
+typioctl daemon status
+typioctl engine list
+```
 
 Launch the graphical settings application after starting the daemon:
 
@@ -88,10 +97,11 @@ journalctl --user -u typio -f
 ```
 
 Engines are discovered from the system engine directory
-`<prefix>/<datadir>/typio/engines`. The protocol-native
-[compose](../typio-engines/typio-engine-compose) engine builds with
-`cargo build --release`; install its manifest into that directory. For
-development and testing, pass `--engine-dir DIR` or set `TYPIO_ENGINE_PATH`.
+`<prefix>/<datadir>/typio/engines`. Typio ships no engine: install an engine
+package, or build one following
+[How to Write an Engine](docs/how-to/write-an-engine.md) and install its
+manifest into that directory. For development and testing, pass
+`--engine-dir DIR` or set `TYPIO_ENGINE_PATH`.
 
 Every engine is an isolated worker process. The daemon gives it a private fd 3
 channel and speaks the typed Typio Engine Protocol; no engine is loaded as a
@@ -103,4 +113,17 @@ Older C/C++ sibling-engine revisions that link the retired Typio ABI are not
 compatible with this runtime. They must be migrated to self-contained protocol
 workers; the daemon intentionally provides no compatibility shim.
 
-Control it from a separate terminal with the [typioctl](crates/typioctl) client.
+## Documentation
+
+- [Your First Typio Session](docs/tutorials/getting-started.md) — install,
+  start, and type with an engine.
+- [How-to Guides](docs/how-to/index.md) — packaging, configuration,
+  troubleshooting, engine authoring.
+- [Reference](docs/reference/index.md) — commands, configuration keys, the TIP
+  protocol, the engine protocol.
+- [Explanation](docs/explanation/index.md) — why the host is shaped this way.
+- [Architecture Blueprints](docs/architecture/index.md) and the
+  [ADR index](docs/adr/index.md) — the current design and the decisions behind it.
+- [Contributing](CONTRIBUTING.md) and the
+  [developer documentation](docs/dev/index.md) — building, testing, and
+  releasing Typio.

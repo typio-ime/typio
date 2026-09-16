@@ -5,6 +5,16 @@
 - **Deciders**: Project maintainers
 - **Relates to**: [ADR-0011](0011-colour-independent-coverage-glyphs.md), [ADR-0012](0012-glyph-atlas-shared-texture.md)
 
+> **Scope correction (2026-09-11, see [ADR-0050](0050-panel-typeface-family-class.md)).**
+> The per-glyph fallback decision below is retained. Its description of the
+> *primary* font, however, no longer matches the implementation: the primary
+> face was never selectable by name. `display.font_family` is a family *class*
+> (`default` / `sans` / `serif` / `mono`) that selects a fontconfig preference
+> list, and per-codepoint fallback selects the actual face. Read the mentions of
+> `"Sans"` as the class's preference list, not as a pinned family.
+> The `text_shaper.c` module named below was retired by ADR-0040/ADR-0046; the
+> live shaper is `crates/typio-host-platform/src/text_raster.rs`.
+
 ## Context
 
 The panel's text shaper (`text_shaper.c`) uses HarfBuzz for shaping and FreeType

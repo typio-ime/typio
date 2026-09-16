@@ -49,4 +49,4 @@ Make idle genuinely idle, and gate the watchdog by demand.
 - [ADR-0021](0021-systemd-user-service-daemon-lifecycle.md) — the restart path the watchdog's `SIGKILL` relies on.
 - [ADR-0023](0023-panel-scheduler-state-machine.md) — the panel scheduler state driving the retry-cadence deadline.
 - [ADR-0017](0017-positioned-ui-arbitration.md) — the positioned-UI anchor probe whose deadline is now folded into the poll timeout.
-- Explanation: [Watchdog](../explanation/watchdog.md) · [Performance & Idle-Power Strategy](../explanation/performance-strategy.md).
+- Explanation: [Stall Containment](../explanation/stall-containment.md) · [Performance & Idle-Power Strategy](../explanation/performance-strategy.md).

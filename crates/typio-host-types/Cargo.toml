@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Platform-neutral host state and policy types for typio-host"
+description = "Platform-neutral host state and policy types for the Typio daemon"
 
 [dependencies]
 bitflags.workspace = true

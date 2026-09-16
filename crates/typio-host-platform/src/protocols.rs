@@ -1,11 +1,9 @@
 //! Wayland protocol bindings, generated at compile time from the local XMLs
-//! in `protocols/` at the typio repo root.
+//! in `protocols/` at the repository root.
 //!
-//! We do not depend on the `wayland-protocols` crate. typio ships the
-//! XMLs it needs and generates Rust bindings from them — the same pattern
-//! the C code uses with the C `wayland-scanner` tool, against the same XMLs.
-//! This keeps a single source of truth for protocol definitions across the
-//! bilingual host.
+//! We do not depend on the `wayland-protocols` crate. Typio ships the XMLs it
+//! needs and generates Rust bindings from them, keeping a single source of
+//! truth for protocol definitions.
 //!
 //! ## Layout
 //!
@@ -23,13 +21,12 @@
 //! |                       |                                            |   method_v2    |
 //! | `input_method_v2`     | input-method-unstable-v2.xml               | yes (required) |
 //! | `virtual_keyboard_v1` | virtual-keyboard-unstable-v1.xml           | yes (required) |
-//! | `foreign_toplevel_v1` | ext-foreign-toplevel-list-v1.xml           | future         |
-//! | `fractional_scale_v1` | fractional-scale-v1.xml                    | future         |
+//! | `fractional_scale_v1` | fractional-scale-v1.xml                    | yes (panel)    |
 //! | `viewporter`          | viewporter.xml                             | yes (panel)    |
 //!
 //! XML paths are relative to this crate's manifest dir
-//! (`typio/crates/typio-host`), so `../../protocols/<name>.xml`
-//! reaches `typio/protocols/`.
+//! (`crates/typio-host-platform`), so `../../protocols/<name>.xml`
+//! reaches `protocols/` at the repository root.
 
 // The imports inside each protocol mod are emitted unconditionally by
 // mirroring the wayland_protocol! macro in the wayland-protocols crate;
@@ -38,7 +35,6 @@
 // one that doesn't, doesn't). Silence the resulting unused-import noise
 // the same way the wayland-protocols crate does.
 #![allow(unused_imports)]
-#![allow(dead_code)] // future protocols are wired but not yet consumed
 
 // ── text-input-v3 (codegen dependency of input-method-v2) ────────────────
 // input-method-v2.xml references zwp_text_input_v3.{change_cause,content_hint,
@@ -90,19 +86,6 @@ pub mod virtual_keyboard_v1 {
 }
 
 // ── optional protocols ───────────────────────────────────────────────────
-
-pub mod foreign_toplevel_v1 {
-    use wayland_client;
-    use wayland_client::protocol::*;
-
-    pub mod __interfaces {
-        use wayland_client::protocol::__interfaces::*;
-        wayland_scanner::generate_interfaces!("../../protocols/ext-foreign-toplevel-list-v1.xml");
-    }
-    use self::__interfaces::*;
-
-    wayland_scanner::generate_client_code!("../../protocols/ext-foreign-toplevel-list-v1.xml");
-}
 
 pub mod fractional_scale_v1 {
     use wayland_client;

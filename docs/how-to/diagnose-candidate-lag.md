@@ -40,7 +40,7 @@ its `maps` entry can end in `(deleted)`; the new binary and libraries take
 effect only in a later session. Then capture:
 
 ```bash
-cargo build --release -p typio-host --bin typio
+cargo build --release -p typio-daemon --bin typio
 RUST_LOG="typio.engine.key=trace,typio.panel.scheduler=trace,typio.panel.perf=trace,typio.panel.shm=debug" \
   ./target/release/typio 2>&1 | tee typio-panel.log
 ```

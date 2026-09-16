@@ -1,0 +1,20 @@
+[package]
+name = "typio-engine-check"
+version = "0.1.0"
+edition.workspace = true
+authors = ["Typio Contributors"]
+license = "MIT"
+description = "Black-box conformance testing and validation tool for Typio engine processes"
+
+[lib]
+name = "typio_engine_check"
+
+[[bin]]
+name = "typio-engine-check"
+path = "src/bin/typio-engine-check.rs"
+
+[dependencies]
+libc = "0.2"
+tempfile = "3"
+typio-engine-manifest.workspace = true
+typio-engine-protocol.workspace = true

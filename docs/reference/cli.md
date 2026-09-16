@@ -25,6 +25,71 @@
 the Appearance page edits `platform.toml` directly and remains available while
 the daemon is stopped.
 
+## `typioctl` Subcommands
+
+`typioctl` is the command-line client for a running daemon. It speaks TIP v3
+over the UDS socket and reports an error when the daemon is absent. Every
+command has the shape `<resource> <verb> [target] [args]`; the engine name or
+language tag is always explicit, never implied by the active state (ADR-0004,
+held in `docs/adr/archive/cli-control/`).
+
+`-o, --output {plain|json}`, `-h, --help`, and `-V, --version` are global flags,
+accepted at any level of the command tree. In plain mode a `*` marks the active
+engine or language. `--output json` prints the raw result payload of the
+underlying RPC without modification. `config show` prints the daemon config text
+(TOML) in either mode.
+
+### `engine`
+
+| Command | RPC | Notes |
+|---|---|---|
+| `typioctl engine list` | `engine.list` | `*` marks the active engine. |
+| `typioctl engine show <name>` | `engine.describe` | Properties, commands, and current values. |
+| `typioctl engine use <name>` | `keyboard.use` or `voice.use` | Resolves the kind from `engine.list`, then dispatches to the matching modality verb. |
+| `typioctl engine next [--kind keyboard\|voice]` | `keyboard.next` or `voice.next` | Defaults to the keyboard slot. |
+| `typioctl engine props <name>` | `engine.describe` | Prints the `properties` slice. |
+| `typioctl engine actions <name>` | `engine.describe` | Prints the `commands` slice. |
+| `typioctl engine get <name> <key>` | `config.get` | Reads the key `engines.<name>.<key>`. |
+| `typioctl engine set <name> <key> <value>` | `config.set` | Writes the key `engines.<name>.<key>`; the daemon delivers `on_config_change` to the engine. |
+| `typioctl engine do <name> <command>` | `engine.invoke` | Runs a registered engine command. |
+| `typioctl engine setup [name]` | `engine.invoke` | Invokes the engine's `setup` command (`{ name, command: "setup" }`). Without `name`, lists every engine exposing a `setup` command by walking `engine.list` and `engine.describe`. |
+| `typioctl engine load <path>` | `engine.load` | Loads one engine manifest from an absolute `.toml` path. |
+| `typioctl engine unload <name>` | `engine.unload` | Deactivates the engine first when it is active. |
+| `typioctl engine reload <name> [--path <p>]` | `engine.reload` | With `--path`, loads from that path; otherwise rescans `engine_dirs`. |
+
+### `language`
+
+The language (a BCP 47 tag) is the user-facing switch unit: activating a
+language retargets the keyboard and voice engine slots together. Requires daemon
+`protocolVersion` ≥ 3.
+
+| Command | RPC | Notes |
+|---|---|---|
+| `typioctl language list` | `language.list` | `*` marks the active language. |
+| `typioctl language use <tag>` | `language.use` | Tag is BCP 47, e.g. `zh-Hans`, `ar-MA`. |
+| `typioctl language next` | `language.next` | Prints the new active tag. |
+| `typioctl language prev` | `language.prev` | Same, in the opposite direction. |
+
+### `config`
+
+| Command | RPC | Notes |
+|---|---|---|
+| `typioctl config get <key>` | `config.get` | Returns value, type, and source. |
+| `typioctl config set <key> <value>` | `config.set` | The value is always a string; the daemon coerces it by schema type. |
+| `typioctl config unset <key>` | `config.unset` | Reverts the key to its schema default. |
+| `typioctl config list [--prefix <p>]` | `config.list` | Lists schema entries, optionally filtered by prefix. |
+| `typioctl config show` | `config.show` | Raw daemon config text (TOML). |
+| `typioctl config edit` | `config.show`, then `$EDITOR` | Read-only preview in TIP v3: `config.set` takes typed keys, not whole-file text, so an editor round trip reports that no write was applied. |
+| `typioctl config reload` | `config.reload` | Re-reads the config from disk. |
+
+### `daemon`
+
+| Command | RPC |
+|---|---|
+| `typioctl daemon status` | `daemon.status` |
+| `typioctl daemon stop` | `daemon.stop` |
+| `typioctl daemon version` | `daemon.version` |
+
 ## Log Levels
 
 The verbosity flag sets the **global floor** for the daemon's `tracing`

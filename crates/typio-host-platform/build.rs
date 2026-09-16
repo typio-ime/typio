@@ -1,5 +1,8 @@
 //! Build script for typio-host-platform.
 //!
+//! Emits rpath link arguments for the flux family so panel and text-rendering
+//! test harnesses resolve the same shared libraries bindgen saw.
+//!
 //! Owns platform-native prerequisites and rpath propagation for the Wayland /
 //! Flux integration crate itself, including its test binaries.
 

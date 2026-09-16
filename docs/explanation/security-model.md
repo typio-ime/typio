@@ -15,8 +15,8 @@ the daemon.
 
 | Surface | Exposure | Enforcement |
 |---------|----------|-------------|
-| UDS control socket (TIP) | Same-uid processes | Socket mode `0600`; `SO_PEERCRED` uid check on accept (`crates/typio-host/src/uds_server.rs`) |
-| TIP frames | Arbitrary bytes from same-uid clients | 4-byte length prefix, 1 MiB frame cap, JSON parsed via `serde_json` (`crates/typio-host/src/ipc/framing.rs`) |
+| UDS control socket (TIP) | Same-uid processes | Owner-only socket mode plus a peer-credential check on accept |
+| TIP frames | Arbitrary bytes from same-uid clients | Length-prefixed frames with a fixed size cap, decoded by a strict JSON parser |
 | Engine worker processes | Full user privileges | None at runtime — trusted by installation (see below) |
 | Wayland protocols | Compositor | Compositor is fully trusted; it grants the input-method role |
 | D-Bus session bus, StatusNotifierItem | Same-session peers | Status output only; no privileged verbs |
@@ -32,26 +32,26 @@ bytes, which is why it is the project's fuzzing target.
 
 An engine is an arbitrary executable named by a manifest. The daemon
 spawns it with the user's full privileges and streams every keystroke of
-the active session to it over the fd 3 Typio Engine Protocol channel.
+the active session to it over the private engine protocol channel.
 There is no runtime confinement: **installing an engine manifest is
 equivalent to installing a keylogger**, and the
 [engine discovery search path](../reference/engine-discovery.md)
 is the entire installation-time control. The daemon never auto-scans
-user-writable locations; engines come from the compile-time system
-directory, an explicit `--engine-dir`, or an explicit
-`$TYPIO_ENGINE_PATH`. A same-uid client may also request an explicit absolute
-manifest path through `engine.load`; this is within the control socket's
+user-writable locations; engines come from the compile-time system directory, an
+explicit command-line directory, or an explicit environment-provided directory
+list. A same-uid client may also request an explicit absolute manifest path
+through the `engine.load` control method; this is within the control socket's
 same-user trust boundary.
 
 This is the current assumption, not the end state. The process model was
 chosen partly because it leaves a sandboxing path open
 ([ADR-0028](../adr/0028-direct-ipc-engine-workers.md)): each engine is a
-separate child with a single private fd for protocol traffic and
-stdout/stderr reserved for logs, so per-engine confinement (Landlock,
-seccomp, or systemd properties such as `NoNewPrivileges=` and
-`RestrictNamespaces=`) can be added in the spawner without touching the
-architecture. Engines need file access for their dictionaries and models,
-so confinement policy will likely be manifest-declared rather than fixed.
+separate child with a single private descriptor for protocol traffic and
+stdout/stderr reserved for logs, so per-engine confinement (filesystem,
+syscall, or service-manager restrictions) can be added in the spawner without
+touching the architecture. Engines need file access for their dictionaries and
+models, so confinement policy will likely be manifest-declared rather than
+fixed.
 
 ## What the daemon does not defend against
 
@@ -64,5 +64,5 @@ so confinement policy will likely be manifest-declared rather than fixed.
 
 ## Reporting
 
-Report suspected vulnerabilities as described in the repository's
-[security policy](../../SECURITY.md).
+Report suspected vulnerabilities as described in
+[Contributing](../../CONTRIBUTING.md#security).

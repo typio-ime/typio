@@ -105,7 +105,7 @@ filler.
 
 ### Greenfield module layout
 
-```
+```text
 src/ui/panel/
   panel.{c,h}        Panel — orchestrator        (merges backend.c + popup/panel.c)
   content.h          PanelContent + Zone model   (moves from platform/panel.h)   [pure]

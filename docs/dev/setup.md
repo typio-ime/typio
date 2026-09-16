@@ -7,33 +7,38 @@ This document is for contributors who modify Typio source code.
 All commands in this document run from the Typio repository root
 unless a block says otherwise.
 
+[README.md](../../README.md#building) holds the canonical build contract for
+this repository: the native `flux` library is built from the sibling Optics
+checkout, and the Rust bindings locate it through `FLUX_BUILD_DIR` and
+`FLUX_SOURCE_DIR`. A development loop differs from that release recipe in two
+ways only: the Optics tree is built `debugoptimized` into `../optics/build`, and
+the binaries under test are the debug ones.
+
 ```bash
 # one-time per optics checkout:
 meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
-# point flux-sys at the freshly built libflux (every shell that runs
-# cargo build/test/run, or drop the two exports into ~/.bashrc / a local
-# .envrc — the repo ships no committed copy):
 export FLUX_BUILD_DIR="$PWD/../optics/build"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
 
-cargo build -p typio-host
-cargo build -p typioctl
-cargo build -p typio-settings
-cargo test -p typio-host
+cargo build -p typio-daemon --bin typio
+cargo test -p typio-daemon
 ./target/debug/typio --verbose
 ```
 
+The two exports must be present in every shell that runs `cargo build`, `test`,
+or `run`; the repository ships no committed copy of them.
+
 Typio links `libflux` straight out of the `optics/flux` Meson build
 tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
-is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `typio-core`,
-`typio-engine-protocol`, `typio-engine-manifest`, `typio-vet`, `typio-client`,
-`typioctl`, and `typio-settings` are Cargo workspace members in this
-repository, so runtime, engine-contract, client, GUI, CLI, and host changes
+is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `typio-runtime`,
+`typio-engine-protocol`, `typio-engine-manifest`, `typio-engine-check`, `typio-client`,
+`typio-control`, and `typio-settings` are Cargo workspace members in this
+repository, so runtime, engine-contract, client, GUI, CLI, and daemon changes
 build together.
 
-The shipping daemon is the Rust `typio` binary from `crates/typio-host`.
+The shipping daemon is the Rust `typio` binary from `crates/typio-daemon`.
 
 ## Prerequisites
 
@@ -123,7 +128,7 @@ instead of the build tree.
 Build the debug daemon:
 
 ```bash
-cargo build -p typio-host --bin typio
+cargo build -p typio-daemon --bin typio
 ```
 
 Build the release daemon:
@@ -132,13 +137,21 @@ Build the release daemon:
 meson setup ../optics/build-release ../optics -Dtext=true --buildtype=release
 meson compile -C ../optics/build-release
 export FLUX_BUILD_DIR="$PWD/../optics/build-release"
-cargo build --release -p typio-host --bin typio
+cargo build --release -p typio-daemon --bin typio
 ```
 
 Build the CLI:
 
 ```bash
-cargo build -p typioctl
+cargo build -p typio-control --bin typioctl
+```
+
+Run the CLI straight from the source tree when iterating on it (`typioctl`
+answers only while a daemon is running):
+
+```bash
+cargo run -p typio-control --bin typioctl -- daemon status
+cargo run -p typio-control --bin typioctl -- engine list
 ```
 
 Build and run the graphical settings application. Its Iris and Lens bindings
@@ -157,10 +170,10 @@ Build the runtime and engine-contract tooling explicitly when touching engine
 contracts:
 
 ```bash
-cargo check -p typio-core
+cargo check -p typio-runtime
 cargo check -p typio-engine-protocol
 cargo check -p typio-engine-manifest
-cargo check -p typio-vet
+cargo check -p typio-engine-check
 ```
 
 Cargo features:
@@ -173,7 +186,7 @@ Cargo features:
 Disable default features only when isolating a non-Wayland Rust subsystem:
 
 ```bash
-cargo test -p typio-host --no-default-features
+cargo test -p typio-daemon --no-default-features
 ```
 
 ## Run the Daemon
@@ -232,14 +245,14 @@ cargo build --release --manifest-path ../typio-engines/typio-engine-compose/Carg
 ```
 
 Engine executables speak Typio Engine Protocol over their inherited fd 3.
-They do not link `typio-core` or a Typio shared library. Rust engines should
+They do not link `typio-runtime` or a Typio shared library. Rust engines should
 depend on `typio-engine-protocol`; non-Rust engines implement the documented
 framing and messages directly or use an engine-local source adapter.
 
 The current C/C++ sibling revisions still link the retired ABI and therefore
 cannot be loaded by this runtime. Their migration belongs in their respective
 repositories: remove the shared-library dependency, compile a direct worker
-executable, and validate its manifest with `typio-vet`. Typio deliberately
+executable, and validate its manifest with `typio-engine-check`. Typio deliberately
 does not ship an ABI compatibility layer.
 
 Then point the daemon at the directory that contains the manifest:
@@ -253,16 +266,16 @@ Then point the daemon at the directory that contains the manifest:
 Run the Cargo suite:
 
 ```bash
-cargo test -p typio-host
-cargo test -p typioctl
-cargo test -p typio-core -p typio-engine-protocol -p typio-engine-manifest
-cargo test -p typio-vet -p typio-client -p typio-settings
+cargo test -p typio-daemon
+cargo test -p typio-control
+cargo test -p typio-runtime -p typio-engine-protocol -p typio-engine-manifest
+cargo test -p typio-engine-check -p typio-client -p typio-settings
 ```
 
 Run one test:
 
 ```bash
-cargo test -p typio-host service::tests::hello_reports_protocol_and_capabilities
+cargo test -p typio-daemon service::tests::hello_reports_protocol_and_capabilities
 ```
 
 See [Testing](testing.md) for test ownership rules and common Cargo test
@@ -274,8 +287,8 @@ Install the already-built Cargo binary, systemd user service, icons, and
 example configs:
 
 ```bash
-cargo build --release -p typio-host --bin typio
-cargo build --release -p typioctl
+cargo build --release -p typio-daemon --bin typio
+cargo build --release -p typio-control --bin typioctl
 cargo build --release -p typio-settings
 cargo xtask install --prefix /usr/local
 ```

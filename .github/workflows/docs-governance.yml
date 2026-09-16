@@ -1,0 +1,37 @@
+name: Documentation Governance
+
+# Enforces the repository's documentation invariants and the integrity of the
+# mirrored governance standard. Runs on every pull request because the failures
+# it catches (firewall breaks, stray coordinates in explanation, a directory
+# without a charter, a link that no longer resolves) are introduced by ordinary
+# documentation edits.
+#
+# The checker is self-contained: bash plus the Python standard library, reading
+# the vendored mirror's own manifest, so this job needs no network and no
+# sibling checkout.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs-governance:
+    name: Documentation governance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify documentation governance
+        shell: bash
+        run: |
+          chmod +x tools/check-docs.sh
+          tools/check-docs.sh

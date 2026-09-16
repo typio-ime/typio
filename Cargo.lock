@@ -458,7 +458,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "flux"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "flux-sys",
 ]
@@ -466,7 +466,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -475,7 +475,7 @@ dependencies = [
 [[package]]
 name = "flux-text-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -613,7 +613,7 @@ dependencies = [
 [[package]]
 name = "iris"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "flux",
  "iris-sys",
@@ -624,7 +624,7 @@ dependencies = [
 [[package]]
 name = "iris-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -673,7 +673,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "flux",
  "lens-sys",
@@ -682,7 +682,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.29#bae3e69df5764ec40e712aa23513c683d4ef9198"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -1294,32 +1294,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "typio-core"
-version = "0.6.0"
+name = "typio-control"
+version = "0.1.1"
 dependencies = [
- "libc",
- "log",
- "nix",
- "serde",
- "toml",
- "typio-engine-protocol",
+ "clap",
+ "serde_json",
+ "typio-client",
 ]
 
 [[package]]
-name = "typio-engine-manifest"
-version = "0.1.0"
-dependencies = [
- "serde",
- "toml",
-]
-
-[[package]]
-name = "typio-engine-protocol"
-version = "0.1.0"
-
-[[package]]
-name = "typio-host"
-version = "0.6.0"
+name = "typio-daemon"
+version = "0.6.1"
 dependencies = [
  "bitflags",
  "clap",
@@ -1334,10 +1319,10 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
- "typio-core",
  "typio-engine-manifest",
  "typio-host-platform",
  "typio-host-types",
+ "typio-runtime",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
@@ -1345,6 +1330,28 @@ dependencies = [
  "xkbcommon",
  "zbus",
 ]
+
+[[package]]
+name = "typio-engine-check"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "typio-engine-manifest",
+ "typio-engine-protocol",
+]
+
+[[package]]
+name = "typio-engine-manifest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "typio-engine-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "typio-host-platform"
@@ -1374,6 +1381,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "typio-runtime"
+version = "0.6.1"
+dependencies = [
+ "libc",
+ "log",
+ "nix",
+ "serde",
+ "toml",
+ "typio-engine-protocol",
+]
+
+[[package]]
 name = "typio-settings"
 version = "0.1.0"
 dependencies = [
@@ -1385,25 +1404,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml_edit 0.22.27",
- "typio-client",
-]
-
-[[package]]
-name = "typio-vet"
-version = "0.1.0"
-dependencies = [
- "libc",
- "tempfile",
- "typio-engine-manifest",
- "typio-engine-protocol",
-]
-
-[[package]]
-name = "typioctl"
-version = "0.1.1"
-dependencies = [
- "clap",
- "serde_json",
  "typio-client",
 ]
 

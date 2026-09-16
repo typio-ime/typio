@@ -22,8 +22,8 @@ use std::time::Instant;
 
 use flux_sys::{
     flux_canvas, flux_canvas_cpu_begin, flux_canvas_cpu_end, flux_canvas_cpu_pixels,
-    flux_canvas_create_cpu, flux_canvas_destroy, flux_canvas_fill_rrect, flux_color_rgba,
-    flux_error_info, flux_get_last_error, flux_rect,
+    flux_canvas_create_cpu, flux_canvas_release, flux_color_rgba, flux_error_info,
+    flux_get_last_error, flux_rect,
 };
 use wayland_client::protocol::wl_shm;
 use wayland_client::{Proxy, QueueHandle};
@@ -35,6 +35,30 @@ use wayland_sys::{
 use crate::PanelFontConfig;
 use crate::protocols::viewporter::wp_viewport::WpViewport;
 use crate::text_raster::{TextMetrics, TextRaster};
+
+/// Draw a filled rounded rectangle through Flux's geometry/brush API.
+///
+/// # Safety
+/// `canvas` must be live with an open CPU pass.
+unsafe fn draw_rounded_background(
+    canvas: *mut flux_canvas,
+    rect: flux_rect,
+    radius: f32,
+    color: flux_sys::flux_color,
+) {
+    let mut geometry = flux_sys::flux_geometry {
+        kind: flux_sys::flux_geom_kind::FLUX_GEOM_RRECT,
+        ..Default::default()
+    };
+    geometry.__bindgen_anon_1.rrect = flux_sys::flux_geom_rrect_data { rect, radius };
+    let mut brush = flux_sys::flux_brush {
+        kind: flux_sys::flux_brush_kind::FLUX_BRUSH_SOLID,
+        opacity: 1.0,
+        ..Default::default()
+    };
+    brush.__bindgen_anon_1.solid = flux_sys::flux_brush_solid_data { color };
+    unsafe { flux_sys::flux_canvas_draw_geometry(canvas, &geometry, &brush) };
+}
 
 /// Framebuffer width quantum when exact cropping is available through viewporter.
 const SURFACE_WIDTH_QUANTUM: u32 = 64;
@@ -180,10 +204,10 @@ impl FluxPanel {
         self.invalidate_layout_cache();
     }
 
-    /// Apply the current panel font configuration (family + size). When the
-    /// family changes, the [`TextRaster`] flushes its per-codepoint and per-face
-    /// caches; either way the layout cache is dropped so candidate/banner
-    /// geometry is re-measured at the new size.
+    /// Apply the current panel font configuration (family class + size). When
+    /// the family class changes, the [`TextRaster`] context switches its
+    /// fontconfig preference list; either way the layout cache is dropped so
+    /// candidate/banner geometry is re-measured at the new size.
     pub fn set_font_config(&mut self, cfg: PanelFontConfig) {
         if self.font == cfg {
             return;
@@ -191,7 +215,7 @@ impl FluxPanel {
         let family_changed = self.font.family != cfg.family;
         self.font = cfg;
         if family_changed {
-            self.text.set_preferred_family(self.font.family_opt());
+            self.text.set_preferred_family(self.font.family);
         }
         self.invalidate_layout_cache();
     }
@@ -214,7 +238,7 @@ impl FluxPanel {
         }
         unsafe {
             if !self.canvas.is_null() {
-                flux_canvas_destroy(self.canvas);
+                flux_canvas_release(self.canvas);
                 self.canvas = ptr::null_mut();
             }
             let mut canvas: *mut flux_canvas = ptr::null_mut();
@@ -241,6 +265,10 @@ impl FluxPanel {
     }
 
     /// Draw the opaque rounded-rect panel body over the content rect (logical).
+    ///
+    /// # Safety
+    /// `self.canvas` must be a live CPU canvas currently inside a
+    /// `flux_canvas_cpu_begin` / `flux_canvas_cpu_end` pair.
     unsafe fn draw_panel_background(&mut self) {
         let w = self.content_w_logical as f32 - 2.0;
         let h = self.content_h_logical as f32 - 2.0;
@@ -253,8 +281,12 @@ impl FluxPanel {
             w,
             h,
         };
-        let bg = flux_color_rgba(28, 28, 32, 255);
-        flux_canvas_fill_rrect(self.canvas, rect, 8.0, bg);
+        // SAFETY: the caller guarantees `self.canvas` is live and the CPU pass
+        // is open; the colour is a value type.
+        unsafe {
+            let bg = flux_color_rgba(28, 28, 32, 255);
+            draw_rounded_background(self.canvas, rect, 8.0, bg);
+        }
     }
 
     /// Draw candidate strings with the selected one highlighted. Returns `true`
@@ -323,7 +355,7 @@ impl FluxPanel {
                     CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
                 if i == selected {
                     let hi = flux_color_rgba(56, 84, 160, 255);
-                    flux_canvas_fill_rrect(
+                    draw_rounded_background(
                         self.canvas,
                         flux_rect {
                             x: cx,
@@ -827,7 +859,7 @@ impl Drop for FluxPanel {
     fn drop(&mut self) {
         unsafe {
             if !self.canvas.is_null() {
-                flux_canvas_destroy(self.canvas);
+                flux_canvas_release(self.canvas);
                 self.canvas = ptr::null_mut();
             }
         }
@@ -861,30 +893,52 @@ fn candidate_row_height(layout: &[(TextMetrics, TextMetrics)]) -> f32 {
 
 // ── Raw Wayland surface requests via wayland-sys ──────────────────────────
 
+/// Detach the surface's buffer and commit.
+///
+/// # Safety
+/// `wl_surface` must be a live `wl_surface` proxy or null. The caller must own
+/// the surface for the duration of the call.
 unsafe fn wl_surface_detach_and_commit(wl_surface: *mut c_void) {
     if wl_surface.is_null() {
         return;
     }
     let surface = wl_surface as *mut wl_proxy;
-    let mut attach_args = [
-        wl_argument { o: ptr::null() },
-        wl_argument { i: 0 },
-        wl_argument { i: 0 },
-    ];
-    wl_proxy_marshal_array(surface, 1, attach_args.as_mut_ptr());
-    let mut commit_args: [wl_argument; 0] = [];
-    wl_proxy_marshal_array(surface, 6, commit_args.as_mut_ptr());
+    // SAFETY: the caller guarantees `surface` is a live wl_surface proxy; the
+    // opcode/argument arrays match the protocol's attach and commit requests.
+    unsafe {
+        let mut attach_args = [
+            wl_argument { o: ptr::null() },
+            wl_argument { i: 0 },
+            wl_argument { i: 0 },
+        ];
+        wl_proxy_marshal_array(surface, 1, attach_args.as_mut_ptr());
+        let mut commit_args: [wl_argument; 0] = [];
+        wl_proxy_marshal_array(surface, 6, commit_args.as_mut_ptr());
+    }
 }
 
+/// Set the surface's buffer scale.
+///
+/// # Safety
+/// `wl_surface` must be a live `wl_surface` proxy or null.
 unsafe fn wl_surface_set_buffer_scale(wl_surface: *mut c_void, scale: i32) {
     if wl_surface.is_null() {
         return;
     }
     let surface = wl_surface as *mut wl_proxy;
-    let mut args = [wl_argument { i: scale }];
-    wl_proxy_marshal_array(surface, 8, args.as_mut_ptr());
+    // SAFETY: the caller guarantees `surface` is live; opcode 8 is
+    // set_buffer_scale with a single int argument.
+    unsafe {
+        let mut args = [wl_argument { i: scale }];
+        wl_proxy_marshal_array(surface, 8, args.as_mut_ptr());
+    }
 }
 
+/// Attach `buffer`, damage the full extent, and commit.
+///
+/// # Safety
+/// `wl_surface` must be a live `wl_surface` proxy or null, and `buffer` must be
+/// a live `wl_buffer` proxy or null.
 unsafe fn wl_surface_attach_commit(
     wl_surface: *mut c_void,
     buffer: *mut c_void,
@@ -895,21 +949,25 @@ unsafe fn wl_surface_attach_commit(
         return;
     }
     let surface = wl_surface as *mut wl_proxy;
-    let mut attach_args = [
-        wl_argument { o: buffer },
-        wl_argument { i: 0 },
-        wl_argument { i: 0 },
-    ];
-    wl_proxy_marshal_array(surface, 1, attach_args.as_mut_ptr());
-    let mut damage_args = [
-        wl_argument { i: 0 },
-        wl_argument { i: 0 },
-        wl_argument { u: width },
-        wl_argument { u: height },
-    ];
-    wl_proxy_marshal_array(surface, 9, damage_args.as_mut_ptr());
-    let mut commit_args: [wl_argument; 0] = [];
-    wl_proxy_marshal_array(surface, 6, commit_args.as_mut_ptr());
+    // SAFETY: the caller guarantees both proxies are live; the opcodes and
+    // argument arrays match attach (1), damage (9), and commit (6).
+    unsafe {
+        let mut attach_args = [
+            wl_argument { o: buffer },
+            wl_argument { i: 0 },
+            wl_argument { i: 0 },
+        ];
+        wl_proxy_marshal_array(surface, 1, attach_args.as_mut_ptr());
+        let mut damage_args = [
+            wl_argument { i: 0 },
+            wl_argument { i: 0 },
+            wl_argument { u: width },
+            wl_argument { u: height },
+        ];
+        wl_proxy_marshal_array(surface, 9, damage_args.as_mut_ptr());
+        let mut commit_args: [wl_argument; 0] = [];
+        wl_proxy_marshal_array(surface, 6, commit_args.as_mut_ptr());
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
