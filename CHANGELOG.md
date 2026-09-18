@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-09-18
+
+### Changed
+
+- **Optics v0.0.44 API alignment.** Updated workspace dependencies and CI pinned
+  Optics reference to tag `v0.0.44`. Aligned panel rendering and icon badge
+  rasterization with the converged canvas pass lifecycle (`flux_canvas_begin` /
+  `flux_canvas_end`, Optics ADR-0095).
+- **Git workflow automation.** Adopted automatic local-patch exclusion in the
+  pre-commit hook for cross-repository development worktrees.
+
 ## [0.6.1] - 2026-09-16
 
 ### Added

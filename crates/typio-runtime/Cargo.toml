@@ -1,6 +1,6 @@
 [package]
 name = "typio-runtime"
-version = "0.6.1"
+version = "0.6.2"
 edition.workspace = true
 authors = ["Typio Contributors"]
 license = "MIT"

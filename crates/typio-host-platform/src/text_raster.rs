@@ -132,8 +132,8 @@ impl TextRaster {
 
     /// Draw `text` into `canvas` (a CPU canvas mid-pass) with the text-box
     /// top-left at (`x`, `y`) logical pixels, at `size_px` logical, in solid
-    /// `color`. Must be called between `flux_canvas_cpu_begin` and
-    /// `flux_canvas_cpu_end`; the glyph run is composited into the canvas's
+    /// `color`. Must be called between `flux_canvas_begin` and
+    /// `flux_canvas_end`; the glyph run is composited into the canvas's
     /// framebuffer via the host-coverage path.
     #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
     pub fn draw(

@@ -53,11 +53,11 @@ xkbcommon = "0.9"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
-flux-text-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
-iris-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.42" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.44" }
+flux-text-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.44" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.44" }
+iris-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.44" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.44" }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"

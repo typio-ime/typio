@@ -123,9 +123,9 @@ draw_candidates(candidates, selected, composition_seq)
   1. ensure_candidate_size()      layout + quantized extent + viewport update
   2. acquire_shm_buffer()         Busy -> return false, stay Dirty (no render work)
   3. ensure_canvas()              lazy flux_canvas_create_cpu at the retained extent
-  4. flux_canvas_cpu_begin
+  4. flux_canvas_begin
        fill_rrect (background), fill_rrect (selection), TextRaster::draw (per run)
-     flux_canvas_cpu_end
+     flux_canvas_end
   5. present_shm(buffer_index)
        flux_canvas_cpu_pixels -> byte-swap RGBA8 -> ARGB8888 straight into the buffer
        mark_busy(), set_buffer_scale, attach + damage_buffer + commit
@@ -136,7 +136,7 @@ Path tracing under `typio.panel.perf` reports per-phase microsecond timings (`la
 Panel backgrounds and selection highlights use Flux geometry and solid brushes.
 Canvas and text contexts release their references through the current ownership
 APIs, including resize and early-return paths. The workspace and CI native pin
-select Optics v0.0.42; see [Workspace Topology](workspace-topology.md).
+select Optics v0.0.44; see [Workspace Topology](workspace-topology.md).
 
 ### 3.4 Back-pressure and convergence
 

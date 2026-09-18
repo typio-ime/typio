@@ -4,7 +4,7 @@
 //! the candidate panel.
 
 use flux_sys::{
-    flux_canvas_cpu_begin, flux_canvas_cpu_end, flux_canvas_cpu_pixels, flux_canvas_create_cpu,
+    flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create_cpu, flux_canvas_end,
     flux_canvas_release,
 };
 use flux_text_sys::{
@@ -108,7 +108,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
             let x = (size as f32 - m.width) / 2.0;
             let y = (size as f32 - m.height) / 2.0;
 
-            let _ = flux_canvas_cpu_begin(canvas, std::ptr::null());
+            let _ = flux_canvas_begin(canvas, std::ptr::null());
             // Draw outline
             let offsets: [(f32, f32); 8] = [
                 (-1.0, -1.0),
@@ -145,7 +145,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
                 &style,
             );
 
-            flux_canvas_cpu_end(canvas);
+            flux_canvas_end(canvas);
 
             let mut w = 0;
             let mut h = 0;

@@ -21,9 +21,9 @@ use std::ptr;
 use std::time::Instant;
 
 use flux_sys::{
-    flux_canvas, flux_canvas_cpu_begin, flux_canvas_cpu_end, flux_canvas_cpu_pixels,
-    flux_canvas_create_cpu, flux_canvas_release, flux_color_rgba, flux_error_info,
-    flux_get_last_error, flux_rect,
+    flux_canvas, flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create_cpu,
+    flux_canvas_end, flux_canvas_release, flux_color_rgba, flux_error_info, flux_get_last_error,
+    flux_rect,
 };
 use wayland_client::protocol::wl_shm;
 use wayland_client::{Proxy, QueueHandle};
@@ -268,7 +268,7 @@ impl FluxPanel {
     ///
     /// # Safety
     /// `self.canvas` must be a live CPU canvas currently inside a
-    /// `flux_canvas_cpu_begin` / `flux_canvas_cpu_end` pair.
+    /// `flux_canvas_begin` / `flux_canvas_end` pair.
     unsafe fn draw_panel_background(&mut self) {
         let w = self.content_w_logical as f32 - 2.0;
         let h = self.content_h_logical as f32 - 2.0;
@@ -341,7 +341,7 @@ impl FluxPanel {
         // (ADR-0019); the canvas content-scale transform maps logical quads
         // onto physical pixels, so text uses logical coords like the fills.
         unsafe {
-            if !flux_result_is_ok(flux_canvas_cpu_begin(self.canvas, ptr::null())) {
+            if !flux_result_is_ok(flux_canvas_begin(self.canvas, ptr::null())) {
                 return false;
             }
             self.draw_panel_background();
@@ -419,7 +419,7 @@ impl FluxPanel {
                     NUMBER_COLOR,
                 );
             }
-            flux_canvas_cpu_end(self.canvas);
+            flux_canvas_end(self.canvas);
         }
         let draw_us = draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
@@ -718,7 +718,7 @@ impl FluxPanel {
             return false;
         }
         unsafe {
-            if !flux_result_is_ok(flux_canvas_cpu_begin(self.canvas, ptr::null())) {
+            if !flux_result_is_ok(flux_canvas_begin(self.canvas, ptr::null())) {
                 return false;
             }
             self.draw_panel_background();
@@ -735,7 +735,7 @@ impl FluxPanel {
                 TEXT_COLOR,
             );
 
-            flux_canvas_cpu_end(self.canvas);
+            flux_canvas_end(self.canvas);
         }
 
         self.present_shm(buffer_index)

@@ -122,7 +122,7 @@ clients only over TIP.
 | Cargo configuration | Default, or `.cargo/config.example.toml` | `.cargo/config.toml` copied from `.cargo/optics-local.toml` |
 
 The workspace pins `flux-sys`, `flux-text-sys`, `iris`, `iris-sys`, and
-`lens-sys` to a tagged Optics release (tag `v0.0.42` in `[workspace.dependencies]`
+`lens-sys` to a tagged Optics release (tag `v0.0.44` in `[workspace.dependencies]`
 at the time of writing). The native `libflux` and its text backend
 have no Cargo-native build yet, so contributors compile the sibling Optics tree
 with Meson and point the `-sys` build scripts at it:

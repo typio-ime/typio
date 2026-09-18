@@ -458,7 +458,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "flux"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "flux-sys",
 ]
@@ -466,7 +466,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -475,7 +475,7 @@ dependencies = [
 [[package]]
 name = "flux-text-sys"
 version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -613,7 +613,7 @@ dependencies = [
 [[package]]
 name = "iris"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "flux",
  "iris-sys",
@@ -624,7 +624,7 @@ dependencies = [
 [[package]]
 name = "iris-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -673,7 +673,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lens"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "flux",
  "lens-sys",
@@ -682,7 +682,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.42#3839903c54678fff19ced949e2d775fb6eaacf83"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "typio-daemon"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bitflags",
  "clap",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "typio-runtime"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "libc",
  "log",
