@@ -1,3 +1,11 @@
+---
+id: ADR-0022
+title: "Panel retry result owned by update"
+status: accepted
+date: 2026-06-03
+scope: panel
+---
+
 # ADR-0022: Panel retry result owned by update
 
 - **Status**: Accepted

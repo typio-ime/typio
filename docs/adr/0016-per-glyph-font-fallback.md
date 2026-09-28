@@ -1,3 +1,11 @@
+---
+id: ADR-0016
+title: "Per-glyph font fallback with format-12 charmap selection"
+status: accepted
+date: 2026-05-31
+scope: panel
+---
+
 # ADR-0016: Per-glyph font fallback with format-12 charmap selection
 
 - **Status**: Accepted

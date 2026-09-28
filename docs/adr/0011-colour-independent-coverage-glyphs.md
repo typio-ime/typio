@@ -1,3 +1,11 @@
+---
+id: ADR-0011
+title: "Colour-independent coverage glyph textures (draw-time tint)"
+status: accepted
+date: 2026-05-29
+scope: panel
+---
+
 # ADR-0011: Colour-independent coverage glyph textures (draw-time tint)
 
 - **Status**: Accepted — coverage+tint model in force (texture model superseded by [ADR-0012](0012-glyph-atlas-shared-texture.md); lag-cause attribution corrected by [ADR-0013](0013-grow-only-popup-swapchain.md))

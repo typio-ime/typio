@@ -1,3 +1,11 @@
+---
+id: ADR-0039
+title: "CLI Workspace Integration"
+status: accepted
+date: 2026-06-30
+scope: control
+---
+
 # ADR-0039: CLI Workspace Integration
 
 - **Status**: Accepted

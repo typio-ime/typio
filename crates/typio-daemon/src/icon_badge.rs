@@ -1,15 +1,15 @@
 //! CPU rasteriser for language text badges into SNI ARGB32 pixmaps.
 //!
-//! Uses the shared flux-text and flux-canvas stack, the same text backend as
+//! Uses the shared glyph and flux-canvas stack, the same text backend as
 //! the candidate panel.
 
 use flux_sys::{
     flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create_cpu, flux_canvas_end,
     flux_canvas_release,
 };
-use flux_text_sys::{
-    flux_text_create, flux_text_desc, flux_text_draw, flux_text_family, flux_text_measure,
-    flux_text_release, flux_text_style,
+use glyph_sys::{
+    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_family, glyph_measure, glyph_release,
+    glyph_style,
 };
 
 /// One rasterised badge bitmap at a single size. `argb` is `width*height`
@@ -28,21 +28,21 @@ fn color_rgba(rgb: u32, a: u8) -> u32 {
     u32::from_le_bytes([r, g, b, a])
 }
 
-/// Owns the per-call `flux_text` context and releases it on every exit path.
+/// Owns the per-call `glyph_ctx` context and releases it on every exit path.
 ///
-/// A `flux_text` owns a 16 MiB host-coverage atlas plus the FreeType /
+/// A `glyph_ctx` owns a 16 MiB host-coverage atlas plus the FreeType /
 /// HarfBuzz / fontconfig backend, so a context that escapes `render` is a
 /// multi-megabyte leak. `render`'s early returns (empty result when a size
-/// produces no visible coverage) previously skipped `flux_text_release`
+/// produces no visible coverage) previously skipped `glyph_release`
 /// entirely; because an empty pixmap set also defeats `Tray::set_badge`'s
 /// `had_badge` dedup, every tray refresh (each 中/EN mode toggle, engine or
 /// language switch) re-ran `render` and leaked another context.
-struct TextContext(*mut flux_text_sys::flux_text);
+struct TextContext(*mut glyph_ctx);
 
 impl Drop for TextContext {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { flux_text_release(self.0) };
+            unsafe { glyph_release(self.0) };
         }
     }
 }
@@ -63,12 +63,12 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         return Vec::new();
     }
 
-    let desc = flux_text_desc {
+    let desc = glyph_desc {
         device: std::ptr::null_mut(),
         scale: 1.0,
     };
     let mut raw = std::ptr::null_mut();
-    unsafe { flux_text_create(&desc, &mut raw) };
+    unsafe { glyph_create(&desc, &mut raw) };
     if raw.is_null() {
         return Vec::new();
     }
@@ -89,20 +89,20 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         // allocation failure path between create and the manual destroy.
         let _canvas_guard = CanvasGuard(canvas);
 
-        let style = flux_text_style {
+        let style = glyph_style {
             size_px: size as f32 * 0.75, // Scale to fit
             weight: 0.0,
             color: color_rgba(fg_rgb, 255),
-            family: flux_text_family::FLUX_TEXT_FAMILY_DEFAULT,
+            family: glyph_family::GLYPH_FAMILY_DEFAULT,
             italic: false,
         };
-        let black_style = flux_text_style {
+        let black_style = glyph_style {
             color: color_rgba(0x000000, 255),
             ..style
         };
 
         unsafe {
-            let m = flux_text_measure(text_ctx.0, text.as_ptr() as *const i8, text.len(), &style);
+            let m = glyph_measure(text_ctx.0, text.as_ptr() as *const i8, text.len(), &style);
 
             // Center the text
             let x = (size as f32 - m.width) / 2.0;
@@ -121,7 +121,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
                 (1.0, 1.0),
             ];
             for (ox, oy) in offsets {
-                flux_text_draw(
+                glyph_draw(
                     text_ctx.0,
                     canvas,
                     std::ptr::null_mut(),
@@ -134,7 +134,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
             }
 
             // Draw foreground
-            flux_text_draw(
+            glyph_draw(
                 text_ctx.0,
                 canvas,
                 std::ptr::null_mut(),
@@ -215,10 +215,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_ladder_releases_flux_text_context() {
+    fn partial_ladder_releases_glyph_context() {
         // A size-0 entry produces no pixmap, so `out.len() != sizes.len()`
         // and render returns early via the partial-coverage path. That path
-        // used to skip `flux_text_release`, leaking the flux-text context
+        // used to skip `glyph_release`, leaking the glyph context
         // (16 MiB host-coverage atlas + FreeType/HarfBuzz/fontconfig backend)
         // on every tray refresh while no badge pixmap dedup was active.
         // Run it repeatedly: under valgrind/LSAN the old code reports a

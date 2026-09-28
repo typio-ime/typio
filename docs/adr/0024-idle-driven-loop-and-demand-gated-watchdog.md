@@ -1,3 +1,12 @@
+---
+id: ADR-0024
+title: "Idle-Driven Event Loop and Demand-Gated Watchdog"
+status: superseded
+date: 2026-06-05
+scope: loop
+superseded_by: "ADR-0041"
+---
+
 # ADR-0024: Idle-Driven Event Loop and Demand-Gated Watchdog
 
 - **Status**: Superseded (watchdog removed by ADR-0041; idle-driven loop retained)

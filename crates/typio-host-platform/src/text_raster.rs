@@ -1,19 +1,18 @@
 //! Text shaping + rasterisation for the candidate panel and status banners.
 //!
-//! Delegates to **flux-text** (the optics C sibling: FreeType + HarfBuzz +
+//! Delegates to **glyph** (the optics C sibling: FreeType + HarfBuzz +
 //! Fontconfig + FriBidi, subpixel-positioned R8 coverage atlas). On a
 //! device-less CPU canvas (`flux_canvas_create_cpu`) the glyph run flows
-//! through the host-coverage path (ADR-0019): flux-text rasterises glyphs
+//! through the host-coverage path (ADR-0019): glyph rasterises glyphs
 //! into a host R8 buffer and the CPU canvas samples coverage straight from
 //! it — no GPU image required.
 //!
-//! All public sizes/positions are in logical pixels; `flux_text_draw` honours
+//! All public sizes/positions are in logical pixels; `glyph_draw` honours
 //! the canvas content-scale transform so glyphs rasterise crisply on HiDPI.
 
-use flux_text_sys::{
-    flux_text, flux_text_create, flux_text_desc, flux_text_draw, flux_text_family,
-    flux_text_measure, flux_text_metrics, flux_text_release, flux_text_set_default_family,
-    flux_text_style,
+use glyph_sys::{
+    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_family, glyph_measure, glyph_metrics,
+    glyph_release, glyph_set_default_family, glyph_style,
 };
 
 use crate::FontFamilyClass;
@@ -26,8 +25,8 @@ pub struct TextMetrics {
     pub baseline: f32,
 }
 
-impl From<flux_text_metrics> for TextMetrics {
-    fn from(m: flux_text_metrics) -> Self {
+impl From<glyph_metrics> for TextMetrics {
+    fn from(m: glyph_metrics) -> Self {
         Self {
             width: m.width,
             height: m.height,
@@ -42,17 +41,17 @@ fn color_rgb(c: [u8; 3]) -> u32 {
     u32::from_le_bytes([c[0], c[1], c[2], 255])
 }
 
-/// Shaping + glyph-run front-end backed by flux-text.
+/// Shaping + glyph-run front-end backed by glyph.
 ///
-/// Holds one `flux_text*` context (no device: device-less CPU canvas path).
+/// Holds one `glyph_ctx*` context (no device: device-less CPU canvas path).
 /// The preferred family class is applied to the context itself, so it steers
 /// every glyph run drawn through this rasteriser without per-call plumbing.
 pub struct TextRaster {
-    raw: *mut flux_text,
+    raw: *mut glyph_ctx,
     family: FontFamilyClass,
 }
 
-// The underlying flux_text* is thread-affine (same constraint as flux-text's
+// The underlying glyph_ctx* is thread-affine (same constraint as glyph's
 // safe wrapper); the panel drives it from a single thread.
 unsafe impl Send for TextRaster {}
 
@@ -70,14 +69,14 @@ impl TextRaster {
         // No device: the host-coverage path (ADR-0019) renders into a CPU
         // canvas without a GPU atlas. A NULL device still builds the full
         // FreeType + HarfBuzz + fontconfig backend.
-        let desc = flux_text_desc {
+        let desc = glyph_desc {
             device: core::ptr::null_mut(),
             scale: 1.0,
         };
-        let mut out: *mut flux_text = core::ptr::null_mut();
-        // flux_text_create never fails: on backend init failure it falls back
+        let mut out: *mut glyph_ctx = core::ptr::null_mut();
+        // glyph_create never fails: on backend init failure it falls back
         // to a measure-only monospace context (has_backend == false).
-        let _ = unsafe { flux_text_create(&desc, &mut out) };
+        let _ = unsafe { glyph_create(&desc, &mut out) };
         let mut raster = TextRaster {
             raw: out,
             family: FontFamilyClass::Default,
@@ -93,8 +92,8 @@ impl TextRaster {
 
     /// Switch the context's preferred family class.
     ///
-    /// Maps the host's [`FontFamilyClass`] onto flux-text's family selector.
-    /// This is the real capability: flux-text resolves faces through
+    /// Maps the host's [`FontFamilyClass`] onto glyph's family selector.
+    /// This is the real capability: glyph resolves faces through
     /// fontconfig's preference list for the selected class, and per-codepoint
     /// fallback still covers anything the class's faces do not. Individual
     /// typeface names are therefore not selectable — the class is.
@@ -103,13 +102,13 @@ impl TextRaster {
             return;
         }
         let raw = match family {
-            FontFamilyClass::Default => flux_text_family::FLUX_TEXT_FAMILY_DEFAULT,
-            FontFamilyClass::Sans => flux_text_family::FLUX_TEXT_FAMILY_SANS,
-            FontFamilyClass::Serif => flux_text_family::FLUX_TEXT_FAMILY_SERIF,
-            FontFamilyClass::Mono => flux_text_family::FLUX_TEXT_FAMILY_MONO,
+            FontFamilyClass::Default => glyph_family::GLYPH_FAMILY_DEFAULT,
+            FontFamilyClass::Sans => glyph_family::GLYPH_FAMILY_SANS,
+            FontFamilyClass::Serif => glyph_family::GLYPH_FAMILY_SERIF,
+            FontFamilyClass::Mono => glyph_family::GLYPH_FAMILY_MONO,
         };
-        // SAFETY: raw is a live flux-text context; raw is a value type.
-        unsafe { flux_text_set_default_family(self.raw, raw) };
+        // SAFETY: raw is a live glyph context; raw is a value type.
+        unsafe { glyph_set_default_family(self.raw, raw) };
         self.family = family;
     }
 
@@ -118,15 +117,14 @@ impl TextRaster {
         if text.is_empty() || size_px <= 0.0 || self.raw.is_null() {
             return TextMetrics::default();
         }
-        let style = flux_text_style {
+        let style = glyph_style {
             size_px,
             weight: 0.0,
             color: 0,
-            family: flux_text_family::FLUX_TEXT_FAMILY_DEFAULT,
+            family: glyph_family::GLYPH_FAMILY_DEFAULT,
             italic: false,
         };
-        let m =
-            unsafe { flux_text_measure(self.raw, text.as_ptr() as *const i8, text.len(), &style) };
+        let m = unsafe { glyph_measure(self.raw, text.as_ptr() as *const i8, text.len(), &style) };
         m.into()
     }
 
@@ -148,19 +146,16 @@ impl TextRaster {
         if text.is_empty() || size_px <= 0.0 || self.raw.is_null() || canvas.is_null() {
             return;
         }
-        let style = flux_text_style {
+        let style = glyph_style {
             size_px,
             weight: 0.0,
             color: color_rgb(color),
-            family: flux_text_family::FLUX_TEXT_FAMILY_DEFAULT,
+            family: glyph_family::GLYPH_FAMILY_DEFAULT,
             italic: false,
         };
         unsafe {
-            flux_text_draw(
+            glyph_draw(
                 self.raw,
-                // flux-text-sys re-declares flux_canvas from its own bindgen
-                // pass; it is ABI-identical to flux_sys::flux_canvas (both are
-                // the same opaque C pointer), so cast across the crate boundary.
                 canvas,
                 core::ptr::null_mut(),
                 x,
@@ -176,7 +171,7 @@ impl TextRaster {
 impl Drop for TextRaster {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { flux_text_release(self.raw) };
+            unsafe { glyph_release(self.raw) };
         }
     }
 }

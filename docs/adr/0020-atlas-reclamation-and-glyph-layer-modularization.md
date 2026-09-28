@@ -1,3 +1,11 @@
+---
+id: ADR-0020
+title: "Atlas texture reclamation and glyph-layer modularization"
+status: accepted
+date: 2026-06-02
+scope: panel
+---
+
 # ADR-0020: Atlas texture reclamation and glyph-layer modularization
 
 - **Status**: Accepted

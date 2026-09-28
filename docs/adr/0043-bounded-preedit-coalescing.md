@@ -1,3 +1,11 @@
+---
+id: ADR-0043
+title: "Bounded Preedit Coalescing Across Reactor Steps"
+status: accepted
+date: 2026-07-11
+scope: session
+---
+
 # ADR-0043: Bounded Preedit Coalescing Across Reactor Steps
 
 - **Status**: Accepted

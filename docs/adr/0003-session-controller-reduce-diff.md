@@ -1,3 +1,11 @@
+---
+id: ADR-0003
+title: "Session Controller — Derived State, Idempotent Diff"
+status: accepted
+date: 2026-05-28
+scope: session
+---
+
 # ADR-0003: Session Controller — Derived State, Idempotent Diff
 
 - **Status**: Accepted (amended 2026-06-08 — component renamed; see note below)

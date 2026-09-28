@@ -1,3 +1,11 @@
+---
+id: ADR-0017
+title: "Positioned UI arbitration for panel owners"
+status: accepted
+date: 2026-06-01
+scope: panel
+---
+
 # ADR-0017: Positioned UI arbitration for panel owners
 
 - **Status**: Accepted

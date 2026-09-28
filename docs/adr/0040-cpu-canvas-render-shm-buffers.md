@@ -1,3 +1,11 @@
+---
+id: ADR-0040
+title: "CPU Canvas Render with Host-Managed SHM Buffers"
+status: accepted
+date: 2026-01-12
+scope: panel
+---
+
 # ADR-0040: CPU Canvas Render with Host-Managed SHM Buffers
 
 - **Status**: Accepted (supersedes ADR-0010 and ADR-0013; supersedes the

@@ -1,3 +1,11 @@
+---
+id: ADR-0008
+title: "TIP v1 — IPC Protocol with resource namespaces, UDS-only control surface, push events"
+status: accepted
+date: 2026-05-29
+scope: control
+---
+
 # ADR-0008: TIP v1 — IPC Protocol with resource namespaces, UDS-only control surface, push events
 
 - **Status**: Accepted (engine control verbs amended by ADR-0026)

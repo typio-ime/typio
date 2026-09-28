@@ -121,20 +121,22 @@ clients only over TIP.
 | `Cargo.lock` | Remote Git commits; tracked in Git | Local path dependencies; ignored by the commit hook |
 | Cargo configuration | Default, or `.cargo/config.example.toml` | `.cargo/config.toml` copied from `.cargo/optics-local.toml` |
 
-The workspace pins `flux-sys`, `flux-text-sys`, `iris`, `iris-sys`, and
-`lens-sys` to a tagged Optics release (tag `v0.0.44` in `[workspace.dependencies]`
-at the time of writing). The native `libflux` and its text backend
+The workspace pins `flux-sys`, `glyph-sys`, `iris`, `iris-sys`, and
+`lens-sys` to a tagged Optics release (tag `v0.0.52` in `[workspace.dependencies]`
+at the time of writing). The native `libflux` and `libglyph`
 have no Cargo-native build yet, so contributors compile the sibling Optics tree
 with Meson and point the `-sys` build scripts at it:
 
 ```bash
-meson setup ../optics/build -Dtext=true --buildtype=debugoptimized
+meson setup ../optics/build -Dglyph=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 export FLUX_BUILD_DIR="$PWD/../optics/build"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
+export GLYPH_BUILD_DIR="$PWD/../optics/build"
+export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
 ```
 
-`FLUX_BUILD_DIR` selects the in-tree library and the build script bakes an
+`FLUX_BUILD_DIR` and `GLYPH_BUILD_DIR` select the in-tree libraries and the build scripts bake an
 `-Wl,-rpath` into the binaries, so neither a system install nor an
 `LD_LIBRARY_PATH` entry is required in the development loop. The Iris and Lens
 bindings resolve through `IRIS_BUILD_DIR`, `IRIS_SOURCE_DIR`, `LENS_BUILD_DIR`,

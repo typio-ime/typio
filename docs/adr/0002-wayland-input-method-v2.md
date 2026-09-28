@@ -1,3 +1,11 @@
+---
+id: ADR-0002
+title: "Adopt `zwp_input_method_v2` as the Host Protocol"
+status: accepted
+date: 2026-05-28
+scope: session
+---
+
 # ADR-0002: Adopt `zwp_input_method_v2` as the Host Protocol
 
 - **Status**: Accepted

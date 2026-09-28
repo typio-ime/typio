@@ -1,3 +1,11 @@
+---
+id: ADR-0041
+title: "Remove the host watchdog"
+status: accepted
+date: 2026-07-08
+scope: loop
+---
+
 # ADR-0041: Remove the host watchdog
 
 - **Status**: Accepted

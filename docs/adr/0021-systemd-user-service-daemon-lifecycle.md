@@ -1,3 +1,11 @@
+---
+id: ADR-0021
+title: "systemd user service for daemon lifecycle"
+status: accepted
+date: 2026-06-03
+scope: loop
+---
+
 # ADR-0021: systemd user service for daemon lifecycle
 
 - **Status**: Accepted

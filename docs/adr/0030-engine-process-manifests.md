@@ -1,3 +1,11 @@
+---
+id: ADR-0030
+title: "Engine process manifests and Typio Engine Protocol"
+status: accepted
+date: 2026-06-08
+scope: engine
+---
+
 # ADR-0030: Engine process manifests and Typio Engine Protocol
 
 - **Status**: Accepted

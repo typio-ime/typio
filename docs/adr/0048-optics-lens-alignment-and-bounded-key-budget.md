@@ -1,3 +1,11 @@
+---
+id: ADR-0048
+title: "Modern Optics Lens Component Alignment and Bounded Keystroke Latency Budget"
+status: accepted
+date: 2026-09-11
+scope: performance
+---
+
 # ADR-0048: Modern Optics Lens Component Alignment and Bounded Keystroke Latency Budget
 
 - **Status**: Accepted

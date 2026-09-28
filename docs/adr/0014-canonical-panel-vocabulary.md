@@ -1,3 +1,11 @@
+---
+id: ADR-0014
+title: "Canonical Panel Vocabulary and Module Ontology"
+status: accepted
+date: 2026-05-30
+scope: panel
+---
+
 # ADR-0014: Canonical Panel Vocabulary and Module Ontology
 
 - **Status**: Accepted

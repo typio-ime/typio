@@ -1,3 +1,11 @@
+---
+id: ADR-0031
+title: "Language-first switching surface (`language.*`, `languages` manifest key)"
+status: accepted
+date: 2026-06-12
+scope: control
+---
+
 # ADR-0031: Language-first switching surface (`language.*`, `languages` manifest key)
 
 - **Status**: Accepted

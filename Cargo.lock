@@ -457,28 +457,18 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flux"
-version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
 dependencies = [
  "flux-sys",
 ]
 
 [[package]]
 name = "flux-sys"
-version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
 dependencies = [
  "bindgen",
- "pkg-config",
-]
-
-[[package]]
-name = "flux-text-sys"
-version = "0.1.1"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
-dependencies = [
- "bindgen",
- "flux-sys",
  "pkg-config",
 ]
 
@@ -555,6 +545,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "glyph-sys"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
+dependencies = [
+ "bindgen",
+ "flux-sys",
+ "pkg-config",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -612,8 +612,8 @@ dependencies = [
 
 [[package]]
 name = "iris"
-version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
 dependencies = [
  "flux",
  "iris-sys",
@@ -623,8 +623,8 @@ dependencies = [
 
 [[package]]
 name = "iris-sys"
-version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -672,8 +672,8 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lens"
-version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
 dependencies = [
  "flux",
  "lens-sys",
@@ -681,8 +681,8 @@ dependencies = [
 
 [[package]]
 name = "lens-sys"
-version = "0.1.0"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.44#d26b465e052fbb0c86c05960495cbedd85b8fefd"
+version = "0.0.52"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.52#1778de3c4c9c58898e6a97f8252435b592fc6dcc"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -1309,7 +1309,7 @@ dependencies = [
  "bitflags",
  "clap",
  "flux-sys",
- "flux-text-sys",
+ "glyph-sys",
  "inotify",
  "libc",
  "nix",
@@ -1359,7 +1359,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "flux-sys",
- "flux-text-sys",
+ "glyph-sys",
  "libc",
  "nix",
  "serde_json",

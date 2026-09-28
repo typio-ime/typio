@@ -1,3 +1,11 @@
+---
+id: ADR-0025
+title: "Engine discovery — ordered search path, no user-level auto-scan"
+status: accepted
+date: 2026-06-05
+scope: engine
+---
+
 # ADR-0025: Engine discovery — ordered search path, no user-level auto-scan
 
 - **Status**: Accepted

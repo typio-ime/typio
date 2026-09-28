@@ -116,7 +116,7 @@ Attribution trailers are not added.
 ## Changing governance
 
 - **Portable policy**: propose it upstream in `docs-governance`, then refresh
-  the mirror (see [Mirror Provenance](documentation/contracts.md#5-mirror-provenance-and-refresh)).
+  the mirror (see [Repository Contracts](documentation/contracts.md)).
   Do not edit mirrored files here.
 - **Repository charters**: change this directory by pull request, with the
   rationale in the description.

@@ -1,3 +1,11 @@
+---
+id: ADR-0045
+title: "Rust Settings Workspace Integration"
+status: accepted
+date: 2026-07-13
+scope: control
+---
+
 # ADR-0045: Rust Settings Workspace Integration
 
 - **Status**: Accepted

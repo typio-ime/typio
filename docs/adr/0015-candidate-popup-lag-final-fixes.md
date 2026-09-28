@@ -1,3 +1,11 @@
+---
+id: ADR-0015
+title: "Candidate popup lag — final fixes (acquire timeout, retry deferral, persistent upload context)"
+status: accepted
+date: 2026-05-30
+scope: performance
+---
+
 # ADR-0015: Candidate popup lag — final fixes (acquire timeout, retry deferral, persistent upload context)
 
 - **Status**: Accepted

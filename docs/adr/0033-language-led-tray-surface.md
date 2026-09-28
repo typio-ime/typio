@@ -1,3 +1,11 @@
+---
+id: ADR-0033
+title: "Language-led tray surface (icon and menu)"
+status: accepted
+date: 2026-06-17
+scope: control
+---
+
 # ADR-0033: Language-led tray surface (icon and menu)
 
 - **Status**: Accepted

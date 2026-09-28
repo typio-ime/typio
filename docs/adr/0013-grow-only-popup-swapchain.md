@@ -1,3 +1,12 @@
+---
+id: ADR-0013
+title: "Grow-only popup swapchain (stop rebuilding per candidate page)"
+status: superseded
+date: 2026-05-29
+scope: panel
+superseded_by: "ADR-0044"
+---
+
 # ADR-0013: Grow-only popup swapchain (stop rebuilding per candidate page)
 
 - **Status**: Superseded by [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) — Vulkan surface removed; grow-only sizing retained for the CPU framebuffer + `wp_viewport`

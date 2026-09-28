@@ -1,3 +1,12 @@
+---
+id: ADR-0028
+title: "Direct IPC Engine Workers"
+status: superseded
+date: 2026-06-06
+scope: engine
+superseded_by: "ADR-0030"
+---
+
 # ADR-0028: Direct IPC Engine Workers
 
 - **Status**: Accepted

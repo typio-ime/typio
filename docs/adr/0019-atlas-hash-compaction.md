@@ -1,3 +1,12 @@
+---
+id: ADR-0019
+title: "Atlas hash-table compaction for sustained CJK input"
+status: superseded
+date: 2026-06-02
+scope: panel
+superseded_by: "ADR-0020"
+---
+
 # ADR-0019: Atlas hash-table compaction for sustained CJK input
 
 - **Status**: Superseded by [ADR-0020](0020-atlas-reclamation-and-glyph-layer-modularization.md)

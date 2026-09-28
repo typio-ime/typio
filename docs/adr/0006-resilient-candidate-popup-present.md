@@ -1,3 +1,11 @@
+---
+id: ADR-0006
+title: "Resilient Candidate-Popup GPU Present"
+status: accepted
+date: 2026-05-28
+scope: panel
+---
+
 # ADR-0006: Resilient Candidate-Popup GPU Present
 
 - **Status**: Accepted

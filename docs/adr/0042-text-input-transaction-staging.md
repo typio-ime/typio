@@ -1,3 +1,11 @@
+---
+id: ADR-0042
+title: "Stage text-input transactions at key-batch boundaries"
+status: accepted
+date: 2026-07-09
+scope: session
+---
+
 # ADR-0042: Stage text-input transactions at key-batch boundaries
 
 - **Status**: Accepted

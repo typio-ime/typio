@@ -1,3 +1,12 @@
+---
+id: ADR-0037
+title: "Demand-Armed Watchdog Cadence"
+status: superseded
+date: 2026-06-30
+scope: loop
+superseded_by: "ADR-0041"
+---
+
 # ADR-0037: Demand-Armed Watchdog Cadence
 
 - **Status**: Superseded (watchdog removed by ADR-0041)

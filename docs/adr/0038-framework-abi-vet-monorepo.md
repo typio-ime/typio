@@ -1,3 +1,11 @@
+---
+id: ADR-0038
+title: "Framework, ABI, and Vet Monorepo"
+status: accepted
+date: 2026-06-30
+scope: process
+---
+
 # ADR-0038: Framework, ABI, and Vet Monorepo
 
 - **Status**: Accepted

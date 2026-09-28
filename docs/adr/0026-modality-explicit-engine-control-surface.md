@@ -1,3 +1,11 @@
+---
+id: ADR-0026
+title: "Modality-explicit engine control surface (`keyboard.*` / `voice.*`)"
+status: accepted
+date: 2026-06-05
+scope: control
+---
+
 # ADR-0026: Modality-explicit engine control surface (`keyboard.*` / `voice.*`)
 
 - **Status**: Accepted

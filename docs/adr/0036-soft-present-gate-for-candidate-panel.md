@@ -1,3 +1,12 @@
+---
+id: ADR-0036
+title: "Soft Present Gate for the Candidate Panel"
+status: superseded
+date: 2026-06-30
+scope: panel
+superseded_by: "ADR-0040"
+---
+
 # ADR-0036: Soft Present Gate for the Candidate Panel
 
 - **Status**: Superseded by [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) — present gate retained as pacing hygiene only; there is no GPU present in the panel path

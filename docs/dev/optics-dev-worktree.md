@@ -107,7 +107,7 @@ without dirtying version control:
 [patch."https://github.com/ming2k/optics"]
 flux = { path = "../optics/bindings/flux-rs/crates/flux" }
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
+glyph-sys = { path = "../optics/bindings/glyph-rs/crates/glyph-sys" }
 lens = { path = "../optics/bindings/lens-rs/crates/lens" }
 lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 iris = { path = "../optics/bindings/iris-rs/crates/iris" }
@@ -269,7 +269,7 @@ GitHub and pins the authoritative remote Git SHA:
 
 ```bash
 # In projects/typio/ (primary worktree, branch main):
-cargo update -p flux-sys -p flux-text-sys -p iris -p iris-sys -p lens-sys
+cargo update -p flux-sys -p glyph-sys -p iris -p iris-sys -p lens-sys
 ```
 
 Confirm that `cargo tree -i flux-sys` and `cargo tree -i iris` report the tagged

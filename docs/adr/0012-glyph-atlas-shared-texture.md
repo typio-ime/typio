@@ -1,3 +1,11 @@
+---
+id: ADR-0012
+title: "Shared glyph atlas (rasterise once, reference sub-rects)"
+status: accepted
+date: 2026-05-29
+scope: panel
+---
+
 # ADR-0012: Shared glyph atlas (rasterise once, reference sub-rects)
 
 - **Status**: Accepted — atlas in force as a memory/architecture improvement (lag-cause attribution corrected by [ADR-0013](0013-grow-only-popup-swapchain.md); see the scope-correction block below)

@@ -1,3 +1,11 @@
+---
+id: ADR-0018
+title: "Focus-transition classification and re-activation"
+status: accepted
+date: 2026-06-01
+scope: session
+---
+
 # ADR-0018: Focus-transition classification and re-activation
 
 - **Status**: Accepted

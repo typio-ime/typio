@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: d26b465e052fbb0c86c05960495cbedd85b8fefd
+  OPTICS_PINNED_REF: 1778de3c4c9c58898e6a97f8252435b592fc6dcc
 
 jobs:
   cargo-check-format-lint:
@@ -42,7 +42,7 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../optics/build \
-            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
+            --prefix="$HOME/.local" -Dglyph=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Cargo fmt
@@ -87,13 +87,15 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../optics/build \
-            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
+            --prefix="$HOME/.local" -Dglyph=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Cargo test
         env:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
           LENS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
           IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
@@ -142,13 +144,15 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../optics/build \
-            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
+            --prefix="$HOME/.local" -Dglyph=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Build leak-sensitive test binaries
         env:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
         run: |
           cargo test -p typio-daemon --lib --no-run
           cargo test -p typio-host-platform --lib --no-run
@@ -157,6 +161,8 @@ jobs:
         env:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
           LD_LIBRARY_PATH: ${{ github.workspace }}/../optics/build
         run: |
           set -euo pipefail
@@ -165,7 +171,7 @@ jobs:
           # fontconfig's process-lifetime pattern cache is an upstream leak
           # (same suppression rationale as optics' lsan.supp) — not ours.
           # Run the FFI-heavy suites under full leak checking; a definite
-          # leak in flux/flux-text lifecycle handling fails the gate.
+          # leak in flux/glyph lifecycle handling fails the gate.
           for t in "icon_badge" "text_raster" "panel::"; do
             valgrind --leak-check=full --show-leak-kinds=definite \
               --errors-for-leak-kinds=definite --error-exitcode=9 \

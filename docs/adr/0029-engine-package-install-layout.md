@@ -1,3 +1,11 @@
+---
+id: ADR-0029
+title: "Engine Package Install Layout"
+status: accepted
+date: 2026-06-06
+scope: engine
+---
+
 # ADR-0029: Engine Package Install Layout
 
 - **Status**: Accepted

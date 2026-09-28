@@ -1,3 +1,11 @@
+---
+id: ADR-0009
+title: "Long-term performance optimizations — font cache purging, composition short-circuit, and snapshot fast-path"
+status: accepted
+date: 2026-05-29
+scope: performance
+---
+
 # ADR-0009: Long-term performance optimizations — font cache purging, composition short-circuit, and snapshot fast-path
 
 - **Status**: Accepted

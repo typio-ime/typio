@@ -1,3 +1,12 @@
+---
+id: ADR-0027
+title: "IPC Engine Manifests"
+status: superseded
+date: 2026-06-05
+scope: engine
+superseded_by: "ADR-0030"
+---
+
 # ADR-0027: IPC Engine Manifests
 
 - **Status**: Accepted

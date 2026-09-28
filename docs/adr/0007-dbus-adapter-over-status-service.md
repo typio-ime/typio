@@ -1,3 +1,12 @@
+---
+id: ADR-0007
+title: "D-Bus Adapter as a Thin Transport over `TypioStatusService`"
+status: superseded
+date: 2026-05-28
+scope: control
+superseded_by: "ADR-0008"
+---
+
 # ADR-0007: D-Bus Adapter as a Thin Transport over `TypioStatusService`
 
 - **Status**: Superseded by [ADR-0008](0008-ipc-protocol-resource-namespaces-uds-only.md)

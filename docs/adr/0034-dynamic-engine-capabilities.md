@@ -1,3 +1,11 @@
+---
+id: ADR-0034
+title: "Dynamic engine capabilities"
+status: accepted
+date: 2026-06-17
+scope: control
+---
+
 # ADR-0034: Dynamic engine capabilities
 
 - **Status**: Accepted

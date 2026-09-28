@@ -1,3 +1,11 @@
+---
+id: ADR-0046
+title: "Engine-Protocol-Only Runtime"
+status: accepted
+date: 2026-08-03
+scope: engine
+---
+
 # ADR-0046: Engine-Protocol-Only Runtime
 
 - **Status**: Accepted

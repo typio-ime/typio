@@ -1,3 +1,11 @@
+---
+id: ADR-0052
+title: "Ordered Keyboard Events and Press Ownership"
+status: accepted
+date: 2026-09-15
+scope: session
+---
+
 # ADR-0052: Ordered Keyboard Events and Press Ownership
 
 - **Status**: Accepted

@@ -1,3 +1,11 @@
+---
+id: ADR-0032
+title: "Tray icon composition — language base + modality overlays"
+status: accepted
+date: 2026-06-13
+scope: control
+---
+
 # ADR-0032: Tray icon composition — language base + modality overlays
 
 - **Status**: Accepted

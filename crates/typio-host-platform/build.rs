@@ -23,7 +23,7 @@ fn main() {
             let status = Command::new("meson")
                 .arg("setup")
                 .arg(&build_dir)
-                .arg("-Dtext=true")
+                .arg("-Dglyph=true")
                 .current_dir(&optics_dir)
                 .status()
                 .expect("Failed to run meson setup");
@@ -45,8 +45,10 @@ fn main() {
     }
 
     let flux_rpaths = env::var("DEP_FLUX_RPATHS").unwrap_or_default();
-    let flux_text_rpaths = env::var("DEP_FLUX_TEXT_RPATHS").unwrap_or_default();
-    enforce_optimized_flux_for_release(&[&flux_rpaths, &flux_text_rpaths]);
+    let glyph_rpaths = env::var("DEP_GLYPH_RPATHS")
+        .or_else(|_| env::var("DEP_FLUX_TEXT_RPATHS"))
+        .unwrap_or_default();
+    enforce_optimized_flux_for_release(&[&flux_rpaths, &glyph_rpaths]);
 
     // flux-sys publishes the Meson build-tree rpaths it used via `links`
     // metadata. Re-emit them here so platform crate tests load the same
@@ -55,12 +57,13 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
 
-    for dir in flux_text_rpaths.split(';').filter(|s| !s.is_empty()) {
+    for dir in glyph_rpaths.split(';').filter(|s| !s.is_empty()) {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=DEP_FLUX_RPATHS");
+    println!("cargo:rerun-if-env-changed=DEP_GLYPH_RPATHS");
     println!("cargo:rerun-if-env-changed=DEP_FLUX_TEXT_RPATHS");
 }
 
@@ -68,7 +71,7 @@ fn main() {
 ///
 /// The Rust profile does not affect native libraries selected through
 /// `FLUX_BUILD_DIR`. Walk upward from the rpaths published by `flux-sys` and
-/// `flux-text-sys`; when they belong to a Meson build tree, use its
+/// `glyph-sys`; when they belong to a Meson build tree, use its
 /// introspection data as the authoritative optimization setting. Installed
 /// libraries have no Meson metadata nearby and remain the packager's
 /// responsibility.

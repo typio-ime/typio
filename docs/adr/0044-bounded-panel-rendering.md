@@ -1,3 +1,11 @@
+---
+id: ADR-0044
+title: "Bounded Panel Rendering Before SHM Presentation"
+status: accepted
+date: 2026-07-12
+scope: panel
+---
+
 # ADR-0044: Bounded Panel Rendering Before SHM Presentation
 
 - **Status**: Accepted

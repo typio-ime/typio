@@ -20,6 +20,8 @@ xtask = "run --package xtask --"
 [env]
 FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
 FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
+GLYPH_BUILD_DIR = { value = "../optics/build-release", relative = true }
+GLYPH_SOURCE_DIR = { value = "../optics/libs/glyph", relative = true }
 LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
 LENS_SOURCE_DIR = { value = "../optics", relative = true }
 IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }

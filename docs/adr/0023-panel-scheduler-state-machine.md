@@ -1,3 +1,11 @@
+---
+id: ADR-0023
+title: "Panel Scheduler State Machine"
+status: accepted
+date: 2026-06-03
+scope: panel
+---
+
 # ADR-0023: Panel Scheduler State Machine
 
 - **Status**: Accepted

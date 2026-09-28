@@ -1,3 +1,11 @@
+---
+id: ADR-0035
+title: "Bilingual migration of the host to Rust"
+status: accepted
+date: 2026-06-21
+scope: process
+---
+
 # ADR-0035: Bilingual migration of the host to Rust
 
 - **Status**: Accepted

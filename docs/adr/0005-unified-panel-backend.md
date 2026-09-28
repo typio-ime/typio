@@ -1,3 +1,11 @@
+---
+id: ADR-0005
+title: "Unified Panel Backend for Candidate and Status UI"
+status: accepted
+date: 2026-05-28
+scope: panel
+---
+
 # ADR-0005: Unified Panel Backend for Candidate and Status UI
 
 - **Status**: Accepted

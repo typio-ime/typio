@@ -1,3 +1,11 @@
+---
+id: ADR-0051
+title: "Single documentation tree at the repository root"
+status: accepted
+date: 2026-09-11
+scope: process
+---
+
 # ADR-0051: Single documentation tree at the repository root
 
 - **Status**: Accepted

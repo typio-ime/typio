@@ -1,3 +1,11 @@
+---
+id: ADR-0047
+title: "Headless Platform State Decoupling and CI Test Resilience"
+status: accepted
+date: 2026-09-11
+scope: session
+---
+
 # ADR-0047: Headless Platform State Decoupling and CI Test Resilience
 
 - **Status**: Accepted

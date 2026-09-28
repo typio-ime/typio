@@ -1,3 +1,11 @@
+---
+id: ADR-0049
+title: "TOML-only configuration"
+status: accepted
+date: 2026-09-11
+scope: process
+---
+
 # ADR-0049: TOML-only configuration
 
 - **Status**: Accepted

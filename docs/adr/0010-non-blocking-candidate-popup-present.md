@@ -1,3 +1,12 @@
+---
+id: ADR-0010
+title: "Non-blocking present mode for the candidate popup"
+status: superseded
+date: 2026-05-29
+scope: panel
+superseded_by: "ADR-0040"
+---
+
 # ADR-0010: Non-blocking present mode for the candidate popup
 
 - **Status**: Superseded by [ADR-0040](0040-cpu-canvas-render-shm-buffers.md) — Vulkan/dmabuf removed from the panel entirely; MAILBOX mode no longer relevant

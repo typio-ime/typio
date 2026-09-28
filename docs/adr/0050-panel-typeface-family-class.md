@@ -1,3 +1,11 @@
+---
+id: ADR-0050
+title: "Panel typeface family is a family *class*"
+status: accepted
+date: 2026-09-11
+scope: panel
+---
+
 # ADR-0050: Panel typeface family is a family *class*
 
 - **Status**: Accepted

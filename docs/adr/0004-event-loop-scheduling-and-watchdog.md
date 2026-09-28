@@ -1,3 +1,12 @@
+---
+id: ADR-0004
+title: "Event-Loop Scheduling and Watchdog"
+status: superseded
+date: 2026-05-28
+scope: loop
+superseded_by: "ADR-0041"
+---
+
 # ADR-0004: Event-Loop Scheduling and Watchdog
 
 - **Status**: Superseded (watchdog removed by ADR-0041; event-loop scheduling retained)

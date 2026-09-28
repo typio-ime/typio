@@ -93,10 +93,10 @@ fn main() {
         }
     }
 
-    // Same re-emit for flux-text-sys (links = "flux-text"): libflux_text.so
+    // Same re-emit for glyph-sys (links = "glyph"): libglyph.so
     // lives in a sibling build subdir and otherwise resolves to a stale
-    // system install that lacks the host-coverage glyph path (ADR-0019).
-    if let Ok(rpaths) = env::var("DEP_FLUX_TEXT_RPATHS") {
+    // system install that lacks the host-coverage glyph path.
+    if let Ok(rpaths) = env::var("DEP_GLYPH_RPATHS").or_else(|_| env::var("DEP_FLUX_TEXT_RPATHS")) {
         for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
         }
@@ -182,6 +182,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TYPIO_INSTALL_DATADIR");
     println!("cargo:rerun-if-env-changed=TYPIO_ENGINE_DIR");
     println!("cargo:rerun-if-env-changed=DEP_FLUX_RPATHS");
+    println!("cargo:rerun-if-env-changed=DEP_GLYPH_RPATHS");
     println!("cargo:rerun-if-env-changed=DEP_FLUX_TEXT_RPATHS");
 }
 

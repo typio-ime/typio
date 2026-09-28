@@ -13,8 +13,8 @@ path = "src/bin/typio.rs"
 
 [features]
 default = ["wayland", "systray"]
-wayland = ["dep:typio-host-platform", "dep:wayland-client", "dep:wayland-scanner", "dep:wayland-backend", "dep:xkbcommon", "dep:flux-sys", "dep:flux-text-sys", "dep:wayland-sys"]
-systray = ["dep:zbus", "dep:flux-sys", "dep:flux-text-sys"]
+wayland = ["dep:typio-host-platform", "dep:wayland-client", "dep:wayland-scanner", "dep:wayland-backend", "dep:xkbcommon", "dep:flux-sys", "dep:glyph-sys", "dep:wayland-sys"]
+systray = ["dep:zbus", "dep:flux-sys", "dep:glyph-sys"]
 
 [dependencies]
 wayland-client = { optional = true, version = "0.31" }
@@ -35,7 +35,7 @@ libc.workspace = true
 xkbcommon = { workspace = true, optional = true }
 
 flux-sys = { workspace = true, optional = true }
-flux-text-sys = { workspace = true, optional = true }
+glyph-sys = { workspace = true, optional = true }
 wayland-sys = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-log.workspace = true

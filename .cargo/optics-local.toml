@@ -10,7 +10,7 @@
 [patch."https://github.com/ming2k/optics"]
 flux = { path = "../optics/bindings/flux-rs/crates/flux" }
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-flux-text-sys = { path = "../optics/bindings/flux-rs/crates/flux-text-sys" }
+glyph-sys = { path = "../optics/bindings/glyph-rs/crates/glyph-sys" }
 lens = { path = "../optics/bindings/lens-rs/crates/lens" }
 lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 iris = { path = "../optics/bindings/iris-rs/crates/iris" }
@@ -23,6 +23,8 @@ iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }
 [env]
 FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
 FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
+GLYPH_BUILD_DIR = { value = "../optics/build-release", relative = true }
+GLYPH_SOURCE_DIR = { value = "../optics/libs/glyph", relative = true }
 LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
 LENS_SOURCE_DIR = { value = "../optics", relative = true }
 IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }
