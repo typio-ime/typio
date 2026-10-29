@@ -5,6 +5,117 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Optics v0.0.62 alignment.** Moved the workspace pin and CI
+  `OPTICS_PINNED_REF` from `v0.0.52` to `v0.0.62` as one atomic unit, since the
+  `-sys` build scripts floor `pkg-config` far below the pin and would otherwise
+  link a stale system install silently.
+- **Tray badge outlines use `glyph_draw_outlined`.** Replaced nine hand-rolled
+  `glyph_draw` calls — eight black offset copies plus the foreground — with the
+  single upstream call, which dilates over eight *normalised* directions before
+  the foreground pass. A two-glyph badge now builds its text layout once instead
+  of nine times per size, and the outline keeps the requested contour radius
+  instead of widening by √2 at the corners. Delivered ink coverage is unchanged.
+
+### Fixed
+
+- **Panel corners stay rounded after the candidate row shrinks.** The CPU pass
+  was opened with `flux_canvas_begin(canvas, NULL)`, which *loads* the existing
+  framebuffer instead of clearing it, and `ensure_canvas` keeps one canvas alive
+  across resizes. Because the opaque panel body is drawn over `content_w - 2`
+  logical px inside a usually-wider retained framebuffer, the previous frame's
+  pixels survived outside the new body — and its 8 px corner arcs blended over
+  the new body's corners. The panel therefore read as square on the right once
+  the buffer had ever been wider than the current content, and kept vertical
+  remnants at the bottom once it got shorter. The pass now clears to transparent,
+  so the corner arcs reach the compositor and drag only the body. Covered by
+  `shrinking_panel_keeps_rounded_corners`, which drives a wide frame then a
+  narrow one through the same canvas and asserts all four corners are
+  transparent and no pixel leaks past the body.
+- **Removed three unenforced-safety escape hatches** in the same path, each of
+  which had been suppressing a check that would have caught a real mistake:
+  `flux_result_is_ok` was generic over `T` and recovered the discriminant with
+  `transmute_copy`, silently reinterpreting the first four bytes of whatever it
+  was handed — it is now typed to `flux_result`; `TextRaster`'s `unsafe impl
+  Send` promised single-thread use that nothing enforced and nothing needed, so
+  it is gone and the compiler now enforces the invariant; and
+  `viewport_mapping_changed`'s eight positional `u32`/`i32` arguments, which made
+  a swapped pair invisible, became a `ViewportMapping` value compared with
+  `differs_from`.
+
+- **The engine conformance probe now asserts substance.** `process_audio` sent an
+  empty payload and accepted any reply containing a `TEXT` record, so an engine
+  returning `Text("")` for every input passed. Measured on the shipped
+  `typio-engine-sherpa` 0.3.0 stub: `Availability::Ready`, 1.5 s of audio at peak
+  0.60, reply `Text("")`, and the gate reported 4 passed / 0 failed. The probe now
+  sends 1.5 s of generated 440 Hz audio and requires a **non-empty** transcript
+  from any engine that declares `voice_input`; `Text("")`, silence, and a bare
+  `Ok` are failures. An engine that does not declare the capability must still
+  answer with non-empty text or an explicit error. See ADR-0055.
+
+- **Recording engines honour `engines.<name>.*` from `core.toml`.** The engine
+  read neither of its two documented keys: `Engine` carried unused `model_setting`
+  and `language` fields that nothing ever assigned, so `engines.sherpa-onnx.model`
+  and `.language` were accepted, displayed, and ignored. It now reads
+  `core.toml` at startup and on `ReloadConfig`. A wrong-typed value is reported
+  rather than silently falling back to auto-detection.
+- **`reload_active_config` covers the voice slot.** It iterated only
+  `active_keyboard`, so a changed model or language never reached a running voice
+  engine — and `ProcessBackend::on_config_change` deliberately defers voice to
+  this path, so there was no second route. Both slots are now reloaded.
+- **Engine conformance probe asserts substance, not presence.** See below.
+- **The mock engine can observe `reload_config`.** Its inability to do so is why
+  the voice-reload gap survived; `reload_active_config_reaches_both_keyboard_and_voice`
+  now fails if either slot is skipped.
+
+- **`[shortcuts]` is now enforced.** Every documented shortcut key is resolved
+  from `core.toml`, matched on the keystroke path, and re-resolved on reload. The
+  push-to-talk chord was hardcoded as `Super+V`; it now comes from
+  `shortcuts.voice_ptt`, so a user whose compositor owns that chord can rebind it.
+  `shortcuts.exit` (`Ctrl+Shift+Escape`) and `shortcuts.summon_indicator`
+  (`Ctrl+Super+i`) had **no handler at all** — `KEY_ESCAPE` was defined and
+  referenced nowhere — and now work.
+- **New binding grammar and parser.** `crates/typio-host-types/src/key_binding.rs`
+  parses `Ctrl+Alt+space`-style strings with case-insensitive modifiers, spacing
+  tolerance, named keys (`space`…`f12`), modifier-only chords, and
+  `none`/`disabled` for unbound. Matching is exact on the modifier set, so
+  `Ctrl+Super+v` does not fire a `Super+v` binding.
+- **A malformed binding is reported, never silently defaulted.** The daemon logs
+  `shortcut binding rejected` with the key, value, and reason, and leaves that
+  shortcut unbound — so "I rebound it and nothing happened" is visible instead of
+  silent.
+- **Defaults have one home.** `Shortcut::default_text` is read by the config
+  schema, and a test asserts those defaults still match the reference page.
+- **Deleted the dead legacy matching path**: `is_voice_ptt_key`, the hardcoded
+  `V`/`SUPER`/not-`CTRL`/not-`ALT` predicate, `ShortcutBinding`, and the unused
+  `KEY_ESCAPE`/`KEY_V`/`KEY_CAPITAL_V` constants on the policy path.
+- **27 new tests**, including four that drive the real router with a rebound chord
+  and assert both halves — the new binding fires and the old one stops. Verified
+  by reverting to the hardcoded match: the test fails with
+  `Super+V must not fire once the binding is rebound`.
+
+### Documentation
+
+- **ADR-0056 is Accepted.** It records that shortcut configuration is enforced
+  rather than decorative; `switch_keyboard_engine` remains resolved-and-matched
+  with no cycle action, recorded as a known gap. Every
+  documented shortcut key is parsed, persisted, and displayed, but the frontend
+  consults none of them: the push-to-talk chord is hardcoded as `Super+V` and
+  `KEY_ESCAPE` is defined and unused. Recorded as **Proposed** with the
+  enforcement contract, because the fix spans the router, the input driver, and
+  the settings UI.
+- **ADR-0054 and ADR-0055 record the engine boundary and probe contract.**
+  ADR-0054 ends the in-process C ABI path for recognition engines; ADR-0055 makes
+  conformance probes assert substance rather than presence.
+- **ADR-0053 records the adoption boundary.** Documents which Optics
+  `v0.0.52`→`v0.0.62` designs this host adopts and which it declines
+  (display-paced presentation, partial damage, supersample mask baking, the
+  dual-thread presentation engine, and the pre-fold event seam), with the
+  precondition that would make each one viable.
+
 ## [0.6.3] - 2026-09-28
 
 ### Changed
