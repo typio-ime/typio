@@ -274,10 +274,21 @@ It shares `typio-engine-manifest` and `typio-engine-protocol` with the daemon,
 so frame limits and payload decoding are identical to production; it supplies
 isolated temporary config, data, and state roots and removes them afterwards.
 Only `FAIL` exits non-zero; `WARN` flags legal but suspicious behavior such as a
-keyboard declining a plain printable key. Engine-specific correctness still
-belongs in each engine's own test suite. Run it against every package in CI, and
+keyboard declining a plain printable key. Run it against every package in CI, and
 against `crates/typio-engine-protocol/examples/typio-engine-hello.toml` for
 protocol work.
+
+A probe must assert **substance, not presence** ([ADR-0055](../adr/0055-conformance-probes-assert-substance.md)).
+The voice probe therefore sends 1.5 s of generated non-silent audio, and:
+
+| Engine declaration | Required outcome |
+|---|---|
+| manifest declares `voice_input` | A **non-empty** transcript. Silence, `Text("")`, or a bare `Ok` fail. |
+| does not declare it | Non-empty text **or** an explicit error. A silent empty success still fails. |
+
+`Text("")` is never a pass. An empty payload or an assertion on the `TEXT`
+*record type* would let an engine that never transcribes pass every check — which
+is exactly the defect ADR-0055 was written to close.
 
 ### 3.9 Retired mechanisms
 

@@ -221,7 +221,7 @@ fn vet_process(
 
     match expected_kind {
         EngineKind::Keyboard => vet_keyboard(&mut session, results),
-        EngineKind::Voice => vet_voice(&mut session, results),
+        EngineKind::Voice => vet_voice(&mut session, manifest, results),
     }
 
     match session.stop() {
@@ -290,26 +290,94 @@ fn vet_keyboard(session: &mut EngineSession, results: &mut Vec<CheckResult>) {
     let _ = session.request(&Request::FocusOut(1));
 }
 
-fn vet_voice(session: &mut EngineSession, results: &mut Vec<CheckResult>) {
-    match session.request(&Request::ProcessAudio(Vec::new())) {
-        Ok(reply) => {
-            if let Some(error) = reply_error(&reply) {
-                results.push(CheckResult::fail(BEHAVIOR, "process_audio", error));
-            } else if reply
-                .records
-                .iter()
-                .any(|record| matches!(record, ReplyRecord::Text(_)))
-            {
-                results.push(CheckResult::pass(BEHAVIOR, "process_audio"));
-            } else {
-                results.push(CheckResult::warn(
-                    BEHAVIOR,
-                    "process_audio",
-                    "empty-audio probe returned no TEXT record",
-                ));
-            }
+/// Deterministic non-silent probe audio: 1.5 s of 440 Hz at peak 0.6, 16 kHz
+/// mono f32 little-endian.
+///
+/// A generated waveform is used rather than a bundled fixture because its only
+/// job is to prove the engine consumed non-empty input. It cannot go stale and
+/// asserts nothing about any model's expected transcription.
+fn probe_audio() -> Vec<u8> {
+    const SAMPLE_RATE: u32 = 16_000;
+    const MILLIS: u32 = 1_500;
+    const FREQ_HZ: f32 = 440.0;
+    const PEAK: f32 = 0.6;
+
+    let samples = SAMPLE_RATE * MILLIS / 1000;
+    let mut bytes = Vec::with_capacity(samples as usize * 4);
+    for i in 0..samples {
+        let t = i as f32 / SAMPLE_RATE as f32;
+        let value = PEAK * (std::f32::consts::TAU * FREQ_HZ * t).sin();
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+/// Probe voice inference with real audio (ADR-0055).
+///
+/// The previous probe sent an empty payload and accepted any reply containing a
+/// `TEXT` record — so a stub returning `Text("")` for every input passed every
+/// assertion. The assertion is now on substance:
+///
+/// * An engine that declares `voice_input` must return **non-empty** text for
+///   non-silent audio. Silence, `Text("")`, or a bare `Ok` is a failure.
+/// * An engine that does not declare it is judged only on honesty: it must either
+///   return non-empty text or an explicit error. A silent empty success is still a
+///   failure, because it is indistinguishable from an unimplemented engine.
+fn vet_voice(
+    session: &mut EngineSession,
+    manifest: &EngineManifest,
+    results: &mut Vec<CheckResult>,
+) {
+    let declares_voice = manifest
+        .required
+        .iter()
+        .flatten()
+        .chain(manifest.optional.iter().flatten())
+        .any(|capability| capability == "voice_input");
+
+    let reply = match session.request(&Request::ProcessAudio(probe_audio())) {
+        Ok(reply) => reply,
+        Err(error) => {
+            results.push(CheckResult::fail(BEHAVIOR, "process_audio", error));
+            return;
         }
-        Err(error) => results.push(CheckResult::fail(BEHAVIOR, "process_audio", error)),
+    };
+
+    if let Some(error) = reply_error(&reply) {
+        // An explicit error is an honest answer for an engine that does not
+        // claim voice support; it is a broken promise for one that does.
+        if declares_voice {
+            results.push(CheckResult::fail(
+                BEHAVIOR,
+                "process_audio",
+                format!("declared voice_input but failed with: {error}"),
+            ));
+        } else {
+            results.push(CheckResult::pass(BEHAVIOR, "process_audio"));
+        }
+        return;
+    }
+
+    let text = reply.records.iter().find_map(|record| match record {
+        ReplyRecord::Text(text) => Some(text.as_str()),
+        _ => None,
+    });
+
+    match text {
+        Some(transcript) if !transcript.trim().is_empty() => {
+            results.push(CheckResult::pass(BEHAVIOR, "process_audio"));
+        }
+        Some(_) => results.push(CheckResult::fail(
+            BEHAVIOR,
+            "process_audio",
+            "returned an empty transcript for non-silent audio; a stub that never \
+             transcribes is indistinguishable from an unimplemented engine",
+        )),
+        None => results.push(CheckResult::fail(
+            BEHAVIOR,
+            "process_audio",
+            "response contains no TEXT record for non-silent audio",
+        )),
     }
 }
 

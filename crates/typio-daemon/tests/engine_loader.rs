@@ -8,6 +8,16 @@
 //! engine starts shipping a manifest that the Rust loader rejects (new
 //! field, different value type, etc.), this test fails before the daemon
 //! loader is retired.
+//!
+//! # Native engine binaries
+//!
+//! `all_real_manifests_register_into_typio_runtime` spawns each engine, so it
+//! needs the engine's own native dependencies to be loadable. A voice engine
+//! links sherpa-onnx, which in turn needs the protobuf runtime it was built
+//! against; on a machine with a mismatched protobuf the process dies before the
+//! handshake and this test reports a transport error. That is an environment
+//! fault, not a manifest fault — the other two tests isolate the manifest
+//! contract and run everywhere.
 
 use std::fs;
 use std::path::PathBuf;
