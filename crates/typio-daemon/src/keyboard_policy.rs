@@ -116,15 +116,21 @@ fn modifiers_for_current_key(modifiers: Modifiers, keysym: Keysym, state: u32) -
     }
 }
 
-// ── chords ───────────────────────────────────────────────────────────────
+/// Config keys for the shortcuts the frontend matches.
+///
+/// Re-exported from the shared binding model so a test or caller names the key
+/// without depending on either crate directly. Kept as constants rather than a
+/// re-export module so the `use` path stays stable if the model moves.
+pub mod shortcut_keys {
+    pub use typio_host_types::shortcuts::{
+        KEY_EXIT, KEY_SUMMON_INDICATOR, KEY_SWITCH_KEYBOARD_ENGINE, KEY_SWITCH_LANGUAGE,
+        KEY_VOICE_PTT,
+    };
 
-/// A keyboard shortcut binding: a modifier set + a trigger keysym.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShortcutBinding {
-    /// Required modifier mask (any of Shift/Ctrl/Alt/Super).
-    pub modifiers: Modifiers,
-    /// Trigger keysym (the non-modifier key that completes the chord).
-    pub keysym: Keysym,
+    /// Alias for [`KEY_SWITCH_LANGUAGE`] under its shortcut name.
+    pub const SWITCH_LANGUAGE: &str = KEY_SWITCH_LANGUAGE;
+    /// Alias for [`KEY_VOICE_PTT`] under its shortcut name.
+    pub const VOICE_PTT: &str = KEY_VOICE_PTT;
 }
 
 // ── repeat_guard ─────────────────────────────────────────────────────────

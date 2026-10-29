@@ -42,6 +42,8 @@ use crate::state_controller::{StateChange, StateController};
 #[cfg(feature = "systray")]
 use crate::tray_sni::Tray;
 use crate::uds_server::UdsServer;
+use typio_host_types::shortcuts::Shortcuts;
+use typio_runtime::config::ConfigValue;
 
 #[cfg(feature = "wayland")]
 use crate::input_method::InputMethodFrontend;
@@ -74,6 +76,9 @@ enum DaemonEvent {
     /// Runtime state changed (engine / language / voice switch from
     /// the tray). Re-sync `StateController`, IPC bus, and tray surface.
     StateRefresh,
+    /// The `shortcuts.summon_indicator` chord fired: re-show the indicator
+    /// regardless of the recency gate, then refresh state surfaces.
+    SummonIndicator,
     /// A tray action forwarded from the zbus worker for main-loop execution.
     #[cfg(feature = "systray")]
     TrayAction(crate::tray_sni::TrayAction),
@@ -441,7 +446,11 @@ impl App {
             }
 
             if let Some(instance) = self.instance.as_ref().cloned() {
-                self.router = Some(KeyboardRouter::new(instance.borrow_mut().as_mut()));
+                let shortcuts = Self::resolve_shortcuts(instance.borrow().as_ref());
+                self.router = Some(KeyboardRouter::with_shortcuts(
+                    instance.borrow_mut().as_mut(),
+                    shortcuts,
+                ));
 
                 match RepeatTimer::new() {
                     Ok(timer) => {
@@ -650,6 +659,33 @@ impl App {
         0
     }
 
+    /// Resolve `[shortcuts]` from the running configuration.
+    ///
+    /// A malformed binding is logged per key and leaves that shortcut unbound,
+    /// rather than silently reverting to the default: the user has to be able to
+    /// tell that their value does not take effect (ADR-0056). Absent keys take
+    /// their documented default, which is what a stock install relies on.
+    #[cfg(feature = "wayland")]
+    fn resolve_shortcuts(instance: &typio_runtime::TypioInstance) -> Shortcuts {
+        let Some(config) = instance.config_rust() else {
+            return Shortcuts::default();
+        };
+        let (shortcuts, errors) = Shortcuts::from_lookup(|key| match config.value(key) {
+            Some(ConfigValue::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        });
+        for error in &errors {
+            tracing::warn!(
+                target: "typio.shortcuts",
+                shortcut = error.shortcut.config_key(),
+                value = %error.value,
+                reason = %error.reason,
+                "shortcut binding rejected; this shortcut is unbound until the value is fixed"
+            );
+        }
+        shortcuts
+    }
+
     #[cfg(feature = "wayland")]
     /// Reload core/platform configuration and notify listeners.
     fn reload_config(&mut self) {
@@ -660,6 +696,11 @@ impl App {
         match reload {
             Ok(()) => {
                 tracing::info!(target: "typio.lifecycle", "configuration reloaded");
+                // Shortcut bindings are configuration too: re-resolve so a
+                // rebind takes effect without a restart.
+                if let Some(router) = self.router.as_mut() {
+                    router.set_shortcuts(Self::resolve_shortcuts(instance.borrow().as_ref()));
+                }
                 self.indicator_config = self.load_indicator_config();
                 self.refresh_state_surfaces();
                 // A reload may change the panel font (display.font_family /
@@ -763,6 +804,8 @@ impl App {
 
         let mut should_exit = signals::take_shutdown_requested();
         let mut state_refresh = false;
+        let mut summon_indicator = false;
+        let mut summoned_handled = false;
 
         if let Some(rx) = self.event_rx.as_ref() {
             for event in rx.try_iter() {
@@ -773,6 +816,7 @@ impl App {
                         should_exit = true;
                     }
                     DaemonEvent::StateRefresh => state_refresh = true,
+                    DaemonEvent::SummonIndicator => summon_indicator = true,
                     #[cfg(feature = "systray")]
                     DaemonEvent::TrayAction(action) => {
                         if tray::apply_tray_action(self.instance.as_ref(), action, &self.event_tx) {
@@ -781,6 +825,18 @@ impl App {
                     }
                 }
             }
+        }
+
+        if summon_indicator {
+            // The user pressed the summon chord. An explicit request always
+            // produces a banner, so this takes the summon path, and the generic
+            // state-change trigger below must not fire a second one.
+            #[cfg(feature = "wayland")]
+            if self.frontend.is_some() {
+                self.trigger_indicator_summoned();
+                summoned_handled = true;
+            }
+            state_refresh = true;
         }
 
         if state_refresh {
@@ -792,7 +848,7 @@ impl App {
             // user-initiated, so they go through the indicator's
             // no-gate deliberate-change path.
             #[cfg(feature = "wayland")]
-            if self.frontend.is_some() {
+            if self.frontend.is_some() && !summoned_handled {
                 self.trigger_indicator_state_change();
             }
         }

@@ -10,8 +10,8 @@ use std::time::Instant;
 use typio_runtime::core::engine::{KeyEvent as EngineKeyEvent, KeyState as EngineKeyState};
 
 use super::helpers::{
-    commit_candidate_should_fallback, host_selection_plain_key, is_voice_ptt_key,
-    page_boundary_selected_index, should_suppress_untracked_modifier_release,
+    commit_candidate_should_fallback, host_selection_plain_key, page_boundary_selected_index,
+    should_suppress_untracked_modifier_release,
 };
 use super::output::{PendingComposition, PendingEngineOutput};
 use super::preedit_coalescer::{PreeditCoalescer, PreeditUpdate};
@@ -24,6 +24,7 @@ use crate::keyboard_policy::{
     effective_modifiers, modifier_bit_for_keysym, repeat_should_cancel_on_modifier_transition,
 };
 use crate::text_ui_state::{PreeditTracking, TextUiPlan, text_ui_plan_update};
+use typio_host_types::shortcuts::{Shortcut, Shortcuts};
 use typio_host_types::{Modifiers, should_repeat_for_modifiers};
 
 /// Result of [`KeyboardRouter::dispatch_repeat`].
@@ -111,26 +112,32 @@ pub struct KeyboardRouter {
     voice_ptt_keycode: Option<u32>,
     /// Latched when `Super+V` starts voice push-to-talk.
     voice_ptt_pressed: bool,
-    /// Latched when the matching `V` release ends voice push-to-talk.
+    /// Latched when the matching key release ends voice push-to-talk.
     voice_ptt_released: bool,
+    /// Latched when the emergency-exit shortcut fires.
+    exit_requested: bool,
+    /// Latched when the summon-indicator shortcut fires.
+    summon_indicator_requested: bool,
+    /// Resolved `[shortcuts]` bindings. Matched on every key event; nothing on
+    /// this path compares against a hardcoded chord (ADR-0056).
+    shortcuts: Shortcuts,
 }
 
-/// Default engine-switch chord: Ctrl+Shift, the standard Linux IME
-/// switch. Both modifiers must be held simultaneously (any side, any
-/// order); the chord fires when they are *released* without any other
-/// key having been pressed — so Ctrl+Shift+V and similar app shortcuts
-/// pass through untouched.
-pub fn default_switch_binding() -> crate::keyboard_policy::ShortcutBinding {
-    use crate::keyboard_policy::ShortcutBinding;
-    ShortcutBinding {
-        modifiers: Modifiers(Modifiers::CTRL.0 | Modifiers::SHIFT.0),
-        keysym: 0, // unused — chord_is_switch_modifier covers both sides
-    }
-}
 impl KeyboardRouter {
     /// Create a new router for the given TypioInstance.
     ///
     pub fn new(instance: &mut typio_runtime::TypioInstance) -> Self {
+        Self::with_shortcuts(instance, Shortcuts::default())
+    }
+
+    /// Create a router bound to a specific shortcut set.
+    ///
+    /// The frontend resolves `[shortcuts]` from `core.toml` and passes the result
+    /// here, so a rebind takes effect on the next config generation.
+    pub fn with_shortcuts(
+        instance: &mut typio_runtime::TypioInstance,
+        shortcuts: Shortcuts,
+    ) -> Self {
         let ctx = typio_runtime::TypioInputContext::new_rust(instance);
         Self {
             ctx: Some(ctx),
@@ -151,7 +158,18 @@ impl KeyboardRouter {
             voice_ptt_keycode: None,
             voice_ptt_pressed: false,
             voice_ptt_released: false,
+            exit_requested: false,
+            summon_indicator_requested: false,
+            shortcuts,
         }
+    }
+
+    /// Replace the resolved shortcut bindings.
+    ///
+    /// Called when `core.toml` changes. Swapping the whole set keeps every chord
+    /// on one config generation; there is no partial-update path.
+    pub fn set_shortcuts(&mut self, shortcuts: Shortcuts) {
+        self.shortcuts = shortcuts;
     }
 
     /// Notify the engine that the input context has gained focus.
@@ -331,6 +349,8 @@ impl KeyboardRouter {
         self.voice_ptt_keycode = None;
         self.voice_ptt_pressed = false;
         self.voice_ptt_released = false;
+        self.exit_requested = false;
+        self.summon_indicator_requested = false;
     }
 
     pub fn reset_key_routing(&mut self) {
@@ -343,6 +363,18 @@ impl KeyboardRouter {
     /// keyboard. Reading clears the flag.
     pub fn take_switch_chord_fired(&mut self) -> bool {
         std::mem::take(&mut self.shortcut_fired)
+    }
+
+    /// True iff the emergency-exit shortcut fired during the most recent
+    /// `dispatch_key`. Reading clears the flag.
+    pub fn take_exit_requested(&mut self) -> bool {
+        std::mem::take(&mut self.exit_requested)
+    }
+
+    /// True iff the summon-indicator shortcut fired during the most recent
+    /// `dispatch_key`. Reading clears the flag.
+    pub fn take_summon_indicator_requested(&mut self) -> bool {
+        std::mem::take(&mut self.summon_indicator_requested)
     }
 
     /// True iff the most recent dispatch started voice push-to-talk.
@@ -609,16 +641,29 @@ impl KeyboardRouter {
             return true;
         }
 
-        let mods = self.shortcut_modifiers(xkb_mods_depressed);
-        if state == WL_KEYBOARD_KEY_STATE_PRESSED
-            && !is_modifier_key
-            && is_voice_ptt_key(key.keysym)
-            && mods.intersects(Modifiers::SUPER)
-            && !mods.intersects(Modifiers(Modifiers::CTRL.0 | Modifiers::ALT.0))
-        {
-            self.voice_ptt_keycode = Some(key.keycode);
-            self.voice_ptt_pressed = true;
-            return true;
+        // Single-key shortcuts match the configured bindings, not hardcoded
+        // chords. Checked before engine routing so a bound chord is claimed
+        // rather than typed into the application (ADR-0056).
+        if state == WL_KEYBOARD_KEY_STATE_PRESSED && !is_modifier_key {
+            let mods = self.shortcut_modifiers(xkb_mods_depressed);
+            match self.shortcuts.matching_key(key.keysym, mods) {
+                Some(Shortcut::VoicePtt) => {
+                    self.voice_ptt_keycode = Some(key.keycode);
+                    self.voice_ptt_pressed = true;
+                    return true;
+                }
+                Some(Shortcut::Exit) => {
+                    self.exit_requested = true;
+                    return true;
+                }
+                Some(Shortcut::SummonIndicator) => {
+                    self.summon_indicator_requested = true;
+                    return true;
+                }
+                // Modifier chords never reach here: `matching_key` excludes
+                // them, and they fire on the release that breaks the set.
+                Some(Shortcut::SwitchLanguage | Shortcut::SwitchKeyboardEngine) | None => {}
+            }
         }
 
         if key.state != 1 {
@@ -660,7 +705,7 @@ impl KeyboardRouter {
     /// state with none held) to the last one coming up; the latch and
     /// armed flags reset at both boundaries.
     fn track_switch_modifier(&mut self, bit: Modifiers, pressed: bool) -> bool {
-        let chord_mods = default_switch_binding().modifiers;
+        let chord_mods = self.shortcuts.get(Shortcut::SwitchLanguage).modifiers;
         let is_chord_mod = (chord_mods.0 & bit.0) != 0;
 
         if pressed {
@@ -1045,6 +1090,9 @@ mod tests {
                 voice_ptt_keycode: None,
                 voice_ptt_pressed: false,
                 voice_ptt_released: false,
+                exit_requested: false,
+                summon_indicator_requested: false,
+                shortcuts: Shortcuts::default(),
             }
         }
     }
@@ -1311,6 +1359,176 @@ mod tests {
         let mods = Modifiers::SUPER.0 | Modifiers::CTRL.0;
         assert!(!router.dispatch_key(&press, mods));
         assert!(!router.take_voice_ptt_pressed());
+    }
+
+    /// The point of ADR-0056: a rebind must change router behaviour.
+    ///
+    /// Before this, the push-to-talk chord was hardcoded as "keysym is V, SUPER
+    /// set, CTRL and ALT clear", so `shortcuts.voice_ptt` was displayed, parsed,
+    /// persisted, and ignored. This drives the real router — including real
+    /// modifier key events, so `physical_modifiers` tracks like production — and
+    /// asserts both halves: the new chord fires and the old one stops.
+    #[test]
+    fn a_rebound_push_to_talk_chord_takes_effect() {
+        fn key(keysym: u32, unicode: &str, code: u32, state: u32) -> DecodedKeyEvent {
+            DecodedKeyEvent {
+                keycode: code,
+                xkb_keycode: code,
+                keysym,
+                unicode: unicode.to_string(),
+                state,
+                time: 1,
+            }
+        }
+        const PRESS: u32 = WL_KEYBOARD_KEY_STATE_PRESSED;
+        const RELEASE: u32 = WL_KEYBOARD_KEY_STATE_RELEASED;
+
+        let rebind = || {
+            let (shortcuts, errors) = Shortcuts::from_lookup(|k| {
+                (k == crate::keyboard_policy::shortcut_keys::VOICE_PTT)
+                    .then(|| "Ctrl+Alt+space".to_string())
+            });
+            assert!(errors.is_empty(), "rebind should parse: {errors:?}");
+            shortcuts
+        };
+
+        // ── The old chord must stop working ──
+        let mut router = KeyboardRouter::new_for_test();
+        router.set_shortcuts(rebind());
+        router.dispatch_key(
+            &key(crate::keyboard_policy::KEY_SUPER_L, "", 133, PRESS),
+            Modifiers::SUPER.0,
+        );
+        router.dispatch_key(&key(KEY_V, "v", 47, PRESS), Modifiers::SUPER.0);
+        assert!(
+            !router.take_voice_ptt_pressed(),
+            "Super+V must not fire once the binding is rebound"
+        );
+
+        // ── The configured chord must work ──
+        let mut router = KeyboardRouter::new_for_test();
+        router.set_shortcuts(rebind());
+        router.dispatch_key(
+            &key(crate::keyboard_policy::KEY_CONTROL_L, "", 37, PRESS),
+            Modifiers::CTRL.0,
+        );
+        router.dispatch_key(
+            &key(crate::keyboard_policy::KEY_ALT_L, "", 64, PRESS),
+            Modifiers::CTRL.0 | Modifiers::ALT.0,
+        );
+        router.dispatch_key(
+            &key(crate::keyboard_policy::KEY_SPACE, " ", 65, PRESS),
+            Modifiers::CTRL.0 | Modifiers::ALT.0,
+        );
+        assert!(
+            router.take_voice_ptt_pressed(),
+            "the configured Ctrl+Alt+space chord must start recording"
+        );
+
+        // Releasing the same key ends the recording.
+        router.dispatch_key(
+            &key(crate::keyboard_policy::KEY_SPACE, " ", 65, RELEASE),
+            Modifiers::CTRL.0 | Modifiers::ALT.0,
+        );
+        assert!(router.take_voice_ptt_released());
+    }
+
+    /// `shortcuts.exit` was documented with a default and had no handler at all.
+    /// The configured chord must now latch the exit request.
+    #[test]
+    fn a_rebound_exit_chord_latches_the_request() {
+        let mut router = KeyboardRouter::new_for_test();
+        let (shortcuts, errors) = Shortcuts::from_lookup(|k| {
+            (k == crate::keyboard_policy::shortcut_keys::KEY_EXIT).then(|| "Alt+x".to_string())
+        });
+        assert!(errors.is_empty(), "{errors:?}");
+        router.set_shortcuts(shortcuts);
+
+        let escape = DecodedKeyEvent {
+            keycode: 9,
+            xkb_keycode: 9,
+            keysym: crate::keyboard_policy::KEY_ESCAPE,
+            unicode: String::new(),
+            state: WL_KEYBOARD_KEY_STATE_PRESSED,
+            time: 1,
+        };
+        // The documented default (Ctrl+Shift+Escape) must no longer fire.
+        router.dispatch_key(&escape, Modifiers::CTRL.0 | Modifiers::SHIFT.0);
+        assert!(
+            !router.take_exit_requested(),
+            "old exit chord must be inert"
+        );
+
+        // The configured Alt+x must, on a clean router so physical modifier
+        // tracking starts empty exactly as in a fresh focus epoch.
+        let mut router = KeyboardRouter::new_for_test();
+        let (shortcuts, errors) = Shortcuts::from_lookup(|k| {
+            (k == crate::keyboard_policy::shortcut_keys::KEY_EXIT).then(|| "Alt+x".to_string())
+        });
+        assert!(errors.is_empty(), "{errors:?}");
+        router.set_shortcuts(shortcuts);
+        let x = DecodedKeyEvent {
+            keycode: 53,
+            xkb_keycode: 53,
+            keysym: 0x0078,
+            unicode: "x".to_string(),
+            state: WL_KEYBOARD_KEY_STATE_PRESSED,
+            time: 2,
+        };
+        router.dispatch_key(&x, Modifiers::ALT.0);
+        assert!(
+            router.take_exit_requested(),
+            "configured exit chord must fire"
+        );
+        assert!(!router.take_exit_requested(), "reading clears the latch");
+    }
+
+    /// The summon-indicator shortcut is configurable too.
+    #[test]
+    fn the_summon_indicator_chord_latches_the_request() {
+        let mut router = KeyboardRouter::new_for_test();
+        let i = DecodedKeyEvent {
+            keycode: 31,
+            xkb_keycode: 31,
+            keysym: 0x0069,
+            unicode: "i".to_string(),
+            state: WL_KEYBOARD_KEY_STATE_PRESSED,
+            time: 1,
+        };
+        router.dispatch_key(&i, Modifiers::CTRL.0 | Modifiers::SUPER.0);
+        assert!(router.take_summon_indicator_requested());
+
+        // A different chord must not.
+        let mut router = KeyboardRouter::new_for_test();
+        router.dispatch_key(&i, Modifiers::SUPER.0);
+        assert!(!router.take_summon_indicator_requested());
+    }
+
+    /// Rebinding the language-switch chord must move the gesture, not just the
+    /// config value.
+    #[test]
+    fn a_rebound_switch_chord_moves_the_gesture() {
+        let mut router = KeyboardRouter::new_for_test();
+        let (shortcuts, errors) = Shortcuts::from_lookup(|key| {
+            (key == crate::keyboard_policy::shortcut_keys::SWITCH_LANGUAGE)
+                .then(|| "Alt+Shift".to_string())
+        });
+        assert!(errors.is_empty(), "{errors:?}");
+        router.set_shortcuts(shortcuts);
+
+        // Ctrl+Shift no longer switches.
+        router.track_switch_modifier(Modifiers::CTRL, true);
+        router.track_switch_modifier(Modifiers::SHIFT, true);
+        assert!(!router.track_switch_modifier(Modifiers::SHIFT, false));
+        router.track_switch_modifier(Modifiers::CTRL, false);
+
+        // Alt+Shift does.
+        router.track_switch_modifier(Modifiers::ALT, true);
+        router.track_switch_modifier(Modifiers::SHIFT, true);
+        assert!(
+            router.track_switch_modifier(Modifiers::SHIFT, false),
+            "the configured Alt+Shift chord must switch"
+        );
     }
 
     #[test]

@@ -120,8 +120,39 @@ build); without them the icon falls back to the generic glyph name.
 
 ### `[shortcuts]` — global shortcuts
 
-Parsed by typio-runtime. All values are shortcut strings such as `Ctrl+Shift` or
-`Super+v`.
+**Consumed by typio** (the input router). Every key below is resolved from
+`core.toml`, matched against key events, and re-resolved when the file changes —
+a rebind takes effect without restarting the daemon.
+
+#### Binding syntax
+
+```text
+binding  := modifier ( "+" modifier )* ( "+" key )?
+modifier := ctrl | control | alt | option | shift | super | meta | win | cmd
+key      := one printable ASCII character, or a name from the table below
+```
+
+Modifier names are case-insensitive and spaces around `+` are ignored, so
+`super + v`, `SUPER+V`, and `Super+v` are the same binding. A letter key matches
+either case. Without a key the binding is a *modifier chord*, which fires on the
+release that breaks the set (this is why `Ctrl+Shift` does not fire while the
+user is pressing `Ctrl+Shift+V`). An empty value, `none`, or `disabled` leaves
+the shortcut unbound.
+
+Named keys: `space`, `tab`, `escape`/`esc`, `return`/`enter`, `backspace`,
+`delete`, `insert`, `home`, `end`, `page_up`, `page_down`, `left`, `up`, `right`,
+`down`, `f1`–`f12`.
+
+#### Matching
+
+A binding matches only when the modifier set is **exactly** equal, so a
+`Super+v` binding does not fire for `Ctrl+Super+v`.
+
+An unparseable value is reported at startup and on reload, and leaves that
+shortcut **unbound**. It is not silently replaced by the default: the daemon logs
+`shortcut binding rejected` with the key, the value, and the reason.
+
+#### Keys
 
 | Key | Default | Description |
 |-----|---------|-------------|

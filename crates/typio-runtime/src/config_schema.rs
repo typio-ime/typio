@@ -3,6 +3,7 @@
 use crate::config::{Config, ConfigValue};
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
+use typio_host_types::shortcuts::Shortcut;
 
 /// Schema field type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +157,7 @@ fn framework_fields() -> Vec<ConfigSchemaField> {
         ),
         field(
             "shortcuts.switch_language",
-            Text("Ctrl+Shift".into()),
+            Text(Shortcut::SwitchLanguage.default_text().into()),
             "Switch language",
             "shortcuts",
             0,
@@ -165,7 +166,7 @@ fn framework_fields() -> Vec<ConfigSchemaField> {
         ),
         field(
             "shortcuts.switch_keyboard_engine",
-            Text(String::new()),
+            Text(Shortcut::SwitchKeyboardEngine.default_text().into()),
             "Switch keyboard engine",
             "shortcuts",
             0,
@@ -183,7 +184,7 @@ fn framework_fields() -> Vec<ConfigSchemaField> {
         ),
         field(
             "shortcuts.exit",
-            Text("Ctrl+Shift+Escape".into()),
+            Text(Shortcut::Exit.default_text().into()),
             "Exit",
             "shortcuts",
             0,
@@ -192,8 +193,17 @@ fn framework_fields() -> Vec<ConfigSchemaField> {
         ),
         field(
             "shortcuts.voice_ptt",
-            Text("Super+v".into()),
+            Text(Shortcut::VoicePtt.default_text().into()),
             "Voice (PTT)",
+            "shortcuts",
+            0,
+            0,
+            0,
+        ),
+        field(
+            "shortcuts.summon_indicator",
+            Text(Shortcut::SummonIndicator.default_text().into()),
+            "Summon indicator",
             "shortcuts",
             0,
             0,

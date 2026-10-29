@@ -1,9 +1,5 @@
-use crate::keyboard_policy::{KEY_CAPITAL_V, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_V};
+use crate::keyboard_policy::{KEY_PAGE_DOWN, KEY_PAGE_UP};
 use typio_host_types::Modifiers;
-
-pub(super) fn is_voice_ptt_key(keysym: u32) -> bool {
-    keysym == KEY_V || keysym == KEY_CAPITAL_V
-}
 
 pub(super) fn page_boundary_selected_index(keysym: u32, candidate_count: usize) -> Option<usize> {
     if candidate_count == 0 {

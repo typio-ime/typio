@@ -1,10 +1,12 @@
 //! Platform-neutral host state and policy types shared by the Typio daemon and
 //! its platform integration crates.
 
+pub mod key_binding;
 pub mod modifiers;
 pub mod panel_coordinator;
 pub mod panel_present_gate;
 pub mod panel_scheduler;
+pub mod shortcuts;
 pub mod wayland_pending;
 
 /// Pure input facts recorded from platform events and consumed by the focus
@@ -35,7 +37,7 @@ bitflags::bitflags! {
 
 /// Typeface family class for the panel text.
 ///
-/// This is the real capability boundary of the text stack: flux-text resolves
+/// This is the real capability boundary of the text stack: glyph resolves
 /// faces through fontconfig and exposes a *family class* selector, not a
 /// free-form family name. Modelling the setting as a class keeps the
 /// user-facing option honest — every accepted value actually changes the

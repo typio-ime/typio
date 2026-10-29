@@ -50,6 +50,9 @@ pub(super) enum IndicatorPath {
     Focus,
     Reactivate,
     StateChange,
+    /// The user pressed the summon-indicator shortcut. Bypasses the recency
+    /// gate so an explicit request always produces a banner.
+    Summoned,
 }
 
 /// [`LabelSources`] backed by the live `EngineRegistry`. Borrows its
@@ -107,14 +110,26 @@ impl App {
     }
 
     /// Trigger the indicator's deliberate-change show (no gates beyond
-    /// `enabled`). Called from the `StateRefresh` drain — covers Ctrl+Shift
+    /// `enabled`). Called from the `StateRefresh` drain — covers the switch
     /// chord, tray-driven engine/language switch, and IPC-driven mutations.
     #[cfg(feature = "wayland")]
     pub(super) fn trigger_indicator_state_change(&mut self) {
         self.trigger_indicator_show(IndicatorPath::StateChange);
     }
 
-    /// Shared body of the three trigger paths. Resolves label sources from
+    /// Re-show the indicator because the user pressed `shortcuts.summon_indicator`.
+    ///
+    /// Distinct from the state-change path: the user asked for the indicator
+    /// explicitly, so this bypasses the recency gate that suppresses a banner
+    /// they have already acknowledged — otherwise pressing the summon chord
+    /// while the indicator is still considered recent would appear to do
+    /// nothing.
+    #[cfg(feature = "wayland")]
+    pub(super) fn trigger_indicator_summoned(&mut self) {
+        self.trigger_indicator_show(IndicatorPath::Summoned);
+    }
+
+    /// Shared body of the trigger paths. Resolves label sources from
     /// the live registry, asks the [`Indicator`](crate::indicator::Indicator)
     /// state machine for a label, and feeds any returned label to
     /// [`Self::request_indicator_show`].
@@ -172,6 +187,7 @@ impl App {
                 IndicatorPath::StateChange => {
                     indicator.show_for_state_change(now, mode_ref, &cfg, &sources)
                 }
+                IndicatorPath::Summoned => indicator.show_on_summon(now, &cfg, &sources),
             };
             tracing::debug!(
                 target: "typio.indicator",

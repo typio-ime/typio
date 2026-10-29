@@ -82,19 +82,27 @@ impl App {
                     if let Some(indicator) = self.indicator.as_mut() {
                         indicator.record_key_activity(now);
                     }
-                    if router.take_switch_chord_fired() {
-                        // Ctrl+Shift (default) just completed. Cycle
+                    if router.take_exit_requested() {
+                        // `shortcuts.exit` was documented with a default but had
+                        // no handler at all before ADR-0056.
+                        tracing::info!(target: "typio.lifecycle", "emergency exit shortcut");
+                        let _ = self.event_tx.send(DaemonEvent::Shutdown);
+                    } else if router.take_summon_indicator_requested() {
+                        tracing::debug!(target: "typio.indicator", "summon-indicator shortcut");
+                        let _ = self.event_tx.send(DaemonEvent::SummonIndicator);
+                    } else if router.take_switch_chord_fired() {
+                        // The configured switch chord just completed. Cycle
                         // to the next language (reusing the engine last
                         // used for it); with <2 languages the cycle
                         // falls back to engine cycling. Suppresses
                         // forwarding of the modifier press itself.
-                        tracing::debug!(target: "typio.indicator", "Ctrl+Shift language-switch chord fired");
+                        tracing::debug!(target: "typio.indicator", "language-switch chord fired");
                         if let Some(instance) = self.instance.as_ref() {
                             cycle_active_language(instance);
                         }
                         let _ = self.event_tx.send(DaemonEvent::StateRefresh);
                     } else if router.take_voice_ptt_pressed() {
-                        tracing::debug!(target: "typio.voice", "Super+V push-to-talk pressed");
+                        tracing::debug!(target: "typio.voice", "push-to-talk pressed");
                         let _ = timer.stop();
                         // On success the session fires a synchronous
                         // `Recording` state change that drives the sticky
@@ -143,7 +151,7 @@ impl App {
                         None => router.dispatch_key(&key, mods),
                     };
                     if router.take_voice_ptt_released() {
-                        tracing::debug!(target: "typio.voice", "Super+V push-to-talk released");
+                        tracing::debug!(target: "typio.voice", "push-to-talk released");
                         if let Some(voice) = self.voice.as_ref() {
                             // The session fires a synchronous `Processing`
                             // state change that drives the sticky
