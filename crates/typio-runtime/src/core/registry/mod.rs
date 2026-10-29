@@ -828,13 +828,32 @@ impl EngineRegistry {
         Ok(())
     }
 
-    /// Reload config on the active keyboard engine.
+    /// Number of `reload_config` calls recorded by the named engine's mock.
     ///
-    /// Called when the user edits `core.toml` or sends a reload signal.
+    /// Test-only; used to prove a reload actually reaches the engine.
+    #[cfg(test)]
+    pub fn mock_reload_count(&self, engine_name: &str) -> usize {
+        self.find_index(engine_name)
+            .and_then(|idx| self.slots[idx].backend.process_reload_count())
+            .unwrap_or(0)
+    }
+
+    /// Reload config on the active keyboard *and* voice engines.
+    ///
+    /// Called when the user edits `core.toml` or sends a reload signal. Both
+    /// slots are reloaded because both read configuration out of that file: a
+    /// voice engine resolves its model directory and language hint from
+    /// `engines.<name>.*`, exactly like a keyboard engine resolves its schemas.
+    /// Reloading only the keyboard slot would leave a voice engine transcribing
+    /// with the model it loaded at startup until the daemon restarted.
+    ///
     /// Engine-side failures are logged but do not propagate — a misconfigured
     /// engine should not crash the host.
     pub fn reload_active_config(&mut self) {
-        for idx in [self.active_keyboard].into_iter().flatten() {
+        for idx in [self.active_keyboard, self.active_voice]
+            .into_iter()
+            .flatten()
+        {
             let slot = &mut self.slots[idx];
             let name = slot.name.clone();
             let r = slot.backend.with_engine(|engine| engine.reload_config());
@@ -1150,6 +1169,54 @@ mod tests {
     fn register_voice(reg: &mut EngineRegistry, name: &str) {
         let backend = ProcessBackend::new_mock(EngineInfo::new(name, EngineType::Voice));
         reg.register(backend).unwrap();
+    }
+
+    /// `reload_active_config` must reach the **voice** slot, not just keyboard.
+    ///
+    /// A voice engine resolves its model directory and language hint out of the
+    /// host's `core.toml`, exactly like a keyboard engine resolves its schemas.
+    /// The first version of this method iterated only `active_keyboard`, so a
+    /// changed model or language was ignored by a running voice engine until the
+    /// daemon restarted — and no test noticed, because the mock engine could not
+    /// observe reloads at all.
+    #[test]
+    fn reload_active_config_reaches_both_keyboard_and_voice() {
+        let mut reg = EngineRegistry::new();
+        register_keyboard(&mut reg, "typer");
+        register_voice(&mut reg, "talker");
+        reg.activate_keyboard("typer").unwrap();
+        reg.activate_voice("talker").unwrap();
+
+        assert_eq!(reg.mock_reload_count("typer"), 0);
+        assert_eq!(reg.mock_reload_count("talker"), 0);
+
+        reg.reload_active_config();
+
+        assert_eq!(
+            reg.mock_reload_count("typer"),
+            1,
+            "keyboard was not reloaded"
+        );
+        assert_eq!(
+            reg.mock_reload_count("talker"),
+            1,
+            "voice engine was not reloaded, so a changed model or language would be ignored"
+        );
+    }
+
+    /// An inactive slot must not be reloaded: there is nothing resident to reload.
+    #[test]
+    fn reload_active_config_skips_inactive_slots() {
+        let mut reg = EngineRegistry::new();
+        register_keyboard(&mut reg, "typer");
+        register_voice(&mut reg, "talker");
+        reg.activate_keyboard("typer").unwrap();
+        // "talker" is registered but never activated.
+
+        reg.reload_active_config();
+
+        assert_eq!(reg.mock_reload_count("typer"), 1);
+        assert_eq!(reg.mock_reload_count("talker"), 0);
     }
 
     #[test]

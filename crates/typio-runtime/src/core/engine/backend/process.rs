@@ -132,7 +132,10 @@ impl ProcessBackend {
     #[cfg(test)]
     pub(crate) fn new_mock(info: EngineInfo) -> Self {
         Self {
-            mock_engine: Some(MockProcessEngine { info: info.clone() }),
+            mock_engine: Some(MockProcessEngine {
+                info: info.clone(),
+                reloads: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }),
             info,
             argv: Vec::new(),
             runtime_dirs: RuntimeDirs::default(),
@@ -142,6 +145,32 @@ impl ProcessBackend {
             recovery_not_before: None,
             schema_registered: false,
         }
+    }
+
+    /// Number of `reload_config` calls the mock engine has received.
+    ///
+    /// Test-only. Exists because the mock previously could not observe reloads,
+    /// which let `EngineRegistry::reload_active_config` silently skip the voice
+    /// slot without any test noticing.
+    #[cfg(test)]
+    pub(crate) fn process_reload_count(&self) -> Option<usize> {
+        self.mock_engine
+            .as_ref()
+            .map(|engine| engine.reloads.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Number of `reload_config` calls the mock engine has received.
+    ///
+    /// Test-only. Exists because the mock previously could not observe reloads,
+    /// which let `EngineRegistry::reload_active_config` silently skip the voice
+    /// slot without any test noticing.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn mock_reload_count(&self) -> usize {
+        self.mock_engine
+            .as_ref()
+            .map(|engine| engine.reloads.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     /// Immutable engine metadata.
@@ -407,6 +436,9 @@ impl ProcessBackend {
 #[derive(Debug)]
 struct MockProcessEngine {
     info: EngineInfo,
+    /// Number of `reload_config` calls. Lets a test prove a reload reached the
+    /// engine instead of being dropped by the registry.
+    reloads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -428,6 +460,8 @@ impl Engine for MockProcessEngine {
     fn reset(&mut self, _ctx: &mut InputContext) {}
 
     fn reload_config(&mut self) -> Result<()> {
+        self.reloads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
