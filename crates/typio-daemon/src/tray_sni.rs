@@ -82,9 +82,9 @@ pub struct TrayState {
     /// The last badge text `set_badge` attempted to render, whether or not
     /// the render produced pixmaps. Dedup keys off this instead of off
     /// `badge_pixmaps.is_empty()`, so a badge whose text renders to nothing
-    /// (missing glyph coverage, degraded flux-text backend) is not
+    /// (missing glyph coverage, degraded glyph backend) is not
     /// re-rendered on every tray refresh — each re-render is a full
-    /// flux-text context lifecycle (16 MiB host-coverage atlas + FreeType /
+    /// glyph context lifecycle (16 MiB host-coverage atlas + FreeType /
     /// HarfBuzz / fontconfig backend).
     pub badge_attempted_text: Option<String>,
     pub menu_revision: u32,
@@ -570,7 +570,7 @@ impl Tray {
                 // Dedup on the attempted text, not on the pixmaps: an empty
                 // render (no glyph coverage at some size) must still count
                 // as "already tried", otherwise every tray refresh re-runs
-                // the whole flux-text rasterisation pipeline.
+                // the whole glyph rasterisation pipeline.
                 if s.badge_attempted_text.as_deref() == Some(t) {
                     return;
                 }

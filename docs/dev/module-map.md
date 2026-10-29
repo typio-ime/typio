@@ -255,7 +255,9 @@ mechanisms and their reasons are tabulated in the
 ### Extent Policy
 
 `apply_surface_size` in `crates/typio-host-platform/src/panel.rs`,
-`LayoutCacheKey` for the per-page layout cache:
+`LayoutCacheKey` for the per-page layout cache. The `wp_viewport` mapping it installs is
+compared through `ViewportMapping` (`differs_from`), and each pass is opened by
+`begin_panel_pass`, which clears to transparent ([INV-PANEL-14](../architecture/panel-rendering.md)):
 
 | Rule | Value |
 |---|---|
@@ -275,7 +277,7 @@ transactions
 |--------|---------------|
 | `crates/typio-daemon/src/focus_controller.rs` | pure lifecycle decisions (`reduce`, `diff`) and the data structures that describe them |
 | `crates/typio-daemon/src/session_glue.rs` | `observe` (live resource snapshot) and `apply` (effectful execution of the diff) |
-| `crates/typio-daemon/src/keyboard_policy.rs` | pure modifier and repeat-cancellation predicates |
+| `crates/typio-daemon/src/keyboard_policy.rs` | pure modifier and repeat-cancellation predicates, keysym constants, and `shortcut_keys` re-exports |
 | `crates/typio-daemon/src/keyboard/router.rs` | the pure routing decision `(key, mods, state) → {action, reason}` |
 | `crates/typio-host-platform/src/input_method.rs` (`Dispatch<ZwpInputMethodKeyboardGrabV2>`) | key-event interpretation (XKB → owned `DecodedKeyEvent`) while the session is focused |
 | `crates/typio-host-platform/src/input_method.rs` (`forward_key`, `forward_modifiers`) | virtual-keyboard health, keymap/modifier handoff, readiness gating, and fail-safe downgrade |
@@ -305,7 +307,7 @@ tracker.
 | Batch classification | `im_activate_seen` / `im_deactivate_seen` / `im_done_had_activate` / `im_done_had_deactivate` consumed by `reduce`; ADR-0018's pure classifier has no separate symbol |
 | Text transaction entry point | `InputMethodState::text_transaction_and_flush`; lifecycle-only commits use `commit_protocol_state()` |
 | Pending-key queue | `InputMethodState::pending_keys` |
-| Language switch chord | `shortcuts.switch_language` in `crates/typio-runtime/src/config_schema.rs`, consumed by the arbiter in `crates/typio-daemon/src/keyboard/router.rs` |
+| Shortcut bindings | `Shortcut::default_text` + `Shortcuts::from_lookup` in `crates/typio-host-types/src/shortcuts.rs` (one definition per chord); syntax and matching in `crates/typio-host-types/src/key_binding.rs`; resolved from `core.toml` by `App::resolve_shortcuts` in `crates/typio-daemon/src/app/mod.rs` and matched in `crates/typio-daemon/src/keyboard/router.rs` ([ADR-0056](../adr/0056-shortcut-configuration-is-enforced.md)) |
 
 ## Subsystem: Stall Containment
 

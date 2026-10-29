@@ -8,8 +8,8 @@ use flux_sys::{
     flux_canvas_release,
 };
 use glyph_sys::{
-    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_family, glyph_measure, glyph_release,
-    glyph_style,
+    glyph_create, glyph_ctx, glyph_desc, glyph_draw_outlined, glyph_family, glyph_measure,
+    glyph_release, glyph_style,
 };
 
 /// One rasterised badge bitmap at a single size. `argb` is `width*height`
@@ -20,6 +20,15 @@ pub struct BadgePixmap {
     pub height: i32,
     pub argb: Vec<u8>,
 }
+
+/// Outline contour radius for the badge glyphs, in logical pixels.
+///
+/// Preserves the previous appearance: the old hand-rolled ring drew the glyph
+/// nine times at ±1 px offsets. `glyph_draw_outlined` dilates over the same
+/// eight directions but normalises the diagonals to 0.707·width, so the
+/// requested width is the contour radius rather than growing by √2 at the
+/// corners.
+const BADGE_OUTLINE_WIDTH: f32 = 1.0;
 
 fn color_rgba(rgb: u32, a: u8) -> u32 {
     let r = ((rgb >> 16) & 0xFF) as u8;
@@ -96,10 +105,6 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
             family: glyph_family::GLYPH_FAMILY_DEFAULT,
             italic: false,
         };
-        let black_style = glyph_style {
-            color: color_rgba(0x000000, 255),
-            ..style
-        };
 
         unsafe {
             let m = glyph_measure(text_ctx.0, text.as_ptr() as *const i8, text.len(), &style);
@@ -109,32 +114,13 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
             let y = (size as f32 - m.height) / 2.0;
 
             let _ = flux_canvas_begin(canvas, std::ptr::null());
-            // Draw outline
-            let offsets: [(f32, f32); 8] = [
-                (-1.0, -1.0),
-                (0.0, -1.0),
-                (1.0, -1.0),
-                (-1.0, 0.0),
-                (1.0, 0.0),
-                (-1.0, 1.0),
-                (0.0, 1.0),
-                (1.0, 1.0),
-            ];
-            for (ox, oy) in offsets {
-                glyph_draw(
-                    text_ctx.0,
-                    canvas,
-                    std::ptr::null_mut(),
-                    x + ox,
-                    y + oy,
-                    text.as_ptr() as *const i8,
-                    text.len(),
-                    &black_style,
-                );
-            }
-
-            // Draw foreground
-            glyph_draw(
+            // Outline plus foreground in one call. glyph_draw_outlined dilates
+            // the glyph coverage over eight normalised directions *before*
+            // drawing the foreground pass, so the outline can never darken the
+            // glyph itself. That replaces the previous hand-rolled nine
+            // glyph_draw calls, which re-ran layout once per offset and used a
+            // ±1 px ring whose diagonals were not normalised.
+            glyph_draw_outlined(
                 text_ctx.0,
                 canvas,
                 std::ptr::null_mut(),
@@ -143,6 +129,8 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
                 text.as_ptr() as *const i8,
                 text.len(),
                 &style,
+                color_rgba(0x000000, 255),
+                BADGE_OUTLINE_WIDTH,
             );
 
             flux_canvas_end(canvas);
@@ -194,7 +182,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
     if out.len() != sizes.len() {
         // Partial coverage: the caller treats an incomplete ladder as "no
         // badge" (icon fallback). The TextContext guard above releases the
-        // flux-text context on this early return — this path used to leak it.
+        // glyph context on this early return — this path used to leak it.
         return Vec::new();
     }
 

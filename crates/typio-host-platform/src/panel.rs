@@ -2,7 +2,7 @@
 //!
 //! flux's CPU canvas (`flux_canvas_create_cpu`) rasterises the panel background,
 //! selection highlight and text on the host — no Vulkan device, surface,
-//! swapchain or dma-buf. Text is shaped by flux-text and drawn into the same
+//! swapchain or dma-buf. Text is shaped by glyph and drawn into the same
 //! canvas pass via the host-coverage glyph path (ADR-0019). The composited
 //! RGBA8 framebuffer flux returns from `flux_canvas_cpu_pixels` is byte-swapped
 //! into a host-owned `wl_shm` `wl_buffer` (RGBA→ARGB8888) and attached to the
@@ -23,7 +23,7 @@ use std::time::Instant;
 use flux_sys::{
     flux_canvas, flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create_cpu,
     flux_canvas_end, flux_canvas_release, flux_color_rgba, flux_error_info, flux_get_last_error,
-    flux_rect,
+    flux_rect, flux_result,
 };
 use wayland_client::protocol::wl_shm;
 use wayland_client::{Proxy, QueueHandle};
@@ -35,6 +35,42 @@ use wayland_sys::{
 use crate::PanelFontConfig;
 use crate::protocols::viewporter::wp_viewport::WpViewport;
 use crate::text_raster::{TextMetrics, TextRaster};
+
+/// Open a Panel CPU pass that *clears* to transparent.
+///
+/// The pass must clear, not merely load. `flux_canvas_begin(canvas, NULL)`
+/// selects the "load" path: the CPU backend leaves the existing float
+/// framebuffer untouched, and `ensure_canvas` keeps one canvas alive across
+/// resizes, so whatever was drawn last frame survives into this one.
+///
+/// The opaque panel body only paints `content_w_logical - 2` wide, while the
+/// framebuffer is the *retained* (quantised) extent, which is usually larger.
+/// Without a clear, the previous frame's pixels outside the new body — and,
+/// because the previous body's 8 px corner arcs were transparent, its **corner
+/// arcs blended over the new body's corners** — are composited to the
+/// compositor. The visible symptom is a panel whose right side is square
+/// instead of rounded once the buffer has ever been wider than the current
+/// content, and vertical remnants at the bottom once the panel gets shorter.
+///
+/// Clearing to transparent (not to the panel body colour) is deliberate: the
+/// corner arcs must stay transparent so the rounded geometry actually reaches
+/// the compositor, and the body fill then draws over the cleared interior.
+///
+/// # Safety
+/// `canvas` must be a live CPU canvas that is not already recording.
+unsafe fn begin_panel_pass(canvas: *mut flux_canvas) -> bool {
+    // SAFETY: the caller guarantees a live, non-recording CPU canvas; the
+    // colour is a value type and `pass` outlives the `flux_canvas_begin` call.
+    unsafe {
+        let clear = flux_color_rgba(0, 0, 0, 0);
+        let pass = flux_sys::flux_canvas_pass_desc {
+            type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_PASS_DESC,
+            clear_color: &clear,
+            ..Default::default()
+        };
+        flux_result_is_ok(flux_canvas_begin(canvas, &pass))
+    }
+}
 
 /// Draw a filled rounded rectangle through Flux's geometry/brush API.
 ///
@@ -337,11 +373,11 @@ impl FluxPanel {
         let draw_start = trace_perf.then(Instant::now);
 
         // ── flux CPU pass: background + highlight + text (logical coords) ──
-        // Text draws inside the pass via flux-text's host-coverage path
+        // Text draws inside the pass via glyph's host-coverage path
         // (ADR-0019); the canvas content-scale transform maps logical quads
         // onto physical pixels, so text uses logical coords like the fills.
         unsafe {
-            if !flux_result_is_ok(flux_canvas_begin(self.canvas, ptr::null())) {
+            if !begin_panel_pass(self.canvas) {
                 return false;
             }
             self.draw_panel_background();
@@ -526,16 +562,19 @@ impl FluxPanel {
         if let Some(viewport) = self.viewport.as_ref() {
             self.width = retained_extent(self.width, phys_width, SURFACE_WIDTH_QUANTUM);
             self.height = retained_extent(self.height, phys_height, SURFACE_HEIGHT_QUANTUM);
-            if viewport_mapping_changed(
-                self.viewport_source_w_physical,
-                self.viewport_source_h_physical,
-                self.content_w_logical,
-                self.content_h_logical,
-                phys_width,
-                phys_height,
-                content_w_logical,
-                content_h_logical,
-            ) {
+            let current = ViewportMapping {
+                source_w_physical: self.viewport_source_w_physical,
+                source_h_physical: self.viewport_source_h_physical,
+                destination_w_logical: self.content_w_logical,
+                destination_h_logical: self.content_h_logical,
+            };
+            let desired = ViewportMapping {
+                source_w_physical: phys_width,
+                source_h_physical: phys_height,
+                destination_w_logical: content_w_logical,
+                destination_h_logical: content_h_logical,
+            };
+            if desired.differs_from(current) {
                 viewport.set_source(0.0, 0.0, phys_width as f64, phys_height as f64);
                 viewport.set_destination(content_w_logical, content_h_logical);
                 self.viewport_source_w_physical = phys_width;
@@ -718,7 +757,7 @@ impl FluxPanel {
             return false;
         }
         unsafe {
-            if !flux_result_is_ok(flux_canvas_begin(self.canvas, ptr::null())) {
+            if !begin_panel_pass(self.canvas) {
                 return false;
             }
             self.draw_panel_background();
@@ -838,21 +877,27 @@ fn visible_candidate_count(layout: &[(TextMetrics, TextMetrics)]) -> usize {
     layout.len()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn viewport_mapping_changed(
-    cached_source_w_physical: u32,
-    cached_source_h_physical: u32,
-    cached_dest_w_logical: i32,
-    cached_dest_h_logical: i32,
+/// The `wp_viewport` mapping the Panel currently has installed.
+///
+/// `source` is the physical sub-rectangle of the buffer that is shown;
+/// `destination` is the logical extent it is scaled into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ViewportMapping {
     source_w_physical: u32,
     source_h_physical: u32,
-    dest_w_logical: i32,
-    dest_h_logical: i32,
-) -> bool {
-    cached_source_w_physical != source_w_physical
-        || cached_source_h_physical != source_h_physical
-        || cached_dest_w_logical != dest_w_logical
-        || cached_dest_h_logical != dest_h_logical
+    destination_w_logical: i32,
+    destination_h_logical: i32,
+}
+
+impl ViewportMapping {
+    /// True when the mapping must be re-sent to the compositor.
+    ///
+    /// Comparing whole mappings instead of eight positional arguments makes an
+    /// argument-order mistake a compile error rather than a silent no-op that
+    /// leaves a stale `wp_viewport` mapping in place.
+    fn differs_from(self, other: Self) -> bool {
+        self != other
+    }
 }
 
 impl Drop for FluxPanel {
@@ -972,9 +1017,16 @@ unsafe fn wl_surface_attach_commit(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-fn flux_result_is_ok<T>(_r: T) -> bool {
-    let v: i32 = unsafe { std::mem::transmute_copy(&std::mem::ManuallyDrop::new(_r)) };
-    v == 0
+/// True iff a flux call reported success.
+///
+/// `flux_result` is a real `#[repr(u32)]` C enum in the bindings, so it is
+/// compared directly. The previous helper was generic over `T` and recovered
+/// the discriminant with `transmute_copy`, which silently reinterpreted the
+/// first four bytes of whatever it was handed — unsound for any argument that
+/// was not `flux_result`, and invisible to the type checker when a call site
+/// changed.
+fn flux_result_is_ok(r: flux_result) -> bool {
+    r == flux_result::FLUX_OK
 }
 
 fn flux_last_error_string(function: &str) -> String {
@@ -1035,14 +1087,31 @@ mod tests {
 
     #[test]
     fn viewport_mapping_changes_when_scale_changes_but_logical_size_does_not() {
-        assert!(viewport_mapping_changed(100, 40, 100, 40, 200, 80, 100, 40));
+        // Same logical destination, doubled physical source: a scale change.
+        let installed = ViewportMapping {
+            source_w_physical: 100,
+            source_h_physical: 40,
+            destination_w_logical: 100,
+            destination_h_logical: 40,
+        };
+        let desired = ViewportMapping {
+            source_w_physical: 200,
+            source_h_physical: 80,
+            destination_w_logical: 100,
+            destination_h_logical: 40,
+        };
+        assert!(desired.differs_from(installed));
     }
 
     #[test]
     fn viewport_mapping_is_stable_when_source_and_destination_match() {
-        assert!(!viewport_mapping_changed(
-            200, 80, 100, 40, 200, 80, 100, 40
-        ));
+        let same = ViewportMapping {
+            source_w_physical: 200,
+            source_h_physical: 80,
+            destination_w_logical: 100,
+            destination_h_logical: 40,
+        };
+        assert!(!same.differs_from(same));
     }
 
     #[test]
@@ -1138,5 +1207,102 @@ mod tests {
     fn flux_last_error_string_is_readable() {
         let s = flux_last_error_string("test_function");
         assert!(s.contains("test_function"));
+    }
+
+    /// Alpha of one pixel in the canvas framebuffer.
+    ///
+    /// # Safety
+    /// `canvas` must be a live CPU canvas already ended for this frame.
+    unsafe fn alpha_at(canvas: *mut flux_canvas, x: u32, y: u32) -> u8 {
+        let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
+        let px = unsafe { flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride) };
+        if px.is_null() || x >= w || y >= h {
+            return 0;
+        }
+        unsafe { *px.add((y * stride + x * 4 + 3) as usize) }
+    }
+
+    /// A shrinking panel must not composite the previous frame's corner arcs.
+    ///
+    /// The panel body is drawn over `content_w - 2` logical px inside a canvas
+    /// whose size is the *retained*, usually wider, framebuffer extent. Rounding
+    /// is carried by that body's 8 px arcs, which leave the four extreme corners
+    /// transparent. If the pass loads instead of clearing, the previous frame's
+    /// pixels survive outside the new body and its corner arcs blend over the
+    /// new body's corners, so the panel reads as square on the right and keeps
+    /// vertical remnants below it.
+    ///
+    /// The assertions are deliberately three-sided: transparency alone would
+    /// also hold for a blank canvas, so the interior and the antialiased edge are
+    /// checked too.
+    #[test]
+    fn shrinking_panel_keeps_rounded_corners() {
+        // SAFETY: a private CPU canvas, released before the test returns.
+        unsafe {
+            let mut canvas: *mut flux_canvas = ptr::null_mut();
+            let created = flux_canvas_create_cpu(256, 64, 1.0, &mut canvas);
+            assert!(flux_result_is_ok(created) && !canvas.is_null());
+
+            // Mirror the Panel's own body geometry: rect (1,1,w-2,h-2), r=8.
+            let draw_body = |w: f32, h: f32| {
+                assert!(begin_panel_pass(canvas));
+                draw_rounded_background(
+                    canvas,
+                    flux_rect {
+                        x: 1.0,
+                        y: 1.0,
+                        w: w - 2.0,
+                        h: h - 2.0,
+                    },
+                    8.0,
+                    flux_color_rgba(28, 28, 32, 255),
+                );
+                assert!(flux_result_is_ok(flux_canvas_end(canvas)));
+            };
+
+            // A wide page fills most of the retained buffer...
+            draw_body(240.0, 40.0);
+            // ...then the next page is much narrower: body spans x 1..=79, y 1..=39.
+            draw_body(80.0, 40.0);
+
+            // 1. All four corners of the narrow body are transparent, so the
+            //    compositor shows a rounded corner rather than a square one.
+            for (x, y, name) in [
+                (0u32, 0u32, "top-left"),
+                (79, 0, "top-right"),
+                (0, 39, "bottom-left"),
+                (79, 39, "bottom-right"),
+            ] {
+                assert_eq!(
+                    alpha_at(canvas, x, y),
+                    0,
+                    "{name} corner is not rounded: the previous frame's arc survived"
+                );
+            }
+
+            // 2. The body is actually painted — guards against asserting
+            //    transparency on an empty canvas.
+            assert_eq!(
+                alpha_at(canvas, 40, 20),
+                255,
+                "panel body interior is not opaque (nothing was drawn)"
+            );
+
+            // 3. The rounded edge is antialiased, not a hard clip.
+            let edge = alpha_at(canvas, 78, 20);
+            assert!(
+                edge > 0 && edge < 255,
+                "right edge should be partially covered, got {edge}"
+            );
+
+            // 4. Nothing from the wider frame survives past the new body.
+            let stale = (80..256).filter(|&x| alpha_at(canvas, x, 20) > 0).count();
+            assert_eq!(
+                stale, 0,
+                "{stale} px of the previous frame leaked past the body"
+            );
+
+            flux_canvas_release(canvas);
+        }
     }
 }

@@ -49,7 +49,8 @@ Everything else is a value: `flux_canvas`, the per-candidate `TextMetrics` layou
 - **`[INV-PANEL-10]` Extent is quantized, hysteretic, and capped.** With `wp_viewporter` the framebuffer is quantized to 64 px (width) and 32 px (height), grows to the required quantized size, and shrinks only when current content needs no more than half of an axis (`retained_extent`); without a viewport the extent is exact.
 - **`[INV-PANEL-11]` The Panel extent is hard-capped at 16384 × 4096 logical pixels.** Candidate pages beyond the cap render a fitting prefix plus a `⋯` overflow marker and at least one candidate stays visible; over-long banner labels truncate with `…`. Both branches are trust boundaries against buggy or hostile engines.
 - **`[INV-PANEL-12]` A skipped frame never changes logical state.** Back-pressure keeps the schedule state `Dirty` and retries only the newest coalesced snapshot; committed text and selection are unaffected by any number of dropped frames.
-- **`[INV-PANEL-13]` No GPU object exists in the Panel path.** No Vulkan device, `flux_surface`, swapchain, dma-buf, GPU readback, or GPU glyph texture may be introduced; fills come from `flux_canvas_create_cpu` and text from the flux-text host-coverage path, and the only present mechanism is `wl_shm` with `attach`/`damage_buffer`/`commit`.
+- **`[INV-PANEL-13]` No GPU object exists in the Panel path.** No Vulkan device, `flux_surface`, swapchain, dma-buf, GPU readback, or GPU glyph texture may be introduced; fills come from `flux_canvas_create_cpu` and text from the glyph host-coverage path, and the only present mechanism is `wl_shm` with `attach`/`damage_buffer`/`commit`.
+- **`[INV-PANEL-14]` Every Panel pass clears its framebuffer.** The pass is opened through `begin_panel_pass`, never with a null descriptor, because a null descriptor selects `flux`'s *load* path and `ensure_canvas` keeps one canvas alive across resizes. The canvas extent is the retained (quantized) size, which is usually larger than the `content_w - 2` body actually drawn, so without a clear the previous frame survives outside the new body and its transparent 8 px corner arcs blend over the new body's corners — a square-looking right edge, plus vertical remnants once the panel gets shorter. The clear colour is transparent so the arcs reach the compositor. Covered by `shrinking_panel_keeps_rounded_corners`.
 
 ## 3. Component Architecture & Data Flow
 
@@ -123,7 +124,7 @@ draw_candidates(candidates, selected, composition_seq)
   1. ensure_candidate_size()      layout + quantized extent + viewport update
   2. acquire_shm_buffer()         Busy -> return false, stay Dirty (no render work)
   3. ensure_canvas()              lazy flux_canvas_create_cpu at the retained extent
-  4. flux_canvas_begin
+  4. begin_panel_pass()           clears to transparent ([INV-PANEL-14])
        fill_rrect (background), fill_rrect (selection), TextRaster::draw (per run)
      flux_canvas_end
   5. present_shm(buffer_index)
@@ -136,7 +137,7 @@ Path tracing under `typio.panel.perf` reports per-phase microsecond timings (`la
 Panel backgrounds and selection highlights use Flux geometry and solid brushes.
 Canvas and text contexts release their references through the current ownership
 APIs, including resize and early-return paths. The workspace and CI native pin
-select Optics v0.0.44; see [Workspace Topology](workspace-topology.md).
+select Optics v0.0.62; see [Workspace Topology](workspace-topology.md).
 
 ### 3.4 Back-pressure and convergence
 

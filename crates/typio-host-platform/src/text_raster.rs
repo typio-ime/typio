@@ -51,10 +51,6 @@ pub struct TextRaster {
     family: FontFamilyClass,
 }
 
-// The underlying glyph_ctx* is thread-affine (same constraint as glyph's
-// safe wrapper); the panel drives it from a single thread.
-unsafe impl Send for TextRaster {}
-
 impl Default for TextRaster {
     fn default() -> Self {
         Self::new(FontFamilyClass::default())
@@ -191,7 +187,7 @@ mod tests {
         let mut t = TextRaster::default();
         let m = t.measure("Ab", 16.0);
         // Only meaningful when the FT/HB backend is present (it is, when
-        // flux-text built with -Dtext=true). A measure-only fallback still
+        // glyph built with -Dtext=true). A measure-only fallback still
         // returns a width, so this is a soft check.
         assert!(m.width >= 0.0);
     }
