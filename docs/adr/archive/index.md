@@ -5,10 +5,10 @@ edited in place, and nothing here is authoritative: active rules live in
 [docs/adr/](../index.md) and the [Architecture Blueprints](../../architecture/index.md).
 
 Automated tools and coding assistants should exclude `**/archive/**` from
-routine searches and prompt context ([INV-TEMP-02](../../governance/documentation/core/invariants.md)).
+routine searches and prompt context ([INV-TEMP-02](../../dev/standards/invariants.md)).
 Retired records are never deleted — they are relocated here and marked, so that
 a future reader can find out *why an approach failed* rather than rediscovering
-it ([INV-TEMP-03](../../governance/documentation/core/invariants.md)).
+it ([INV-TEMP-03](../../dev/standards/invariants.md)).
 
 | Set | Covers | Status of the set |
 | :--- | :--- | :--- |

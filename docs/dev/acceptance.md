@@ -5,7 +5,7 @@ and the scenarios verified before a release. Every journey here drives Typio
 through its real user surfaces — the `typio` daemon binary, the `typioctl` and
 `typio-settings` clients, the TIP control socket, and the Wayland session — from
 a cold start. No journey may depend on a private test harness, a debug-only
-backdoor, or a hand-edited state file ([INV-VAL-01](../governance/documentation/core/invariants.md)).
+backdoor, or a hand-edited state file ([INV-VAL-01](standards/invariants.md)).
 
 Mechanical, automatically reproducible verification lives in
 [Testing](testing.md) instead. This document is about outcomes a user can see.

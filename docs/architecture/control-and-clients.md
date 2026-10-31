@@ -174,8 +174,8 @@ contract with the daemon is the TIP connection.
   active engine or language; `--output json` prints the raw RPC result.
 - `typioctl engine use <name>` first reads `engine.list`, resolves the engine's
   kind, and then dispatches to `keyboard.use` or `voice.use`.
-- `typioctl engine setup [name]` invokes the engine's `setup` command through
-  `engine.invoke`; it is a CLI convenience, not a TIP method.
+- `typioctl engine <engine>:<action>` dispatches an engine task command through
+  `engine.invoke` using target:action syntax (ADR-0057).
 - `config show` prints the daemon config text (TOML) in either output mode;
   `config edit` is a read-only preview because `config.set` takes typed keys,
   not whole-file text.
@@ -304,8 +304,7 @@ notably the language model in framework ADR-0018 — live in the [archived
 framework-core ADR index](../adr/archive/framework-core/adr/index.md); the CLI
 lineage records live in the [archived cli-control ADR
 index](../adr/archive/cli-control/index.md). The compaction triggers and
-tombstone procedure live in the [Living Snapshot
-entity](../governance/documentation/profiles/architecture/living-snapshot.md).
+tombstone procedure live in [Architecture Standards](../dev/standards/architecture.md).
 
 ## See Also
 

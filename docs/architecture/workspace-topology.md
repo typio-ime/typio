@@ -27,7 +27,7 @@ discovered on the build host.
 |---|---|
 | Workspace membership and inter-crate dependency direction | Engine package repositories |
 | The pinned Optics dependency graph and local patch mode | `optics` sources, its Meson build, and its native libraries |
-| CI job topology and the build matrix's environment variables | Release procedure ([Governance](../governance/index.md)) |
+| CI job topology and the build matrix's environment variables | Release procedure ([Engineering Workflow](../dev/standards/workflow.md)) |
 | Which crate produces which installed binary | Packaging and install layout ([Engine Runtime](engine-runtime.md)) |
 
 ## 2. Invariants & Non-Negotiable Rules
@@ -155,7 +155,7 @@ while local mode is active. Promoting an Optics release — bumping the tags,
 moving `OPTICS_PINNED_REF` in the CI workflow, and regenerating the canonical
 lockfile — is specified in [Typio and Optics Cross-Repository
 Development](../dev/optics-dev-worktree.md); the product release process
-itself belongs to [Governance](../governance/index.md).
+itself belongs to [Engineering Workflow](../dev/standards/workflow.md).
 
 ### 3.4 CI topology
 
@@ -174,8 +174,8 @@ Three jobs install the system toolchain and clone Optics at the pinned commit
 recorded in the workflow's `OPTICS_PINNED_REF` environment variable, then build
 it with Meson before running Cargo. No job carries an `if` condition, so all four
 are evaluated for a pull request and any failing job fails the run. The
-documentation gate is defined separately as Gate C in
-[Governance](../governance/index.md), which runs
+documentation gate is defined separately in
+[Engineering Workflow](../dev/standards/workflow.md), which runs
 `tools/check-docs.sh`.
 
 ### 3.5 Version source
@@ -183,7 +183,7 @@ documentation gate is defined separately as Gate C in
 The daemon package (`crates/typio-daemon/Cargo.toml`) is the single version
 source; the release commit bumps it, updates `Cargo.lock`, and moves the
 changelog's unreleased block. The bump policy and the annotated-tag convention
-are in [Governance](../governance/index.md), which this blueprint links rather
+are in [Engineering Workflow](../dev/standards/workflow.md), which this blueprint links rather
 than restates.
 
 ### 3.6 Retired build and layout decisions
@@ -211,8 +211,8 @@ Compaction Date: none — no record has been compacted into this blueprint yet.
 | [ADR-0046](../adr/0046-engine-protocol-only-runtime.md) | The ABI boundary is removed from the workspace; the runtime becomes an internal `rlib`; the engine boundary is the protocol crate | Accepted |
 | [ADR-0051](../adr/0051-single-documentation-tree.md) | One documentation tree at the repository root; the per-crate trees of the former independent repositories are retired | Accepted |
 
-The compaction triggers and tombstone procedure live in the [Living Snapshot
-entity](../governance/documentation/profiles/architecture/living-snapshot.md);
+The compaction triggers and tombstone procedure live in [Architecture
+Standards](../dev/standards/architecture.md);
 record status is tracked in the [ADR Index](../adr/index.md).
 
 ## See Also

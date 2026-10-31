@@ -115,3 +115,5 @@ perf.data.dir/
 # unaffected.
 typio*.log
 temp_*.txt
+sherpa-onnx-*
+*.tar.bz2

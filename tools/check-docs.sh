@@ -1,17 +1,16 @@
 #!/bin/bash
-# check-docs.sh — verify this repository against the docs-governance standard.
+# check-docs.sh — verify documentation invariants, Audience Firewall, and link integrity.
 #
-# Two phases:
-#   Phase 1  Mirror integrity: docs/governance/documentation/ must match the
-#            hashes recorded in its own .manifest.json (equivalent to the
-#            upstream `tools/verify.sh`, vendored so CI needs no network).
-#   Phase 2  Repository compliance: the codified system invariants that the
-#            mirror hash check cannot see — contributor firewall, root file
-#            exceptions, conceptual purity of explanation, directory
-#            registries, and relative link integrity.
+# Repository compliance:
+#   - Root Markdown file whitelist (INV-CORE-02)
+#   - Audience Firewall: user-facing docs never link into docs/dev/ (INV-CORE-01)
+#   - Conceptual explanation purity: no code blocks or source paths in docs/explanation/ (INV-CORE-04)
+#   - Directory charters: every docs directory declares an index.md or README.md (INV-CORE-05)
+#   - ADR registration in docs/adr/index.md (INV-ARCH-REG)
+#   - Relative link and anchor integrity (INV-LINK-02, INV-LINK-03)
 #
 # Exit 0 = compliant; exit 1 = violations (errors). Warnings do not fail.
-# Dependencies: bash + python3 standard library only ([INV-TOOL-01]).
+# Dependencies: bash + python3 standard library only.
 #
 # Usage: tools/check-docs.sh [repo-path]
 set -u
@@ -20,7 +19,7 @@ REPO=${1:-"$(cd "$(dirname "$0")/.." && pwd)"}
 REPO=$(cd "$REPO" && pwd)
 
 python3 - "$REPO" <<'PY'
-import hashlib, json, os, re, sys
+import json, os, re, sys
 
 root = sys.argv[1]
 errors, warnings = [], []
@@ -43,51 +42,7 @@ def read(path):
         return fh.read()
 
 
-# ---------------------------------------------------------------- phase 1
-GOV = os.path.join(root, "docs", "governance", "documentation")
-mirror_checked = False
-if not os.path.isdir(GOV):
-    err("docs/governance/documentation", 0, "INV-TOOL-02",
-        "governance mirror is missing; run the standard's tools/sync.sh")
-else:
-    mirror_checked = True
-    manifest_path = os.path.join(GOV, ".manifest.json")
-    manifest = json.load(open(manifest_path, "r", encoding="utf-8"))
-    contracts = os.path.join(GOV, "contracts.md")
-    active = {"core"}
-    if os.path.exists(contracts):
-        for line in read(contracts).splitlines():
-            line = line.strip()
-            if line[:5].lower() in ("- [x]", "- [X]"):
-                rest = line[5:].strip()
-                active.add(rest.split("`")[1].strip() if "`" in rest else rest.split()[0])
-
-    present = set()
-    for dirpath, _dirnames, filenames in os.walk(GOV):
-        for name in filenames:
-            if name.startswith("."):
-                continue
-            present.add(os.path.relpath(os.path.join(dirpath, name), GOV).replace(os.sep, "/"))
-
-    expected = {n: m for n, m in manifest["files"].items()
-                if m.get("profile", "core") in active}
-    for name in sorted(set(expected) - present):
-        err(rel(GOV), 0, "INV-TOOL-02", f"mirror drift: missing {name}")
-    for name in sorted(present - set(manifest["files"])):
-        err(rel(GOV), 0, "INV-TOOL-02", f"mirror drift: {name} not in manifest")
-    for name, meta in sorted(expected.items()):
-        path = os.path.join(GOV, name)
-        if meta.get("editable") or not os.path.exists(path):
-            continue
-        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
-        if digest != meta["sha256"]:
-            err(rel(path), 0, "INV-TOOL-02",
-                f"mirror drift: local {digest[:12]} != manifest {meta['sha256'][:12]}")
-
-    print(f"governance protocol {manifest['protocol_version']} "
-          f"(schema {manifest['schema_version']}), profiles: {', '.join(sorted(active))}")
-
-# ---------------------------------------------------------------- phase 2
+# ---------------------------------------------------------------- compliance
 USER_PLANES = ("docs/tutorials/", "docs/how-to/", "docs/reference/", "docs/explanation/")
 ROOT_EXCEPTIONS = {"README.md", "CHANGELOG.md", "CONTRIBUTING.md", "AGENTS.md",
                    "SECURITY.md", "LICENSE"}
@@ -100,22 +55,7 @@ for dirpath, dirnames, filenames in os.walk(root):
         if not name.endswith(".md"):
             continue
         path = os.path.join(dirpath, name)
-        path_rel = rel(path)
-        # Mirror files are hash-verified against the standard's manifest and
-        # must not be edited here; contracts.md is the one editable binding
-        # file, so its links are checked like any other document.
-        if path_rel.startswith("docs/governance/documentation/") and \
-                not path_rel.endswith("/contracts.md"):
-            continue
-        md_files.append(path_rel)
-
-# The superseded v2 policy directory is AI-forbidden to edit and is awaiting
-# maintainer removal; report it once instead of linting inside it.
-if os.path.isdir(os.path.join(root, "docs", "dev", "documentation")):
-    warn("docs/dev/documentation", 0, "INV-TOOL-02",
-         "superseded v2 governance directory still present; the mirrored "
-         "standard in docs/governance/documentation/ is authoritative")
-    md_files = [p for p in md_files if not p.startswith("docs/dev/documentation/")]
+        md_files.append(rel(path))
 
 # INV-CORE-02: no arbitrary Markdown files at the repository root.
 for path in md_files:
@@ -244,16 +184,12 @@ for dirpath, dirnames, filenames in os.walk(os.path.join(root, "docs")):
     if not any(n.endswith(".md") for n in names):
         continue
     directory = rel(dirpath)
-    if directory.startswith("docs/governance/documentation"):
-        continue
-    if directory.startswith("docs/dev/documentation"):
-        continue  # superseded v2 policy dir, reported as a warning above
     if "index.md" not in names and "README.md" not in names:
         err(directory, 0, "INV-CORE-05",
             "documentation directory without index.md charter/registry")
 
 # INV-ARCH-REG: every record is registered in the ADR index, so that a reader
-# can filter decisions without loading them (profiles/architecture/adr.md §5).
+# can filter decisions without loading them.
 adr_dir = os.path.join(root, "docs", "adr")
 adr_index = os.path.join(adr_dir, "index.md")
 if os.path.isdir(adr_dir) and os.path.exists(adr_index):
@@ -273,8 +209,7 @@ for path, line, inv, msg in sorted(errors):
     where = f"{path}:{line}" if line else path
     print(f"ERROR {where}: [{inv}] {msg}")
 
-scope = "mirror integrity + invariants" if mirror_checked else "invariants only"
 print(f"\ncheck-docs: {len(errors)} error(s), {len(warnings)} warning(s) "
-      f"[{scope}]; scanned {len(md_files)} Markdown file(s)")
+      f"[invariants and link integrity]; scanned {len(md_files)} Markdown file(s)")
 sys.exit(1 if errors else 0)
 PY

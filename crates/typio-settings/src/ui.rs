@@ -464,16 +464,23 @@ impl AppState {
                     *action = Some(Action::UnsetConfig(entry.key.clone()));
                 }
             } else {
-                let edited = {
+                let (edited, submitted) = {
                     let buffer = self
                         .buffers
                         .entry(entry.key.clone())
                         .or_insert_with(|| TextBuf::new(1024, &entry.text_value()));
-                    if frame.textfield("Value", buffer) {
+                    let resp = frame.textfield_ex("Value", buffer, false);
+                    if resp.changed {
                         self.dirty.insert(entry.key.clone());
                     }
-                    buffer.as_str().into_owned()
+                    (buffer.as_str().into_owned(), resp.submitted)
                 };
+                if submitted {
+                    *action = Some(Action::SetConfig {
+                        key: entry.key.clone(),
+                        value: edited.clone(),
+                    });
+                }
                 frame.row_ex(
                     &LayoutOpts {
                         gap: 8.0,

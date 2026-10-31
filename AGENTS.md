@@ -1,172 +1,66 @@
-# Agent guidelines
+# Agent Directives
 
-This file is the entry point for AI agents working in this repository. It holds
-the machine-facing guardrails: what to read first, which gates must pass, and
-which corrections are never acceptable. Project charters live in
-[`docs/governance/`](docs/governance/index.md); documentation policy lives in
-[`docs/governance/documentation/`](docs/governance/documentation/core/index.md).
+This document is the entry point for AI agents working in this repository. It codifies operational constraints, architectural red-lines, and authoritative standards routing.
 
-## 1. Pre-flight
+---
 
-Run these at the start of every editing session:
+## 1. Operational Guardrails (Hard Constraints)
 
-```bash
-# Recent commit message style; match it.
-git --no-pager log --oneline -15
+- **Prohibited Git Commands**: NEVER execute `git stash`, `git branch`, or `git reset`.
+- **Command Termination**: All shell commands MUST be finite and self-terminating. Never launch background daemons or unbounded polling loops without a strict timeout.
+- **Clean Git State**: Do not leave scratch files, temporary binaries, or untracked test logs in the working tree.
 
-# Tag type the project uses.
-git cat-file -t "$(git describe --abbrev=0)"
+---
 
-# Current host version source.
-grep -n '^version =' crates/typio-daemon/Cargo.toml | head -1
+## 2. Core Mental Model & Subsystem Boundaries
 
-# Pending CHANGELOG entries.
-sed -n '/^## \[Unreleased\]/,/^## \[/p' CHANGELOG.md
-```
+- **Workspace Topology**: 11 member crates layered concentrically (`typio-host-types` / `typio-engine-protocol` / `typio-engine-manifest` → `typio-runtime` → `typio-host-platform` / `typio-client` → `typio-daemon` / `typio-settings` / `typio-control` / `typio-engine-check` / `xtask`). Dependencies flow strictly inward.
+- **Engine Process Isolation (`[INV-WKS-03]`)**: Recognition engines are independent child processes communicating over a private `socketpair` via typed binary `Engine Protocol` frames. No in-process dynamic library (`dlopen`) C ABI exists ([ADR-0054](docs/adr/0054-engine-protocol-only-no-in-process-abi.md)).
+- **TIP Control Surface (`[INV-WKS-04]`)**: All external control, state queries, and configuration updates flow over `/run/user/<uid>/typio/tip.sock` using JSON-RPC TIP v1 ([ADR-0008](docs/adr/0008-ipc-protocol-resource-namespaces-uds-only.md)).
+- **Single-Thread Reactor Purity (`[INV-LOOP-01]`, `[INV-LOOP-03]`)**: The event loop runs on a single main thread driving `epoll` across Wayland, IPC, engine child pipes, and one-shot timerfd timers. No periodic baseline tick exists; poll timeouts are unbounded unless a real deadline is pending.
+- **CPU Canvas & SHM Rendering (`[INV-PANEL-13]`, `[INV-PANEL-14]`)**: The candidate popup renders via `flux_canvas_create_cpu` onto `wl_shm` pool buffers. Zero GPU objects exist in the Panel path. Every Panel pass clears its framebuffer to transparent before drawing geometry ([ADR-0044](docs/adr/0044-bounded-panel-rendering.md), [ADR-0053](docs/adr/0053-optics-v0.0.62-adoption-boundary.md)).
+- **Companion Optics Dev Worktree**: Cross-repo co-development with `../optics` uses a linked development worktree (`../typio-dev/`) with `.cargo/config.toml` path patches. Canonical builds on `main` pin release tags in `Cargo.toml`.
 
-If any of these surprise you, stop and reconcile them with the planned change.
-Project convention beats generic defaults.
+---
 
-## 2. Where things live
+## 3. Engineering Discipline
 
-| You need | Read |
-| :--- | :--- |
-| Where a document belongs | [Taxonomy](docs/governance/documentation/core/taxonomy.md) — the 4D coordinate tensor |
-| The hard rules | [Invariants](docs/governance/documentation/core/invariants.md) — numbered `[INV-*]` |
-| Writing style and link rules | [Style](docs/governance/documentation/core/style.md) |
-| Commit, tag, release, version conventions | [Repository Governance](docs/governance/index.md) |
-| How a subsystem works today | [Architecture Blueprints](docs/architecture/index.md) |
-| Why a decision was made | [ADR Index](docs/adr/index.md) |
-| Build, test, acceptance commands | [Developer Setup](docs/dev/setup.md), [Testing](docs/dev/testing.md), [Acceptance](docs/dev/acceptance.md) |
-| Source coordinates | [Module Map](docs/dev/module-map.md) — not `docs/explanation/` |
+- **Mechanisms Over Exhortations**: Rely on Rust compiler typestates, private visibility, RAII guards, and automated tests to guarantee invariants. Never rely on natural-language comments alone.
+- **Anti-Inflation**: Do not mint pseudo-invariant tags. Adhere to the canonical registry (`[INV-PANEL-*]`, `[INV-LOOP-*]`, `[INV-WKS-*]`, `[INV-CORE-*]`). State transitions belong in named Rust enums.
+- **Audience Firewall (`[INV-CORE-01]`)**: Public documentation (`docs/{tutorials,how-to,reference,explanation}/`) must NEVER link into internal contributor docs (`docs/dev/**`).
+- **Atomic Verification**: Always verify code changes with the mandatory local gates before declaring tasks complete.
 
-## 3. Gates that must pass
+---
+
+## 4. Mandatory Verification Gates
+
+Run these gates before concluding any work:
 
 ```bash
-tools/check-docs.sh                       # documentation invariants + mirror integrity
+tools/check-docs.sh                       # documentation invariants and link integrity
 cargo fmt -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The build needs a native `flux` library from the sibling `optics` checkout; see
-[Developer Setup](docs/dev/setup.md) for the environment variables and
-[Optics Dev Worktree](docs/dev/optics-dev-worktree.md) for the
-local worktree workflow. Never restate those commands in a new file — link.
+---
 
-`tools/check-docs.sh` is the enforcement point for everything in §2 that can be
-checked mechanically: the contributor firewall, stray root Markdown files,
-implementation coordinates and code blocks in `docs/explanation/`, directories
-without a charter, broken links, and drift in the mirrored governance standard.
-Run it before claiming a documentation change is done.
+## 5. On-Demand Standards Routing
 
-## 4. Documentation rules that bite
+Do not guess repository rules or rely on stale assumptions. Consult authoritative specifications as needed:
 
-- **One home per fact.** Do not duplicate the README quick start, a build
-  command block, or a table from `docs/reference/` into another file
-  ([INV-CORE-03](docs/governance/documentation/core/invariants.md)). Link instead.
-- **The contributor firewall runs one way.** User-plane pages
-  (`docs/tutorials/`, `docs/how-to/`, `docs/reference/`, `docs/explanation/`)
-  must never link into `docs/dev/`
-  ([INV-CORE-01](docs/governance/documentation/core/invariants.md)). The
-  contributor plane may link outward.
-- **Explanation is conceptual.** No source paths, symbols, signatures, config
-  keys, or fenced code blocks under `docs/explanation/`
-  ([INV-CORE-04](docs/governance/documentation/core/invariants.md)). Coordinates
-  go in `docs/dev/module-map.md`; values go in `docs/reference/`.
-- **Every documentation directory keeps an `index.md`** stating its charter
-  ([INV-CORE-05](docs/governance/documentation/core/invariants.md)).
-- **Accepted ADRs are immutable.** Never edit a decision, its rationale, or its
-  invariants in place; author a superseding record
-  ([INV-ARCH-01](docs/governance/documentation/core/invariants.md)). The only
-  edits permitted to a retired record are pointer corrections.
-- **Never delete a record.** Retired ADRs, concluded proposals, and postmortems
-  are marked and relocated to `archive/`
-  ([INV-TEMP-03](docs/governance/documentation/core/invariants.md)).
-- **`**/archive/**` is cold storage.** Do not load it into context or search it
-  by default, and do not "tidy" it
-  ([INV-TEMP-02](docs/governance/documentation/core/invariants.md)).
-- **Living state moves with the code.** A change to behavior, CLI syntax,
-  configuration, or a public interface updates `docs/architecture/`, the
-  matching Diátaxis page, and `CHANGELOG.md` in the same pull request
-  ([INV-TEMP-01](docs/governance/documentation/core/invariants.md)).
-- **Mirrored governance is read-only here.** `docs/governance/documentation/`
-  is hash-verified against its manifest. Only `contracts.md` is locally
-  editable; everything else changes upstream and is re-synced.
-
-## 5. Repository layout and cross-repo work
-
-| Path | Role |
-| :--- | :--- |
-| `/home/ming/projects/typio/` | This repo: host daemon, runtime, engine protocol, manifest, conformance tool, and client workspace |
-| `/home/ming/projects/typio-engines/typio-engine-*` | Engine repositories |
-| `/home/ming/projects/typio-settings/` | Legacy Meson/C settings panel (superseded by `crates/typio-settings`) |
-| `/home/ming/projects/optics/` | Native C monorepo: `flux` (the Panel's CPU canvas), `glyph` (text shaping), and the Iris/Lens GPU stack used by the settings app |
-| `/home/ming/projects/docs-governance/` | Source of the mirrored documentation standard |
-
-Cross-repo edits are allowed when the fix genuinely belongs in a sibling repo.
-When touching a sibling repo:
-
-- Read its own `AGENTS.md` or `CLAUDE.md` first.
-- Follow `docs/dev/optics-dev-worktree.md` for linked worktree and
-  local `[patch]` workflows when developing against live Optics sources.
-- Do not bump sibling versions in lockstep unless asked.
-- Keep dependency pin changes deliberate and separate when they affect CI.
-
-## 6. Common agent failure modes
-
-| Symptom | Wrong reaction | Right reaction |
-| :--- | :--- | :--- |
-| `$EDITOR` opens during git | Try pager flags | Supply `-m` to the git command |
-| Cargo test loads old `libflux.so` | Patch around missing symbols | Rebuild `../optics` and check `FLUX_BUILD_DIR` / RUNPATH |
-| Unsure whether a version bump is patch or minor | Default to minor | Default to patch unless behavior changes |
-| A doc seems to need a source path | Put it in `docs/explanation/` | Put it in `docs/dev/module-map.md` and keep the explanation conceptual |
-| A directory has no index | Skip it | Add the charter; the checker will fail otherwise |
-| Missing project fact | Guess | Run the pre-flight and inspect current files |
-
-## 7. Documentation governance
-
-`docs/governance/documentation/` mirrors the portable `docs-governance`
-standard and is the authority for every documentation decision. AI agents may
-read it and suggest changes, but must not edit it; policy changes are proposed
-upstream and re-synced (see
-[Repository Contracts](docs/governance/documentation/contracts.md)).
-
-Documentation *outside* that mirror is editable under the rules in §4, which
-means this file, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, and everything
-under `docs/` except the mirror. User-facing behavior changes need both a
-CHANGELOG entry and an update to the matching page under `docs/`.
-
-<!-- BEGIN DOCGOV DIRECTIVES -->
-## Documentation Governance Directives
-
-You are bound by repository invariants. Violations will fail CI (`docgov check`).
-
-### 1. Machine Invariants (Pre-Submit Checklist)
-- `[INV-LINT-01] Location Sanitization`: Never create arbitrary Markdown files at the repository root.
-- `[INV-LINT-02] Contributor Firewall`: Public docs (`docs/{tutorials,how-to,reference,explanation}/`) must NEVER link into internal docs (`docs/dev/`).
-- `[INV-LINT-03] Frontmatter Schema`: ADRs must contain valid Frontmatter with standardized status enum.
-- `[INV-LINT-04] Code-Doc Sync`: Modifying monitored paths in `src/` requires updating `docs/` in the same change.
-- `[INV-LINT-05] Agent Directives Binding`: Ensure this docgov directives block is retained in agent configuration.
-
-### 2. Cognitive & Architecture Protocols (Thinking Framework)
-- `[INV-AGENT-01] Negative Knowledge`: Every new ADR MUST contain a 'Rejected Alternatives' section explaining why discarded options were not chosen.
-- `[INV-AGENT-02] Context Routing & Chesterton's Fence`:
-  - In feature generation: NEVER use docs marked `status: superseded` or `status: rejected` as active designs (prevents resurrecting dead patterns).
-  - In refactoring/investigation: MUST retrieve `superseded` docs as negative constraints (learn from historical failure modes).
-- `[INV-AGENT-03] Blameless Postmortem`: Postmortems MUST analyze system defense failures and detection gaps. Attribution of personal human blame is strictly prohibited.
-
-### 3. Canonical Governance Knowledge & Context
-Before drafting or restructuring documentation, inspect the local governance specifications:
-- 4D Coordinate Tensor: `docs/governance/documentation/core/taxonomy.md`
-- System Invariants Constitution: `docs/governance/documentation/core/invariants.md`
-- Technical Voice & Link Contracts: `docs/governance/documentation/core/style.md`
-- ADR & Architecture RFC Standard: `docs/governance/documentation/profiles/architecture/adr.md`
-- Quality & Verification Guides: `docs/governance/documentation/profiles/validation/testing.md`
-
-### 4. Fast Verification
-Before completing any task, run:
-```bash
-docgov check
-```
-<!-- END DOCGOV DIRECTIVES -->
+- **Standards Suite Catalog**: [`docs/dev/standards/README.md`](docs/dev/standards/README.md)
+  - System Architecture & Red-Lines: [`docs/dev/standards/architecture.md`](docs/dev/standards/architecture.md)
+  - Invariant & Constraint Policy: [`docs/dev/standards/invariants.md`](docs/dev/standards/invariants.md)
+  - ADR Authoring & Lifecycle: [`docs/dev/standards/adr.md`](docs/dev/standards/adr.md)
+  - RFC Standards: [`docs/dev/standards/rfc.md`](docs/dev/standards/rfc.md)
+  - Documentation Taxonomy & Firewall: [`docs/dev/standards/taxonomy.md`](docs/dev/standards/taxonomy.md)
+  - Markdown & Hyperlink Style: [`docs/dev/standards/style.md`](docs/dev/standards/style.md)
+  - Engineering Workflow & Gates: [`docs/dev/standards/workflow.md`](docs/dev/standards/workflow.md)
+  - Blameless Incident Postmortems: [`docs/dev/standards/postmortems.md`](docs/dev/standards/postmortems.md)
+- Architectural Blueprints: [`docs/architecture/index.md`](docs/architecture/index.md)
+- Architectural Decision Records: [`docs/adr/index.md`](docs/adr/index.md)
+- Developer Setup: [`docs/dev/setup.md`](docs/dev/setup.md)
+- Optics Dev Worktree Workflow: [`docs/dev/optics-dev-worktree.md`](docs/dev/optics-dev-worktree.md)
+- Source Module Map: [`docs/dev/module-map.md`](docs/dev/module-map.md)
+- Testing & Acceptance: [`docs/dev/testing.md`](docs/dev/testing.md), [`docs/dev/acceptance.md`](docs/dev/acceptance.md)

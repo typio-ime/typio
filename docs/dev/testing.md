@@ -6,7 +6,7 @@ End-to-end user outcomes are verified separately in [Acceptance](acceptance.md).
 
 Every command here must run deterministically from a clean checkout: no hidden
 local fixture, no unstated environment variable, no unversioned download
-([INV-VAL-02](../governance/documentation/core/invariants.md)). If a command
+([INV-VAL-02](standards/invariants.md)). If a command
 below needs something the matrix does not list, that is a bug in this page.
 
 ## 1. Suite Commands

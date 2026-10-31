@@ -16,17 +16,17 @@ the setup and testing guides are their single source.
 ## Changes that need more than code
 
 - **Architectural decisions** get an ADR in `docs/adr/` when the change clears
-  the significance threshold. Follow [Architecture Decision
-  Records](docs/governance/documentation/profiles/architecture/adr.md) and
+  the significance threshold. Follow [Architectural Decision
+  Records](docs/dev/standards/adr.md) and
   register the record in [the ADR index](docs/adr/index.md).
 - **User-visible changes** get an entry under **Unreleased** in
   `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/) format).
 - **Breaking changes to an external interface** must respect its tier in the
   [Interface Stability Reference](docs/reference/stability.md).
-- **Documentation** follows the documentation governance standard mirrored in
-  [docs/governance/documentation/](docs/governance/documentation/core/index.md).
-  Route new content through the [taxonomy](docs/governance/documentation/core/taxonomy.md)
-  and write it with the [style guide](docs/governance/documentation/core/style.md).
+- **Documentation** follows the engineering standards in
+  [docs/dev/standards/](docs/dev/standards/README.md).
+  Route new content through the [taxonomy](docs/dev/standards/taxonomy.md)
+  and write it with the [style guide](docs/dev/standards/style.md).
   Run `tools/check-docs.sh` before pushing: it enforces the invariants that
   review would otherwise catch by hand.
 - **Code style** is described in [Code Style](docs/dev/code-style.md).
@@ -34,7 +34,7 @@ the setup and testing guides are their single source.
 ## Repository governance
 
 Commit, tag, versioning, and release conventions are charters, not folklore:
-see [Repository Governance](docs/governance/index.md). Read it before cutting a
+see [Engineering Workflow](docs/dev/standards/workflow.md). Read it before cutting a
 release or rewriting published history.
 
 ## Tests

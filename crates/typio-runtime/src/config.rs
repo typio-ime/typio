@@ -121,7 +121,7 @@ impl Config {
     /// Load a file with a bounded blocking-read budget.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         if CONFIG_READS_IN_FLIGHT
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_CONFIG_READS_IN_FLIGHT).then_some(count + 1)
             })
             .is_err()

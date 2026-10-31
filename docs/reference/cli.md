@@ -51,8 +51,7 @@ underlying RPC without modification. `config show` prints the daemon config text
 | `typioctl engine actions <name>` | `engine.describe` | Prints the `commands` slice. |
 | `typioctl engine get <name> <key>` | `config.get` | Reads the key `engines.<name>.<key>`. |
 | `typioctl engine set <name> <key> <value>` | `config.set` | Writes the key `engines.<name>.<key>`; the daemon delivers `on_config_change` to the engine. |
-| `typioctl engine do <name> <command>` | `engine.invoke` | Runs a registered engine command. |
-| `typioctl engine setup [name]` | `engine.invoke` | Invokes the engine's `setup` command (`{ name, command: "setup" }`). Without `name`, lists every engine exposing a `setup` command by walking `engine.list` and `engine.describe`. |
+| `typioctl engine <engine>:<action>` | `engine.invoke` | Invokes an engine task command (`{ name, command }`, e.g. `rime:deploy`, `sherpa-onnx:setup`). |
 | `typioctl engine load <path>` | `engine.load` | Loads one engine manifest from an absolute `.toml` path. |
 | `typioctl engine unload <name>` | `engine.unload` | Deactivates the engine first when it is active. |
 | `typioctl engine reload <name> [--path <p>]` | `engine.reload` | With `--path`, loads from that path; otherwise rescans `engine_dirs`. |

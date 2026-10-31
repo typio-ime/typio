@@ -17,11 +17,11 @@ pub enum OutputFormat {
     Json,
 }
 
-fn connect() -> io::Result<Client> {
+pub(crate) fn connect() -> io::Result<Client> {
     Client::connect()
 }
 
-fn print_json(value: &Value) -> io::Result<()> {
+pub(crate) fn print_json(value: &Value) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, value).map_err(io::Error::other)?;
     writeln!(stdout)
@@ -217,65 +217,14 @@ pub fn engine_set(name: &str, key: &str, value: &str, out: OutputFormat) -> io::
     Ok(())
 }
 
-pub fn engine_do(name: &str, command: &str, out: OutputFormat) -> io::Result<()> {
+pub fn engine_invoke(name: &str, command: &str, out: OutputFormat) -> io::Result<()> {
     let mut c = connect()?;
     let result = c.call("engine.invoke", json!({ "name": name, "command": command }))?;
     if out == OutputFormat::Json {
         return print_json(&result);
     }
+    println!("Invoked {name}:{command}.");
     Ok(())
-}
-
-pub fn engine_setup(name: Option<&str>, out: OutputFormat) -> io::Result<()> {
-    match name {
-        Some(n) => {
-            let mut c = connect()?;
-            let result = c.call("engine.invoke", json!({ "name": n, "command": "setup" }))?;
-            if out == OutputFormat::Json {
-                return print_json(&result);
-            }
-            println!("Setup complete for {n}.");
-            Ok(())
-        }
-        None => {
-            let mut c = connect()?;
-            let engines = c.call("engine.list", json!({}))?;
-            let Some(arr) = engines.as_array() else {
-                return Ok(());
-            };
-            let mut found = false;
-            for entry in arr {
-                let ename = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let desc = c.call("engine.describe", json!({ "name": ename }))?;
-                let cmds = desc.get("commands").and_then(|v| v.as_array());
-                if let Some(cmds) = cmds {
-                    for cmd in cmds {
-                        let id = cmd.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        if id == "setup" {
-                            let label = cmd.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                            let display = desc
-                                .get("displayName")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(ename);
-                            if out == OutputFormat::Json {
-                                print_json(
-                                    &json!({ "name": ename, "displayName": display, "setupLabel": label }),
-                                )?;
-                            } else {
-                                println!("{ename:16} {display:24} {label}");
-                            }
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if !found && out == OutputFormat::Plain {
-                eprintln!("No engines with a setup command found.");
-            }
-            Ok(())
-        }
-    }
 }
 
 pub fn engine_load(path: &str, out: OutputFormat) -> io::Result<()> {

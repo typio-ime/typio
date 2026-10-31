@@ -6,10 +6,11 @@ coordinates — source paths, module names, and ownership tables — that the
 user-facing planes must not carry. Nothing here is reachable from
 [docs/how-to/](../how-to/index.md), [docs/reference/](../reference/index.md), or
 [docs/explanation/](../explanation/index.md): the contributor firewall runs one
-way ([INV-CORE-01](../governance/documentation/core/invariants.md)).
+way ([INV-CORE-01](standards/invariants.md)).
 
 | Page | Covers |
 | :--- | :--- |
+| [Engineering Standards](standards/README.md) | Central standards suite: architecture, invariants, ADRs, RFCs, taxonomy, workflow |
 | [Developer Setup](setup.md) | Native prerequisites, the sibling `optics`/`flux` build, workspace builds, running the daemon locally |
 | [Module Map](module-map.md) | Crates, modules, and ownership — where implementation coordinates live |
 | [Testing](testing.md) | Workspace test suites, per-crate coverage, environment matrix, CI gates |
@@ -20,6 +21,6 @@ way ([INV-CORE-01](../governance/documentation/core/invariants.md)).
 
 ## Related
 
-- [Repository Governance](../governance/index.md) — commit, tag, release, and review charters
+- [Engineering Standards](standards/README.md) — authoritative architecture, invariant, and workflow specifications
 - [Architecture Blueprints](../architecture/index.md) — the current state of each subsystem
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) — the contribution entry point

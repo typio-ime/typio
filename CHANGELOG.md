@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-11-01
+
+### Changed
+
+- **Optics v0.0.66 alignment.** Moved the five workspace dependency pins
+  (`flux-sys`, `glyph-sys`, `iris`, `iris-sys`, `lens-sys`) and CI
+  `OPTICS_PINNED_REF` from `v0.0.62` to `v0.0.66` as one atomic unit (ADR-0058).
+- **Settings textfield Return submission.** Adopted `Frame::textfield_ex` and
+  `Response.submitted` in `typio-settings` so that pressing Return inside a
+  configuration text field applies the value immediately without requiring an
+  explicit mouse click on "Apply".
+- **Documentation standards modernization.** Decoupled from external `docgov`
+  tooling and eliminated the nested `docs/governance/` mirror. Established a
+  flat native engineering standards suite directly in `docs/dev/standards/`,
+  streamlined `AGENTS.md`, and updated `tools/check-docs.sh` for repository
+  invariants and link integrity (ADR-0058).
+- **Voice engine working set reclamation and idle eviction architecture.** Established
+  engine-owned idle working set eviction for heavyweight speech recognition models
+  (`idle_timeout_seconds`, defaulting to 1800s / 30m; 0 disables). Voice engines
+  unload neural weights while remaining resident and listening on the Engine Protocol
+  socket, reclaiming ~350 MB RSS after inactivity while maintaining zero-latency
+  subsequent dictation bursts. Reinforced `typio-runtime` voice slot snapshots with
+  automatic backend re-instantiation resilience (ADR-0059).
+- **Engine task invocation syntax.** Replaced `typioctl engine do <name> <command>`
+  and `typioctl engine setup [name]` with the target:action task syntax
+  `typioctl engine <engine>:<action>` (e.g. `rime:deploy`, `sherpa-onnx:setup`).
+  This cleanly decouples engine-owned tasks from generic host lifecycle commands
+  and eliminates ambiguous verbs and host-level special casing (ADR-0057).
+- **Declarative asset manifests and out-of-band engine provisioning.** Adopted
+  out-of-band provisioning via `typioctl engine <engine>:setup` with interactive
+  streaming progress and SHA-256 verification, while engine workers remain strictly
+  offline zero-network runtimes scanning multi-tier XDG paths (ADR-0060).
+
 ## [0.6.4] - 2026-10-29
 
 ### Changed

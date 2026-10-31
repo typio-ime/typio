@@ -45,6 +45,27 @@ pub struct EngineManifest {
     pub required: Option<Vec<String>>,
     /// Capabilities that the engine can use when available.
     pub optional: Option<Vec<String>>,
+    /// Declarative external assets required or recommended by this engine.
+    pub assets: Option<std::collections::HashMap<String, AssetSpec>>,
+}
+
+/// Declarative external asset specification (e.g. models, dictionaries).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetSpec {
+    /// Asset identifier.
+    pub id: String,
+    /// Human-readable description.
+    pub description: Option<String>,
+    /// Version tag.
+    pub version: Option<String>,
+    /// Download source URL.
+    pub url: String,
+    /// Optional SHA-256 integrity checksum.
+    pub sha256: Option<String>,
+    /// Target directory relative to the host data directory ($XDG_DATA_HOME/typio/).
+    pub target_dir: String,
+    /// Required file paths relative to target_dir.
+    pub required_files: Vec<String>,
 }
 
 impl EngineManifest {
@@ -235,5 +256,33 @@ args = ["/absolute", "./relative"]
         assert_eq!(manifest.effective_languages(), vec![DEFAULT_LANGUAGE]);
         assert!(is_manifest_filename("typio-engine-rime.toml"));
         assert!(!is_manifest_filename("typio-engine-rime.installed.toml"));
+    }
+
+    #[test]
+    fn parses_declarative_assets_table() {
+        let text = r#"
+name = "sherpa-onnx"
+type = "voice"
+protocol = "typio-engine-protocol"
+command = "sherpa"
+
+[assets.model]
+id = "sensevoice-small-int8"
+description = "SenseVoice Small int8 model"
+version = "2024-07-17"
+url = "https://example.com/model.tar.bz2"
+sha256 = "7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e"
+target_dir = "sherpa-onnx/sensevoice"
+required_files = ["model.int8.onnx", "tokens.txt"]
+"#;
+        let manifest = EngineManifest::parse(text).unwrap();
+        let assets = manifest.assets.expect("assets present");
+        let spec = assets.get("model").expect("model asset present");
+        assert_eq!(spec.id, "sensevoice-small-int8");
+        assert_eq!(spec.required_files, vec!["model.int8.onnx", "tokens.txt"]);
+        assert_eq!(
+            spec.sha256.as_deref(),
+            Some("7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e")
+        );
     }
 }

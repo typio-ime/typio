@@ -30,7 +30,7 @@ Clients](control-and-clients.md)).
 | The ordered engine search path and its scan | Panel rendering and presentation ([Panel Rendering](panel-rendering.md)) |
 | Worker spawn, framing, handshake, request budgets | TIP verbs, framing, and client crates ([Control Plane and Clients](control-and-clients.md)) |
 | The engine registry and the keyboard/voice slots | Desktop integration: SNI tray, notifications |
-| Engine namespaces in the config schema | Release procedure ([Governance](../governance/index.md)) |
+| Engine namespaces in the config schema | Release procedure ([Engineering Workflow](../dev/standards/workflow.md)) |
 
 ## 2. Invariants & Non-Negotiable Rules
 
@@ -325,9 +325,10 @@ Compaction Date: none — no record has been compacted into this blueprint yet.
 | [ADR-0031](../adr/0031-language-first-switching-surface.md) | The `languages` manifest key and the language-first switch unit this subsystem feeds | Accepted |
 | [ADR-0034](../adr/0034-dynamic-engine-capabilities.md) | Language declarations as runtime data: static floor, runtime replacement, deferred user override | Accepted; the worker-side trigger is still unwired |
 | [ADR-0046](../adr/0046-engine-protocol-only-runtime.md) | Typio Engine Protocol as the only engine boundary; `typio-runtime` as an internal `rlib`; removal of the C ABI, headers, pkg-config, vtables, and `typio-abi` | Accepted; supersedes ADR-0038's ABI workspace decision |
+| [ADR-0059](../adr/0059-voice-engine-idle-memory-eviction.md) | Engine-owned idle working set eviction and configurable reclamation for heavyweight voice models | Accepted |
 
-The compaction triggers and the tombstone procedure live in the [Living
-Snapshot entity](../governance/documentation/profiles/architecture/living-snapshot.md);
+The compaction triggers and the tombstone procedure live in [Architecture
+Standards](../dev/standards/architecture.md);
 the registry status of every record is tracked in the [ADR
 Index](../adr/index.md).
 

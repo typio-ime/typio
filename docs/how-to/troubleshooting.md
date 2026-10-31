@@ -77,7 +77,7 @@ With the `rime` engine, the daemon renders candidates through the Panel when the
 If edits under `~/.local/share/typio/rime` do not affect candidate behavior, switch to the `rime` engine and run:
 
 ```bash
-typioctl engine do rime deploy
+typioctl engine rime:deploy
 ```
 
 That asks the daemon to rerun librime deployment and regenerate `~/.local/share/typio/rime/build/*.yaml` from your source YAML files.

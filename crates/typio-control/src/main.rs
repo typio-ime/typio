@@ -36,7 +36,7 @@ impl From<OutputFmt> for OutputFormat {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Manage engines (`list`, `show`, `use`, `next`, `get`, `set`, `do`, ...)
+    /// Manage engines (`list`, `show`, `use`, `next`, `get`, `set`, `<engine>:<action>`, ...)
     Engine {
         #[command(subcommand)]
         verb: EngineVerb,
@@ -86,10 +86,6 @@ enum EngineVerb {
         key: String,
         value: String,
     },
-    /// Invoke a command: `engine do rime deploy`
-    Do { name: String, command: String },
-    /// One-click setup: `engine setup rime` or `engine setup` to list
-    Setup { name: Option<String> },
     /// Load an engine from a specific path
     Load {
         /// Path to the engine manifest
@@ -108,6 +104,9 @@ enum EngineVerb {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Run an engine task: `<engine>:<action>` (e.g. `rime:deploy`, `sherpa-onnx:setup`)
+    #[command(external_subcommand)]
+    Task(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -182,8 +181,10 @@ fn run(cli: Cli) -> std::io::Result<()> {
             EngineVerb::Actions { name } => commands::engine_actions(&name, out),
             EngineVerb::Get { name, key } => commands::engine_get(&name, &key, out),
             EngineVerb::Set { name, key, value } => commands::engine_set(&name, &key, &value, out),
-            EngineVerb::Do { name, command } => commands::engine_do(&name, &command, out),
-            EngineVerb::Setup { name } => commands::engine_setup(name.as_deref(), out),
+            EngineVerb::Task(args) => {
+                let (engine, action) = parse_engine_task(&args)?;
+                commands::engine_invoke(engine, action, out)
+            }
             EngineVerb::Load { path } => commands::engine_load(&path, out),
             EngineVerb::Unload { name } => commands::engine_unload(&name, out),
             EngineVerb::Reload { name, path } => {
@@ -213,10 +214,132 @@ fn run(cli: Cli) -> std::io::Result<()> {
     }
 }
 
+fn parse_engine_task(args: &[String]) -> std::io::Result<(&str, &str)> {
+    let target = args.first().map(String::as_str).unwrap_or("");
+    let Some((engine, action)) = target.split_once(':') else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Unrecognized engine subcommand or task '{target}'. Expected '<engine>:<action>' (e.g. 'rime:deploy', 'sherpa-onnx:setup') or a recognized subcommand (list, show, use, ...)"
+            ),
+        ));
+    };
+    if engine.is_empty() || action.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Invalid engine task target '{target}'. Both engine name and action must be non-empty (e.g. 'rime:deploy')"
+            ),
+        ));
+    }
+    if args.len() > 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Engine task '{target}' does not accept extra arguments"),
+        ));
+    }
+    Ok((engine, action))
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
         eprintln!("typioctl: {e}");
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_valid_engine_task_syntax() {
+        let cli = Cli::try_parse_from(["typioctl", "engine", "rime:deploy"]).unwrap();
+        match cli.command {
+            Command::Engine {
+                verb: EngineVerb::Task(args),
+            } => {
+                let (engine, action) = parse_engine_task(&args).unwrap();
+                assert_eq!(engine, "rime");
+                assert_eq!(action, "deploy");
+            }
+            _ => panic!("expected EngineVerb::Task"),
+        }
+
+        let cli = Cli::try_parse_from(["typioctl", "engine", "sherpa-onnx:setup"]).unwrap();
+        match cli.command {
+            Command::Engine {
+                verb: EngineVerb::Task(args),
+            } => {
+                let (engine, action) = parse_engine_task(&args).unwrap();
+                assert_eq!(engine, "sherpa-onnx");
+                assert_eq!(action, "setup");
+            }
+            _ => panic!("expected EngineVerb::Task"),
+        }
+    }
+
+    #[test]
+    fn rejects_missing_colon_or_empty_parts() {
+        let err = parse_engine_task(&["notask".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Expected '<engine>:<action>'"));
+
+        let err = parse_engine_task(&[":setup".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string()
+                .contains("Both engine name and action must be non-empty")
+        );
+
+        let err = parse_engine_task(&["rime:".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string()
+                .contains("Both engine name and action must be non-empty")
+        );
+    }
+
+    #[test]
+    fn rejects_extra_task_arguments() {
+        let err = parse_engine_task(&["rime:deploy".to_string(), "extra".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("does not accept extra arguments"));
+    }
+
+    #[test]
+    fn rejects_legacy_do_and_setup_verbs() {
+        // "do" is no longer a recognized subcommand; it falls through to Task and fails because it lacks a colon.
+        let cli = Cli::try_parse_from(["typioctl", "engine", "do", "rime", "deploy"]).unwrap();
+        match cli.command {
+            Command::Engine {
+                verb: EngineVerb::Task(args),
+            } => {
+                let err = parse_engine_task(&args).unwrap_err();
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+                assert!(
+                    err.to_string()
+                        .contains("Unrecognized engine subcommand or task 'do'")
+                );
+            }
+            _ => panic!("expected EngineVerb::Task fallthrough"),
+        }
+
+        // "setup" is also no longer a recognized subcommand.
+        let cli = Cli::try_parse_from(["typioctl", "engine", "setup", "sherpa-onnx"]).unwrap();
+        match cli.command {
+            Command::Engine {
+                verb: EngineVerb::Task(args),
+            } => {
+                let err = parse_engine_task(&args).unwrap_err();
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+                assert!(
+                    err.to_string()
+                        .contains("Unrecognized engine subcommand or task 'setup'")
+                );
+            }
+            _ => panic!("expected EngineVerb::Task fallthrough"),
+        }
     }
 }

@@ -2,12 +2,12 @@
 
 ADRs are append-only records of significant design decisions in the Typio
 workspace. Once accepted, a record is never edited: a decision changes by
-authoring a new ADR that supersedes it ([INV-ARCH-01](../governance/documentation/core/invariants.md)).
+authoring a new ADR that supersedes it ([INV-ARCH-01](../dev/standards/invariants.md)).
 
 Every entry below carries a short decision summary and the invariant it still
 enforces, so that a reader — or an agent — can decide whether a record applies
 before loading it. Retired records stay in the registry with cold-storage
-pointers rather than disappearing ([INV-TEMP-03](../governance/documentation/core/invariants.md));
+pointers rather than disappearing ([INV-TEMP-03](../dev/standards/invariants.md));
 history lives under [`archive/`](archive/index.md).
 
 Related material:
@@ -15,7 +15,7 @@ Related material:
 - How the system works *today*: [Architecture Blueprints](../architecture/index.md).
 - The record template: [template.md](template.md).
 - Rule for adding a record: the three-question significance test in the
-  [ADR entity](../governance/documentation/profiles/architecture/adr.md).
+  [ADR Standard](../dev/standards/adr.md).
 
 > **Candidate-popup lag — reading guide for ADR-0006 / 0010–0013.** The popup's
 > candidate-switch lag was diagnosed in four passes, and the first three each
@@ -96,12 +96,16 @@ authority is listed under [Retired records](#retired-records).
 | [0054](0054-engine-protocol-only-no-in-process-abi.md) | Recognition engines are protocol processes with no in-process ABI | Accepted (supersedes the retired C ABI engine contract) | engine | Every engine repository ships exactly one implementation, an Engine Protocol process; the legacy ABI worker is deleted, not repaired. Invariant: an engine that cannot build does not ship a second entry point. | 2026-10-29 | [Engine Runtime](../architecture/engine-runtime.md) |
 | [0055](0055-conformance-probes-assert-substance.md) | Conformance probes assert substance, not presence | Accepted | engine | Probes exercise engines with input a working implementation cannot trivially satisfy and assert on reply content, not record type. Invariant: `Text("")` is never a pass for non-silent audio. | 2026-10-29 | [Engine Runtime](../architecture/engine-runtime.md) |
 | [0056](0056-shortcut-configuration-is-enforced.md) | Shortcut configuration is enforced, not decorative | Accepted (all keys resolved and matched; `switch_keyboard_engine` awaits a cycle action) | loop | Every documented `[shortcuts]` key is consulted on the keystroke path, and an unparseable binding is a startup error rather than a silent fallback. Invariant: a configuration value that is displayed and persisted must change behaviour. | 2026-10-29 | [Daemon Lifecycle](../architecture/daemon-lifecycle.md) |
+| [0057](0057-engine-task-colon-syntax.md) | Engine-scoped task invocation uses target:action syntax | Accepted (supersedes `engine do` and `engine setup`) | control | Engine-specific tasks are invoked via `typioctl engine <engine>:<action>`, eliminating ambiguous verbs and dedicated host-level setup commands. Invariant: `<engine>:<action>` is the sole CLI syntax for invoking engine tasks through `engine.invoke`. | 2026-10-31 | [Control and Clients](../architecture/control-and-clients.md) |
+| [0058](0058-optics-v0.0.66-adoption-boundary-and-standards-suite-modernization.md) | Optics v0.0.66 adoption boundary and standards suite modernization | Accepted | architecture | Move workspace Optics dependencies to v0.0.66; adopt Lens Return submission in settings; decouple from external docgov tooling and establish flat standards suite in `docs/dev/standards/`. | 2026-11-01 | [Workspace Topology](../architecture/workspace-topology.md) |
+| [0059](0059-voice-engine-idle-memory-eviction.md) | Voice engine idle memory eviction and configurable working set reclamation | Accepted | engine | Establish engine-owned idle working set eviction for heavyweight voice models (`idle_timeout_seconds`, default 1800s / 30m; 0 disables). Invariant: memory eviction is managed within the engine process boundary, preserving IPC channels and status probing. | 2026-11-01 | [Engine Runtime](../architecture/engine-runtime.md) |
+| [0060](0060-declarative-asset-manifests-and-out-of-band-provisioning.md) | Declarative asset manifests and out-of-band provisioning for recognition engines | Accepted | architecture | Engine runtimes remain strictly offline and discover models via multi-tier XDG paths; asset manifests are declarative; interactive provisioning runs out-of-band in foreground tooling (`typioctl engine <engine>:setup`). Invariant: engine worker processes must not perform network I/O. | 2026-11-01 | [Engine Runtime](../architecture/engine-runtime.md) |
 
 ## Retired records
 
 Retired decisions keep their row above (so citations resolve) and their
-authority here. Nothing is deleted ([INV-TEMP-03](../governance/documentation/core/invariants.md) /
-[INV-TEMP-04](../governance/documentation/core/invariants.md)). The fully
+authority here. Nothing is deleted ([INV-TEMP-03](../dev/standards/invariants.md) /
+[INV-TEMP-04](../dev/standards/invariants.md)). The fully
 superseded records in this set are ADR-0004, 0007, 0010, 0013, 0019, 0024, 0027,
 0028, 0036, and 0037.
 
@@ -138,5 +142,5 @@ remain in the archived sibling checkout.
 ## See also
 
 - [Architecture Blueprints](../architecture/index.md) — what the system is today
-- [ADR entity rules](../governance/documentation/profiles/architecture/adr.md) — admission filter, lifecycle, template
+- [ADR Standard](../dev/standards/adr.md) — admission filter, lifecycle, template
 - [Rationale for the consolidation above](0051-single-documentation-tree.md)

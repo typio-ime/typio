@@ -1004,6 +1004,9 @@ impl EngineRegistry {
         &mut self,
     ) -> Option<crate::core::engine::backend::process::VoiceProcessHandle> {
         let idx = self.active_voice?;
+        if !self.slots[idx].backend.is_instantiated() {
+            let _ = self.slots[idx].backend.instantiate();
+        }
         self.slots[idx].backend.voice_handle()
     }
 
@@ -1014,6 +1017,9 @@ impl EngineRegistry {
         let Some(idx) = self.active_voice else {
             return crate::core::engine::EngineAvailability::Failed;
         };
+        if !self.slots[idx].backend.is_instantiated() {
+            let _ = self.slots[idx].backend.instantiate();
+        }
         self.slots[idx]
             .backend
             .with_engine(|engine| engine.availability())

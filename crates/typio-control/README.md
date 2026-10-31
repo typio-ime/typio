@@ -26,7 +26,7 @@ typioctl engine use rime                   # set active
 typioctl engine next                       # cycle to next keyboard
 typioctl engine get rime schema            # read a property
 typioctl engine set rime schema luna_pinyin
-typioctl engine do  rime deploy            # invoke a command
+typioctl engine rime:deploy                # invoke an engine task (e.g. deploy, setup)
 
 typioctl config get  ui.theme              # arbitrary dotted keys
 typioctl config set  ui.theme dark

@@ -2,7 +2,7 @@
 
 Charter: this directory holds the **living state** of the system — how each
 subsystem works *today*. Blueprints are HOT: they are updated in the same pull
-request as the code they describe ([INV-TEMP-01](../governance/documentation/core/invariants.md)),
+request as the code they describe ([INV-TEMP-01](../dev/standards/invariants.md)),
 and they are the primary context for anyone working on a subsystem.
 
 Division of labour:
@@ -30,8 +30,7 @@ the blueprint, not a nuance: fix it in the same pull request.
 
 No ADR has been compacted into a blueprint yet: each blueprint links to its
 active records in [the ADR index](../adr/index.md) instead of tombstoning them.
-The compaction triggers in [the Living Snapshot
-entity](../governance/documentation/profiles/architecture/living-snapshot.md)
+The compaction triggers in [Architecture Standards](../dev/standards/architecture.md)
 are met for the panel-rendering subsystem (more than five amending records), so
 the next maintainer-led pass should tombstone that subsystem's superseded
 records, relocate them to [docs/adr/archive/](../adr/archive/index.md), and

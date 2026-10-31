@@ -5,7 +5,7 @@ record in [index.md](index.md) — a summary row is not optional, it is how the
 rest of us decide whether to read the record at all.
 
 Before you start, check the admission filter in the
-[ADR entity](../governance/documentation/profiles/architecture/adr.md): a
+[ADR standard](../dev/standards/adr.md): a
 decision earns a record only when it clears **at least two** of high reversal
 cost, cross-boundary blast radius, and generating a binding invariant. Routine
 choices, dependency bumps, and temporary workarounds are not ADRs — they belong
@@ -17,8 +17,7 @@ in the pull request description or an inline comment.
 - **Deciders**: <names or roles>
 - **Consulted**: <optional; remove if nobody was consulted>
 - **Informed**: <optional; remove if nobody was informed>
-- **Related RFC**: Not used — this repository does not operate an RFC workflow
-  (see [Repository Contracts](../governance/documentation/contracts.md)).
+- **Related RFC**: Optional; see [RFC Standard](../dev/standards/rfc.md).
 
 ---
 

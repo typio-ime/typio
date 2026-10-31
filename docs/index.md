@@ -46,9 +46,9 @@ sure where something belongs.
 
 - [Architecture Blueprints](architecture/index.md) — how each subsystem works today
 - [Architecture Decision Records](adr/index.md) — the immutable decisions behind it
-- [Repository Governance](governance/index.md) — charters, gates, and the release process
+- [Engineering Standards](dev/standards/README.md) — architecture, invariants, ADRs, and workflow
 - [Developer Documentation](dev/index.md), behind the contributor firewall
-  ([INV-CORE-01](governance/documentation/core/invariants.md)): setup, module map,
+  ([INV-CORE-01](dev/standards/invariants.md)): setup, module map,
   testing, acceptance, code style, and cross-repository development
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — the contribution entry point
 - [README.md](../README.md) — project pitch and quick start
