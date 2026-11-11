@@ -50,7 +50,7 @@ Everything else is a value: `flux_canvas`, the per-candidate `TextMetrics` layou
 - **`[INV-PANEL-11]` The Panel extent is hard-capped at 16384 × 4096 logical pixels.** Candidate pages beyond the cap render a fitting prefix plus a `⋯` overflow marker and at least one candidate stays visible; over-long banner labels truncate with `…`. Both branches are trust boundaries against buggy or hostile engines.
 - **`[INV-PANEL-12]` A skipped frame never changes logical state.** Back-pressure keeps the schedule state `Dirty` and retries only the newest coalesced snapshot; committed text and selection are unaffected by any number of dropped frames.
 - **`[INV-PANEL-13]` No GPU object exists in the Panel path.** No Vulkan device, `flux_surface`, swapchain, dma-buf, GPU readback, or GPU glyph texture may be introduced; fills come from `flux_canvas_create_cpu` and text from the glyph host-coverage path, and the only present mechanism is `wl_shm` with `attach`/`damage_buffer`/`commit`.
-- **`[INV-PANEL-14]` Every Panel pass clears its framebuffer.** The pass is opened through `begin_panel_pass`, never with a null descriptor, because a null descriptor selects `flux`'s *load* path and `ensure_canvas` keeps one canvas alive across resizes. The canvas extent is the retained (quantized) size, which is usually larger than the `content_w - 2` body actually drawn, so without a clear the previous frame survives outside the new body and its transparent 8 px corner arcs blend over the new body's corners — a square-looking right edge, plus vertical remnants once the panel gets shorter. The clear colour is transparent so the arcs reach the compositor. Covered by `shrinking_panel_keeps_rounded_corners`.
+- **`[INV-PANEL-14]` Every Panel pass clears its framebuffer.** The pass is opened through `begin_panel_pass` with a transparent `clear_color` and `clear_extent: true`, never with a null descriptor, because a null descriptor selects `flux`'s *load* path and `ensure_canvas` keeps one canvas alive across resizes. The explicit clear-extent flag states that the whole destination is new rather than leaving it to be inferred from an empty damage set, matching the v0.0.75+ Flux damage vocabulary (ADR-0061). The canvas extent is the retained (quantized) size, which is usually larger than the `content_w - 2` body actually drawn, so without a clear the previous frame survives outside the new body and its transparent 8 px corner arcs blend over the new body's corners — a square-looking right edge, plus vertical remnants once the panel gets shorter. The clear colour is transparent so the arcs reach the compositor. Covered by `shrinking_panel_keeps_rounded_corners`.
 
 ## 3. Component Architecture & Data Flow
 
@@ -137,7 +137,7 @@ Path tracing under `typio.panel.perf` reports per-phase microsecond timings (`la
 Panel backgrounds and selection highlights use Flux geometry and solid brushes.
 Canvas and text contexts release their references through the current ownership
 APIs, including resize and early-return paths. The workspace and CI native pin
-select Optics v0.0.62; see [Workspace Topology](workspace-topology.md).
+select Optics v0.0.78; see [Workspace Topology](workspace-topology.md).
 
 ### 3.4 Back-pressure and convergence
 

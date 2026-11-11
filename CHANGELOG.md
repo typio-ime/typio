@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Optics v0.0.78 alignment.** Moved the five workspace dependency pins
+  (`flux-sys`, `glyph-sys`, `iris`, `iris-sys`, `lens-sys`) and CI
+  `OPTICS_PINNED_REF` from `v0.0.66` to `v0.0.78` as one atomic unit; the
+  canonical `Cargo.lock` is regenerated when the change is promoted to `main`
+  (ADR-0061).
+- **Settings adopt the record-only Iris host-canvas contract.** `typio-settings`
+  now calls `Application::run(config, build)` without the removed `PaintHost`
+  argument. The application remains pure Lens chrome and does not register a
+  host canvas callback.
+- **Panel states its whole-extent clear explicitly.** `begin_panel_pass` sets
+  `clear_extent: true` alongside the transparent clear, and the present helper
+  documents that it uses `wl_surface.damage_buffer` (buffer-local pixels), not
+  `wl_surface.damage`. The Panel keeps full-frame repaint and non-blocking
+  `wl_shm` back-pressure; regional damage remains declined under ADR-0061.
+
 ## [0.6.5] - 2026-11-01
 
 ### Changed

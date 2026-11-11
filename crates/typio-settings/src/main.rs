@@ -5,7 +5,7 @@ mod ui;
 
 use std::error::Error;
 
-use iris::{Application, Config, PaintHost};
+use iris::{Application, Config};
 use ui::AppState;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -30,10 +30,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         config = config.log_raw();
     }
     let mut state = AppState::new();
-    Application::run(
-        config,
-        move |frame, _input| state.frame(frame),
-        None::<fn(PaintHost)>,
-    )?;
+    Application::run(config, move |frame, _input| state.frame(frame))?;
     Ok(())
 }

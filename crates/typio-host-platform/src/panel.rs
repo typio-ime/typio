@@ -66,6 +66,11 @@ unsafe fn begin_panel_pass(canvas: *mut flux_canvas) -> bool {
         let pass = flux_sys::flux_canvas_pass_desc {
             type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_PASS_DESC,
             clear_color: &clear,
+            // The Panel repaints its whole extent on every composition change.
+            // Flux's v0.0.75+ damage vocabulary distinguishes "the whole
+            // destination is new" (`clear_extent`) from an empty damage set,
+            // so state the intent instead of relying on the inference.
+            clear_extent: true,
             ..Default::default()
         };
         flux_result_is_ok(flux_canvas_begin(canvas, &pass))
@@ -995,7 +1000,11 @@ unsafe fn wl_surface_attach_commit(
     }
     let surface = wl_surface as *mut wl_proxy;
     // SAFETY: the caller guarantees both proxies are live; the opcodes and
-    // argument arrays match attach (1), damage (9), and commit (6).
+    // argument arrays match attach (1), damage_buffer (9), and commit (6).
+    // `damage_buffer` takes buffer-local pixels, which is the coordinate
+    // space the panel rasterises in; `damage` (opcode 2) would take
+    // surface-local logical units and silently under- or over-cover at a
+    // buffer scale other than 1.
     unsafe {
         let mut attach_args = [
             wl_argument { o: buffer },
