@@ -11,6 +11,8 @@ use glyph_sys::{
     glyph_create, glyph_ctx, glyph_desc, glyph_draw_outlined, glyph_family, glyph_measure,
     glyph_release, glyph_style,
 };
+use optics::canvas::sys as flux_sys;
+use optics::typography::sys as glyph_sys;
 
 /// One rasterised badge bitmap at a single size. `argb` is `width*height`
 /// pixels, 4 bytes each, big-endian ARGB32 (SNI byte order: `[A, R, G, B]`).

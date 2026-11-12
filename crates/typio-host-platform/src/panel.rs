@@ -25,6 +25,7 @@ use flux_sys::{
     flux_canvas_end, flux_canvas_release, flux_color_rgba, flux_error_info, flux_get_last_error,
     flux_rect, flux_result,
 };
+use optics::canvas::sys as flux_sys;
 use wayland_client::protocol::wl_shm;
 use wayland_client::{Proxy, QueueHandle};
 use wayland_sys::{

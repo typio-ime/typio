@@ -8,13 +8,9 @@
 # lockfile in that worktree; the repository hook keeps the local lockfile out
 # of commits. Remove the generated file before promoting an Optics release.
 [patch."https://github.com/ming2k/optics"]
-flux = { path = "../optics/bindings/flux-rs/crates/flux" }
-flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-glyph-sys = { path = "../optics/bindings/glyph-rs/crates/glyph-sys" }
-lens = { path = "../optics/bindings/lens-rs/crates/lens" }
-lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
-iris = { path = "../optics/bindings/iris-rs/crates/iris" }
-iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }
+# The facade's path dependencies resolve the rest of the unified bindings
+# workspace (`bindings/crates/*`) from the sibling checkout.
+optics = { path = "../optics/bindings/crates/optics" }
 
 # Override points for the native C libraries. By default, Meson builds into
 # `../optics/build-release`. When developing Optics alongside Typio, keep

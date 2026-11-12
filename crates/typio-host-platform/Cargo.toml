@@ -14,8 +14,7 @@ wayland-client = { workspace = true }
 wayland-scanner = { workspace = true }
 wayland-backend = { workspace = true }
 wayland-sys = { workspace = true }
-flux-sys = { workspace = true }
-glyph-sys = { workspace = true }
+optics = { workspace = true, features = ["typography"] }
 xkbcommon = { workspace = true }
 nix.workspace = true
 libc.workspace = true

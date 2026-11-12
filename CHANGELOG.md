@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Optics v0.0.79 alignment and facade adoption.** Replaced the five granular
+  workspace pins (`flux-sys`, `glyph-sys`, `iris`, `iris-sys`, `lens-sys`) with
+  the single `optics` facade crate at `v0.0.79`, using
+  `default-features = false` and per-crate features (`typography` for the
+  daemon and host platform, `platform` for settings). Raw FFI now goes through
+  the facade's `canvas::sys` / `typography::sys` re-exports. CI
+  `OPTICS_PINNED_REF`, the local patch template, and the release-ref validator
+  move atomically (ADR-0062).
+- **Native rpaths are derived from the Optics build-tree variables.** The
+  daemon, host-platform, and settings build scripts no longer depend on the
+  `-sys` crates' now-transitive `links` metadata; they locate
+  `libs/{flux,glyph,lens,iris,reticle}` under `FLUX_BUILD_DIR`,
+  `GLYPH_BUILD_DIR`, `LENS_BUILD_DIR`, and `IRIS_BUILD_DIR` and emit the same
+  rpaths directly (ADR-0062).
+- **Local Optics development patches only the facade.** The
+  `.cargo/optics-local.toml` template redirects
+  `../optics/bindings/crates/optics`; its path dependencies resolve the unified
+  bindings workspace, replacing the retired `bindings/*-rs` paths. The C
+  umbrella, Reticle, Transit, Prism, and Vista designs remain declined because
+  no Typio path reaches them (ADR-0062).
+
 ## [0.6.6] - 2026-11-12
 
 ### Changed

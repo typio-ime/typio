@@ -14,6 +14,8 @@ use glyph_sys::{
     glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_family, glyph_measure, glyph_metrics,
     glyph_release, glyph_set_default_family, glyph_style,
 };
+use optics::canvas::sys as flux_sys;
+use optics::typography::sys as glyph_sys;
 
 use crate::FontFamilyClass;
 
@@ -187,7 +189,7 @@ mod tests {
         let mut t = TextRaster::default();
         let m = t.measure("Ab", 16.0);
         // Only meaningful when the FT/HB backend is present (it is, when
-        // glyph built with -Dtext=true). A measure-only fallback still
+        // glyph built with -Dglyph=true). A measure-only fallback still
         // returns a width, so this is a soft check.
         assert!(m.width >= 0.0);
     }

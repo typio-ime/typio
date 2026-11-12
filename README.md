@@ -34,16 +34,20 @@ capture, and the optics graphics stack. `typio-runtime`,
 this repository.
 
 The daemon build is Cargo. `flux` is still a native C library, so build the
-sibling flux checkout first until flux has its own Cargo-native library build.
+sibling optics checkout first until flux has its own Cargo-native library build.
+Typio consumes the single `optics` facade crate; feature flags select the
+canvas, typography, and platform layers each binary needs.
 
 ```bash
 # Build the native dependencies first (from the Typio repo root).
 meson setup ../optics/build-release ../optics \
-  -Dtext=true --buildtype=release    # one-time per optics checkout
+  -Dglyph=true --buildtype=release   # one-time per optics checkout
 meson compile -C ../optics/build-release
 
 export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
+export GLYPH_BUILD_DIR="$PWD/../optics/build-release"
+export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
 export LENS_BUILD_DIR="$PWD/../optics/build-release"
 export LENS_SOURCE_DIR="$PWD/../optics"
 export IRIS_BUILD_DIR="$PWD/../optics/build-release"

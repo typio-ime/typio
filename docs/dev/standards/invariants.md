@@ -46,7 +46,7 @@ The following authoritative system invariants are binding across the repository:
 - **`[INV-WKS-03]`**: Recognition engines are reached only through Typio Engine Protocol over child process socketpairs ([ADR-0054](../../adr/0054-engine-protocol-only-no-in-process-abi.md)).
 - **`[INV-WKS-04]`**: External clients communicate with the daemon exclusively via TIP JSON-RPC over the Unix domain socket ([ADR-0008](../../adr/0008-ipc-protocol-resource-namespaces-uds-only.md)).
 - **`[INV-WKS-05]`**: `typio-runtime` is embedded and headless, independent of Wayland or graphics libraries.
-- **`[INV-WKS-06]`**: Optics Rust bindings resolve from tagged Git releases in canonical builds, with local overrides restricted to development worktrees.
+- **`[INV-WKS-06]`**: Optics Rust bindings resolve through the single `optics` facade from tagged Git releases in canonical builds, with local overrides restricted to development worktrees.
 - **`[INV-WKS-08]`**: `typio-daemon` is the single version source for the product suite.
 
 ### Panel Rendering Invariants

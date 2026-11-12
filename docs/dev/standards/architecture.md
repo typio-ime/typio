@@ -64,5 +64,5 @@ Typio organizes its Cargo workspace into concentric layers ([ADR-0038](../../adr
 
 1. **Acyclic Dependency Invariant (`[INV-WKS-02]`)**: Lower-layer crates (`typio-host-types`, `typio-engine-protocol`, `typio-engine-manifest`) must NEVER depend on upper layers (`typio-runtime`, `typio-daemon`, `typio-settings`).
 2. **Runtime Headless Purity (`[INV-WKS-05]`)**: `typio-runtime` must remain completely decoupled from Wayland, X11, or graphics presentation libraries. It operates entirely as a deterministic state machine.
-3. **Optics Rust Bindings Canonical Tagging (`[INV-WKS-06]`)**: Canonical builds resolve Optics bindings from tagged Git releases. Local development links through `.cargo/optics-local.toml` worktree patches without polluting `main`.
+3. **Optics Rust Bindings Canonical Tagging (`[INV-WKS-06]`)**: Canonical builds resolve the single `optics` facade crate from tagged Git releases; no crate declares a granular Optics layer dependency. Local development links through `.cargo/optics-local.toml` worktree patches without polluting `main`.
 4. **Daemon Version Authority (`[INV-WKS-08]`)**: `crates/typio-daemon/Cargo.toml` is the authoritative version source for the Typio product suite.

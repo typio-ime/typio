@@ -12,6 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+include!("../optics-rpaths.rs");
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let project_root = manifest_dir.parent().unwrap().parent().unwrap();
@@ -44,48 +46,35 @@ fn main() {
         }
     }
 
-    let flux_rpaths = env::var("DEP_FLUX_RPATHS").unwrap_or_default();
-    let glyph_rpaths = env::var("DEP_GLYPH_RPATHS")
-        .or_else(|_| env::var("DEP_FLUX_TEXT_RPATHS"))
-        .unwrap_or_default();
-    enforce_optimized_flux_for_release(&[&flux_rpaths, &glyph_rpaths]);
+    let rpaths = optics_native_rpaths();
+    enforce_optimized_flux_for_release(&rpaths);
 
-    // flux-sys publishes the Meson build-tree rpaths it used via `links`
-    // metadata. Re-emit them here so platform crate tests load the same
-    // libraries bindgen saw, not a stale or missing system install.
-    for dir in flux_rpaths.split(';').filter(|s| !s.is_empty()) {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
-    }
-
-    for dir in glyph_rpaths.split(';').filter(|s| !s.is_empty()) {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
-    }
+    // The platform crate reaches Flux and Glyph through the `optics` facade,
+    // so the `-sys` crates' `links` metadata is no longer visible here. Emit
+    // the build-tree rpaths explicitly so test harnesses load the libraries
+    // bindgen saw rather than a stale system install.
+    emit_optics_rpaths();
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=DEP_FLUX_RPATHS");
-    println!("cargo:rerun-if-env-changed=DEP_GLYPH_RPATHS");
-    println!("cargo:rerun-if-env-changed=DEP_FLUX_TEXT_RPATHS");
+    println!("cargo:rerun-if-changed=../optics-rpaths.rs");
+    rerun_on_optics_paths();
 }
 
 /// Reject a Cargo release binary backed by a Meson `-O0` Flux build.
 ///
 /// The Rust profile does not affect native libraries selected through
-/// `FLUX_BUILD_DIR`. Walk upward from the rpaths published by `flux-sys` and
-/// `glyph-sys`; when they belong to a Meson build tree, use its
+/// `FLUX_BUILD_DIR`. Walk upward from the rpaths derived from the
+/// `*_BUILD_DIR` variables; when they belong to a Meson build tree, use its
 /// introspection data as the authoritative optimization setting. Installed
 /// libraries have no Meson metadata nearby and remain the packager's
 /// responsibility.
-fn enforce_optimized_flux_for_release(rpath_sets: &[&str]) {
+fn enforce_optimized_flux_for_release(rpaths: &[String]) {
     if env::var("PROFILE").as_deref() != Ok("release") {
         return;
     }
 
     let mut checked = HashSet::new();
-    for rpath in rpath_sets
-        .iter()
-        .flat_map(|paths| paths.split(';'))
-        .filter(|path| !path.is_empty())
-    {
+    for rpath in rpaths {
         let Some(options_path) = find_meson_build_options(Path::new(rpath)) else {
             continue;
         };
@@ -122,7 +111,7 @@ fn enforce_optimized_flux_for_release(rpath_sets: &[&str]) {
                 "Cargo release cannot link the unoptimized Flux build at {} \
                  (Meson buildtype={buildtype}, optimization=0). Configure a \
                  release tree and point FLUX_BUILD_DIR at it, for example: \
-                 meson setup ../optics/build-release ../optics -Dtext=true \
+                 meson setup ../optics/build-release ../optics -Dglyph=true \
                  --buildtype=release",
                 build_dir.display()
             );

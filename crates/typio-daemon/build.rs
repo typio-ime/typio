@@ -7,6 +7,8 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
+include!("../optics-rpaths.rs");
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let project_root = manifest_dir.parent().unwrap().parent().unwrap();
@@ -18,7 +20,7 @@ fn main() {
             let status = Command::new("meson")
                 .arg("setup")
                 .arg(&build_dir)
-                .arg("-Dtext=true")
+                .arg("-Dglyph=true")
                 .current_dir(&optics_dir)
                 .status()
                 .expect("Failed to run meson setup");
@@ -83,24 +85,12 @@ fn main() {
     let enable_voice = env::var("CARGO_FEATURE_VOICE").is_ok();
     let have_flux = enable_wayland;
 
-    // flux-sys publishes the Meson build-tree rpaths it used via `links`
-    // metadata (DEP_FLUX_RPATHS for libflux.so). Re-emit them here so
-    // The daemon's bins and test harnesses load the same libraries bindgen
-    // saw, not a stale system install.
-    if let Ok(rpaths) = env::var("DEP_FLUX_RPATHS") {
-        for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
-        }
-    }
-
-    // Same re-emit for glyph-sys (links = "glyph"): libglyph.so
-    // lives in a sibling build subdir and otherwise resolves to a stale
-    // system install that lacks the host-coverage glyph path.
-    if let Ok(rpaths) = env::var("DEP_GLYPH_RPATHS").or_else(|_| env::var("DEP_FLUX_TEXT_RPATHS")) {
-        for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
-        }
-    }
+    // The daemon reaches Flux and Glyph through the `optics` facade, so the
+    // `-sys` crates' `links` metadata is no longer visible here. Re-derive the
+    // Meson build-tree rpaths from the same variables the bindings consume, so
+    // the daemon and its test harnesses load the libraries bindgen saw rather
+    // than a stale system install.
+    emit_optics_rpaths();
 
     // Emit env vars for option_env!() consumption at compile time.
     println!("cargo:rustc-env=TYPIO_VERSION={version}");
@@ -176,14 +166,13 @@ fn main() {
 
     // Rerun-if-changed guards: rebuild when these change.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../optics-rpaths.rs");
     println!("cargo:rerun-if-env-changed=TYPIO_INSTALL_PREFIX");
     println!("cargo:rerun-if-env-changed=TYPIO_INSTALL_BINDIR");
     println!("cargo:rerun-if-env-changed=TYPIO_INSTALL_LIBDIR");
     println!("cargo:rerun-if-env-changed=TYPIO_INSTALL_DATADIR");
     println!("cargo:rerun-if-env-changed=TYPIO_ENGINE_DIR");
-    println!("cargo:rerun-if-env-changed=DEP_FLUX_RPATHS");
-    println!("cargo:rerun-if-env-changed=DEP_GLYPH_RPATHS");
-    println!("cargo:rerun-if-env-changed=DEP_FLUX_TEXT_RPATHS");
+    rerun_on_optics_paths();
 }
 
 fn escape_str(s: &str) -> String {

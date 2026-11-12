@@ -2,7 +2,7 @@
 set -eu
 
 manifest=${1:-Cargo.toml}
-expected_packages=5
+expected_packages=1
 
 if [ ! -f "$manifest" ]; then
     printf 'error: manifest not found: %s\n' "$manifest" >&2
@@ -11,7 +11,7 @@ fi
 
 refs=$(
     sed -n \
-        's/^[a-zA-Z0-9_-]* = { git = "https:\/\/github.com\/ming2k\/optics", tag = "\([^"]*\)" }$/\1/p' \
+        's/^[a-zA-Z0-9_-]* = { git = "https:\/\/github.com\/ming2k\/optics", tag = "\([^"]*\)".* }$/\1/p' \
         "$manifest"
 )
 package_count=$(printf '%s\n' "$refs" | sed '/^$/d' | wc -l)

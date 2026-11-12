@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: eaa66e6a85094bca901d5857776c2360cf9cdbf7
+  OPTICS_PINNED_REF: 63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46
 
 jobs:
   cargo-check-format-lint:

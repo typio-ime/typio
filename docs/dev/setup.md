@@ -16,23 +16,26 @@ the binaries under test are the debug ones.
 
 ```bash
 # one-time per optics checkout:
-meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 export FLUX_BUILD_DIR="$PWD/../optics/build"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
+export GLYPH_BUILD_DIR="$PWD/../optics/build"
+export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
 
 cargo build -p typio-daemon --bin typio
 cargo test -p typio-daemon
 ./target/debug/typio --verbose
 ```
 
-The two exports must be present in every shell that runs `cargo build`, `test`,
-or `run`; the repository ships no committed copy of them.
+The Optics export variables must be present in every shell that runs `cargo
+build`, `test`, or `run`; the repository ships no committed copy of them.
 
 Typio links `libflux` straight out of the `optics/flux` Meson build
 tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
-is required (flux-sys bakes an `-Wl,-rpath` to the build tree). `typio-runtime`,
+is required (the Typio build scripts bake an `-Wl,-rpath` to the build tree
+derived from the `*_BUILD_DIR` variables). `typio-runtime`,
 `typio-engine-protocol`, `typio-engine-manifest`, `typio-engine-check`, `typio-client`,
 `typio-control`, and `typio-settings` are Cargo workspace members in this
 repository, so runtime, engine-contract, client, GUI, CLI, and daemon changes
@@ -73,14 +76,14 @@ projects/
 │   └── typio-engine-whisper/     # Meson: whisper.cpp voice input
 └── optics/
     ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
-    ├── bindings/flux-rs/         # Rust bindings; published as git crate v0.1.0
-    ├── libs/iris/, libs/lens/     # settings window and widget toolkit
-    └── bindings/iris-rs/, bindings/lens-rs/
+    ├── libs/iris/, libs/lens/    # settings window and widget toolkit
+    └── bindings/crates/          # unified Cargo workspace: the `optics` facade plus layer crates
 ```
 
 Typio resolves its runtime, engine-protocol, manifest, vet, command-line, and
 settings crates from local workspace paths. Native optics libraries are
-sibling dependencies found through pkg-config by their `-sys` crates.
+sibling dependencies found through pkg-config by the `-sys` crates underneath
+the single `optics` facade dependency.
 
 ## flux (C library)
 
@@ -93,18 +96,21 @@ build tree. `meson setup` is one-time per checkout; `meson compile` rebuilds
 on demand:
 
 ```bash
-meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 export FLUX_BUILD_DIR="$PWD/../optics/build"
 export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"   # optional: bindgen from this checkout
+export GLYPH_BUILD_DIR="$PWD/../optics/build"
+export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
 ```
 
 `flux-sys` prepends the build tree's `meson-uninstalled/` to
-`PKG_CONFIG_PATH` and bakes an `-Wl,-rpath` for it, so binaries find
-`libflux.so` at runtime with no `LD_LIBRARY_PATH` and no `meson install`.
-Keep the two exports set in any shell that runs `cargo build` / `test` /
-the daemon; `FLUX_BUILD_DIR` is what selects the in-tree library. If Cargo
+`PKG_CONFIG_PATH`; Typio's build scripts then bake an `-Wl,-rpath` for the
+selected library directories, so binaries find the native stack at runtime
+with no `LD_LIBRARY_PATH` and no `meson install`. Keep the Optics export
+variables set in any shell that runs `cargo build`, `cargo test`, or the
+daemon; `FLUX_BUILD_DIR` is what selects the in-tree library. If Cargo
 reports an undefined `flux_*` symbol, rebuild optics (`meson compile -C
 ../optics/build`) and re-run.
 
@@ -134,7 +140,7 @@ cargo build -p typio-daemon --bin typio
 Build the release daemon:
 
 ```bash
-meson setup ../optics/build-release ../optics -Dtext=true --buildtype=release
+meson setup ../optics/build-release ../optics -Dglyph=true --buildtype=release
 meson compile -C ../optics/build-release
 export FLUX_BUILD_DIR="$PWD/../optics/build-release"
 cargo build --release -p typio-daemon --bin typio

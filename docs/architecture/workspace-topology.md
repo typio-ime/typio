@@ -47,9 +47,11 @@ discovered on the build host.
   to obtain state.
 - **`[INV-WKS-05]`** The runtime is embedded, not installed: `typio-runtime`
   builds an `rlib` and the daemon binary is `typio`.
-- **`[INV-WKS-06]`** Optics Rust bindings come from tagged Git sources. Native
-  Optics libraries come from a Meson build tree or an installed prefix found via
-  environment variables or `pkg-config`; no Optics source is vendored here.
+- **`[INV-WKS-06]`** Optics Rust bindings resolve through the single `optics`
+  facade crate from tagged Git sources; no crate declares a granular Optics
+  layer dependency. Native Optics libraries come from a Meson build tree or an
+  installed prefix found via environment variables or `pkg-config`; no Optics
+  source is vendored here.
 - **`[INV-WKS-07]`** Local cross-repository mode is a linked worktree, not a
   committed change: it activates through `.cargo/config.toml` copied from
   `.cargo/optics-local.toml`, and neither that file nor the local `Cargo.lock`
@@ -96,7 +98,7 @@ flowchart BT
     CK --> MA
     CO[typio-control] --> CL[typio-client]
     ST[typio-settings] --> CL
-    ST --> OP[optics bindings]
+    ST --> OP[optics facade]
 ```
 
 | Rule | Enforcement |
@@ -116,16 +118,20 @@ clients only over TIP.
 
 | Concern | Canonical (primary worktree) | Local cross-repository worktree |
 |---|---|---|
-| Rust bindings | Tagged Optics Git sources in `[workspace.dependencies]` | Sibling `../optics` paths through a Cargo `[patch]` table |
+| Rust bindings | Tagged `optics` facade in `[workspace.dependencies]` | Sibling `../optics/bindings/crates/optics` through a Cargo `[patch]` table |
 | Native libraries | `pkg-config` or the local Meson build tree | Sibling `../optics/build-release` |
 | `Cargo.lock` | Remote Git commits; tracked in Git | Local path dependencies; ignored by the commit hook |
 | Cargo configuration | Default, or `.cargo/config.example.toml` | `.cargo/config.toml` copied from `.cargo/optics-local.toml` |
 
-The workspace pins `flux-sys`, `glyph-sys`, `iris`, `iris-sys`, and
-`lens-sys` to a tagged Optics release (tag `v0.0.78` in `[workspace.dependencies]`
-at the time of writing). The native `libflux` and `libglyph`
-have no Cargo-native build yet, so contributors compile the sibling Optics tree
-with Meson and point the `-sys` build scripts at it:
+The workspace pins the single `optics` facade crate to a tagged Optics release
+(tag `v0.0.79` in `[workspace.dependencies]` at the time of writing), with
+`default-features = false`. Each consumer enables only the layers it uses:
+`typography` for the daemon and host platform, and `platform` for the settings
+application. Raw FFI remains reachable through the facade's `canvas::sys` and
+`typography::sys` re-exports, so no crate declares a granular Optics dependency
+of its own. The native `libflux` and `libglyph` have no Cargo-native build yet,
+so contributors compile the sibling Optics tree with Meson and point the `-sys`
+build scripts underneath the facade at it:
 
 ```bash
 meson setup ../optics/build -Dglyph=true --buildtype=debugoptimized
@@ -136,9 +142,10 @@ export GLYPH_BUILD_DIR="$PWD/../optics/build"
 export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
 ```
 
-`FLUX_BUILD_DIR` and `GLYPH_BUILD_DIR` select the in-tree libraries and the build scripts bake an
-`-Wl,-rpath` into the binaries, so neither a system install nor an
-`LD_LIBRARY_PATH` entry is required in the development loop. The Iris and Lens
+`FLUX_BUILD_DIR` and `GLYPH_BUILD_DIR` select the in-tree libraries; the Typio
+build scripts derive those directories and bake an `-Wl,-rpath` into the
+binaries, so neither a system install nor an `LD_LIBRARY_PATH` entry is
+required in the development loop. The Iris and Lens
 bindings resolve through `IRIS_BUILD_DIR`, `IRIS_SOURCE_DIR`, `LENS_BUILD_DIR`,
 and `LENS_SOURCE_DIR`. Linking directly to the Meson tree is the supported
 development path; an installed prefix works when `FLUX_BUILD_DIR` is unset. CI
@@ -151,9 +158,9 @@ resolves live sibling Optics sources. Activating it means copying
 `.cargo/optics-local.toml` to `.cargo/config.toml` and installing the repository
 hooks with `git config core.hooksPath .githooks`. The hook refuses to commit a
 `Cargo.lock` that reflects local paths, and refuses a release-shaped version bump
-while local mode is active. Promoting an Optics release — bumping the tags,
-moving `OPTICS_PINNED_REF` in the CI workflow, and regenerating the canonical
-lockfile — is specified in [Typio and Optics Cross-Repository
+while local mode is active. Promoting an Optics release — moving the facade
+tag, moving `OPTICS_PINNED_REF` in the CI workflow, and regenerating the
+canonical lockfile — is specified in [Typio and Optics Cross-Repository
 Development](../dev/optics-dev-worktree.md); the product release process
 itself belongs to [Engineering Workflow](../dev/standards/workflow.md).
 

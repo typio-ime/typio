@@ -101,6 +101,7 @@ authority is listed under [Retired records](#retired-records).
 | [0059](0059-voice-engine-idle-memory-eviction.md) | Voice engine idle memory eviction and configurable working set reclamation | Accepted | engine | Establish engine-owned idle working set eviction for heavyweight voice models (`idle_timeout_seconds`, default 1800s / 30m; 0 disables). Invariant: memory eviction is managed within the engine process boundary, preserving IPC channels and status probing. | 2026-11-01 | [Engine Runtime](../architecture/engine-runtime.md) |
 | [0060](0060-declarative-asset-manifests-and-out-of-band-provisioning.md) | Declarative asset manifests and out-of-band provisioning for recognition engines | Accepted | architecture | Engine runtimes remain strictly offline and discover models via multi-tier XDG paths; asset manifests are declarative; interactive provisioning runs out-of-band in foreground tooling (`typioctl engine <engine>:setup`). Invariant: engine worker processes must not perform network I/O. | 2026-11-01 | [Engine Runtime](../architecture/engine-runtime.md) |
 | [0061](0061-optics-v0.0.78-adoption-boundary.md) | Optics v0.0.78 adoption boundary | Accepted | architecture | Move the five Optics pins, lockfile, and CI ref atomically to v0.0.78; migrate settings to the record-only Iris API; declare the Panel's whole-extent clear explicitly. Decline Panel regional damage and the GPU/retained-content designs because a rotating `wl_shm` pool and a pure-chrome settings host do not satisfy their preconditions. | 2026-11-11 | [Panel Rendering](../architecture/panel-rendering.md) |
+| [0062](0062-optics-v0.0.79-adoption-boundary.md) | Optics v0.0.79 adoption boundary | Accepted (amends ADR-0061 for the distribution surface only) | architecture | Move the pin and CI ref to v0.0.79 and replace the five granular Optics dependencies with the single `optics` facade crate, selecting only `typography` or `platform` per consumer; patch only the facade in local mode. Decline the C umbrella, Reticle, Transit, Prism, and Vista because no Typio path reaches them. | 2026-11-12 | [Workspace Topology](../architecture/workspace-topology.md) |
 
 ## Retired records
 
@@ -125,7 +126,7 @@ The compaction triggers are evaluated from this registry:
 | Trigger | Threshold | Status |
 | :--- | :--- | :--- |
 | Subsystem saturation | 5 or more incremental or amending records in one subsystem | **Met** for panel rendering and for the engine boundary |
-| Repository milestone | More than 50 active records | Not met (42 active records; 10 are fully superseded) |
+| Repository milestone | More than 50 active records | Not met (43 active records; 10 are fully superseded) |
 | High invalidation ratio | More than 40% superseded or deprecated | Not met |
 
 The living snapshots exist ([Architecture Blueprints](../architecture/index.md)),

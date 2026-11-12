@@ -14,7 +14,7 @@ worktrees sharing a single repository storage:
 |---|---|---|
 | Directory path | `../typio/` | `../typio-dev/` |
 | Active branch | `main` | `dev` |
-| Rust bindings | Tagged Optics Git source | Sibling `../optics` via `[patch]` |
+| Rust bindings | Tagged `optics` facade from Git | Sibling `../optics/bindings/crates/optics` via `[patch]` |
 | `Cargo.lock` | Canonical, tagged, committed | Worktree-local, never committed |
 | Cargo config | `.cargo/config.toml` absent | Copied from `.cargo/optics-local.toml` |
 | Native libraries | System-installed `/usr/lib/lib*.so` | Sibling `../optics/build-release/` via `-rpath` |
@@ -105,22 +105,21 @@ without dirtying version control:
 
 ```toml
 [patch."https://github.com/ming2k/optics"]
-flux = { path = "../optics/bindings/flux-rs/crates/flux" }
-flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-glyph-sys = { path = "../optics/bindings/glyph-rs/crates/glyph-sys" }
-lens = { path = "../optics/bindings/lens-rs/crates/lens" }
-lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
-iris = { path = "../optics/bindings/iris-rs/crates/iris" }
-iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }
+optics = { path = "../optics/bindings/crates/optics" }
 ```
+
+The facade's path dependencies resolve the rest of the unified
+`../optics/bindings/crates/` workspace. Patching only the facade is what keeps
+the local graph identical in shape to the canonical one (one direct Optics
+dependency with feature-selected layers).
 
 This configuration achieves two things:
 
-1. **Cargo Source Replacement**: It instructs Cargo to intercept every
-   dependency on the remote `ming2k/optics` repository and redirect it to
-   the local sibling directory `../optics/`.
-2. **Native Discovery and Precedence**: Loading `*-sys` crates locally
-   causes their `build.rs` scripts to run from disk. These scripts detect
+1. **Cargo Source Replacement**: It instructs Cargo to intercept the
+   dependency on the remote `ming2k/optics` repository and redirect the
+   `optics` facade to `../optics/bindings/crates/optics`.
+2. **Native Discovery and Precedence**: Loading the facade's path-resolved
+   `*-sys` crates causes their `build.rs` scripts to run from disk. These scripts detect
    `../optics/build-release/meson-uninstalled/`, prepend it to `PKG_CONFIG_PATH`,
    and inject `-Wl,-rpath` so that uninstalled local C libraries take
    absolute precedence over any system-installed versions.
@@ -139,11 +138,11 @@ Verify that Cargo resolves the sibling paths instead of Git tags:
 
 ```bash
 # In projects/typio-dev/ (branch dev):
-cargo tree -i flux-sys
-cargo tree -i iris
+cargo tree -i optics
+cargo tree -i lens-sys
 ```
 
-Both trees must display paths pointing into `../optics/bindings/`.
+Both trees must display paths pointing into `../optics/bindings/crates/`.
 
 ## Daily Development in Local Mode
 
@@ -255,8 +254,8 @@ git merge --squash dev
 
 ### Step 3: Update Manifests and Canonical Lockfile on Main
 
-If the merged feature requires new Optics APIs, update every Optics dependency
-in `projects/typio/Cargo.toml` to the new tag `vX.Y.Z`:
+If the merged feature requires new Optics APIs, update the `optics` facade
+dependency in `projects/typio/Cargo.toml` to the new tag `vX.Y.Z`:
 
 ```bash
 # In projects/typio/ (primary worktree, branch main):
@@ -269,11 +268,11 @@ GitHub and pins the authoritative remote Git SHA:
 
 ```bash
 # In projects/typio/ (primary worktree, branch main):
-cargo update -p flux-sys -p glyph-sys -p iris -p iris-sys -p lens-sys
+cargo update -p optics
 ```
 
-Confirm that `cargo tree -i flux-sys` and `cargo tree -i iris` report the tagged
-Git source instead of local filesystem paths.
+Confirm that `cargo tree -i optics` and `cargo tree -i lens-sys` report the
+tagged Git source instead of local filesystem paths.
 
 ### Step 4: Validate and Commit Canonical State on Main
 
@@ -325,7 +324,7 @@ command to rewrite it into the local path-patched form:
 ```bash
 # In projects/typio-dev/ (development worktree, branch dev):
 cargo check -p typio-daemon
-cargo tree -i flux-sys   # confirm ../optics/bindings/ paths reappear
+cargo tree -i optics   # confirm ../optics/bindings/crates/ paths reappear
 ```
 
 If `dev` was previously pushed, force-update the remote branch after the

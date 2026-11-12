@@ -25,6 +25,11 @@ The workspace members are declared in the root `Cargo.toml`.
 | `crates/typio-settings` | `typio-settings` | Graphical settings application. |
 | `crates/xtask` | — | Cargo task helper: `cargo xtask install` and `cargo xtask uninstall`. |
 
+`crates/optics-rpaths.rs` is not a crate module. It is included by the daemon,
+host-platform, and settings build scripts to derive native Optics rpaths from
+the `*_BUILD_DIR` environment variables now that the `optics` facade hides the
+`-sys` crates' direct `links` metadata.
+
 ## Crate: `typio-control`
 
 The package is `typio-control`; the installed binary is `typioctl`. The crate is
