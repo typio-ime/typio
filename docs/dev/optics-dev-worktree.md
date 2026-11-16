@@ -209,8 +209,8 @@ The commit history on `dev` and `main` is **deliberately distinct**:
 Because intermediate `dev` commits cannot build canonically, they must never
 be merged onto `main` verbatim. Promotion is always a **squash merge**: the
 entire feature becomes one atomic commit on `main`, and `dev` is then reset
-onto the promoted `main`. The fine-grained history survives through dated
-archive tags (Step 5), not through `main`'s graph.
+onto the promoted `main`. The fine-grained dev history does not appear in
+`main`'s graph.
 
 Do not treat this process as a bidirectional "sync". It is a strict
 **one-way promotion and merge** of completed feature milestones from `dev`
@@ -294,21 +294,12 @@ git commit -m "feat(host): promote milestone from dev"
 git push origin main
 ```
 
-### Step 5: Archive the Dev History, Reset Dev, and Continue
+### Step 5: Reset Dev and Continue
 
 Notice that **`typio-dev` never touched or disabled its `.cargo/config.toml`**.
 Your local development environment remained active throughout the merge.
 
-Before moving the `dev` pointer, preserve the fine-grained iteration history
-with a dated archive tag:
-
-```bash
-# In projects/typio-dev/ (development worktree, branch dev):
-git tag archive/dev-YYYYMMDD-<feature-slug> dev
-git push origin archive/dev-YYYYMMDD-<feature-slug>   # optional
-```
-
-Then reset `dev` onto the freshly promoted `main`. Do **not** rebase here:
+Reset `dev` onto the freshly promoted `main`. Do **not** rebase here:
 the dev content already lives inside the squash commit, so rebasing yields
 empty commits and conflicts—`reset --hard main` is the only correct
 operation:
