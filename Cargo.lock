@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "typio-daemon"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "bitflags",
  "clap",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "typio-runtime"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "libc",
  "log",
