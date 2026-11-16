@@ -68,6 +68,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "aperture"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
+dependencies = [
+ "aperture-sys",
+ "flux",
+ "iris",
+ "lens",
+]
+
+[[package]]
+name = "aperture-sys"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
+dependencies = [
+ "bindgen",
+ "flux-sys",
+ "iris-sys",
+ "lens-sys",
+ "pkg-config",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -457,16 +480,16 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flux"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "flux-sys",
 ]
 
 [[package]]
 name = "flux-sys"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -546,8 +569,8 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "glyph"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "flux",
  "glyph-sys",
@@ -555,8 +578,8 @@ dependencies = [
 
 [[package]]
 name = "glyph-sys"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -621,23 +644,19 @@ dependencies = [
 
 [[package]]
 name = "iris"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
- "flux",
  "iris-sys",
- "lens",
- "lens-sys",
 ]
 
 [[package]]
 name = "iris-sys"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "bindgen",
  "flux-sys",
- "lens-sys",
  "pkg-config",
 ]
 
@@ -681,8 +700,8 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lens"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "flux",
  "lens-sys",
@@ -690,8 +709,8 @@ dependencies = [
 
 [[package]]
 name = "lens-sys"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
  "bindgen",
  "flux-sys",
@@ -822,9 +841,10 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "optics"
-version = "0.0.79"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.79#63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46"
+version = "0.0.80"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.80#e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8"
 dependencies = [
+ "aperture",
  "flux",
  "glyph",
  "iris",

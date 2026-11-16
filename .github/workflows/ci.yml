@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: 63a92ba1aad53dfcef42c9d6e31a96b9d9de4a46
+  OPTICS_PINNED_REF: e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8
 
 jobs:
   cargo-check-format-lint:
@@ -54,10 +54,14 @@ jobs:
         env:
           FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
           FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
+          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
           LENS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
           IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          APERTURE_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          APERTURE_SOURCE_DIR: ${{ github.workspace }}/../optics
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   cargo-test:
@@ -100,6 +104,8 @@ jobs:
           LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
           IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          APERTURE_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          APERTURE_SOURCE_DIR: ${{ github.workspace }}/../optics
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../optics/build
         run: |
           cargo build --workspace

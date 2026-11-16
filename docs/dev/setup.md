@@ -30,7 +30,10 @@ cargo test -p typio-daemon
 ```
 
 The Optics export variables must be present in every shell that runs `cargo
-build`, `test`, or `run`; the repository ships no committed copy of them.
+build`, `test`, or `run`; the repository ships no committed copy of them. The
+`typio-settings` target additionally links the Aperture application shell and
+therefore reads `LENS_*`, `IRIS_*`, and `APERTURE_*` in addition to the
+`FLUX_*` and `GLYPH_*` variables.
 
 Typio links `libflux` straight out of the `optics/flux` Meson build
 tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
@@ -77,6 +80,7 @@ projects/
 └── optics/
     ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
     ├── libs/iris/, libs/lens/    # settings window and widget toolkit
+    ├── libs/aperture/            # application shell binding Lens UI to an Iris window
     └── bindings/crates/          # unified Cargo workspace: the `optics` facade plus layer crates
 ```
 
@@ -160,15 +164,17 @@ cargo run -p typio-control --bin typioctl -- daemon status
 cargo run -p typio-control --bin typioctl -- engine list
 ```
 
-Build and run the graphical settings application. Its Iris and Lens bindings
-discover the same sibling optics build tree automatically; explicit variables
-are useful when more than one optics checkout exists:
+Build and run the graphical settings application. Point every layer of its
+Aperture, Iris, Lens, and Glyph stack at the sibling optics build tree so the
+`-sys` probes do not fall back to a stale system install:
 
 ```bash
 export LENS_BUILD_DIR="$PWD/../optics/build"
 export LENS_SOURCE_DIR="$PWD/../optics"
 export IRIS_BUILD_DIR="$PWD/../optics/build"
 export IRIS_SOURCE_DIR="$PWD/../optics"
+export APERTURE_BUILD_DIR="$PWD/../optics/build"
+export APERTURE_SOURCE_DIR="$PWD/../optics"
 cargo run -p typio-settings
 ```
 

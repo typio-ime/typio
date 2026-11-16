@@ -25,3 +25,5 @@ LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
 LENS_SOURCE_DIR = { value = "../optics", relative = true }
 IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }
 IRIS_SOURCE_DIR = { value = "../optics", relative = true }
+APERTURE_BUILD_DIR = { value = "../optics/build-release", relative = true }
+APERTURE_SOURCE_DIR = { value = "../optics", relative = true }

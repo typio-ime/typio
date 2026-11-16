@@ -35,8 +35,8 @@ this repository.
 
 The daemon build is Cargo. `flux` is still a native C library, so build the
 sibling optics checkout first until flux has its own Cargo-native library build.
-Typio consumes the single `optics` facade crate; feature flags select the
-canvas, typography, and platform layers each binary needs.
+Typio consumes the single `optics` facade crate; feature flags select only the
+canvas, typography, and application layers each binary needs.
 
 ```bash
 # Build the native dependencies first (from the Typio repo root).
@@ -52,6 +52,8 @@ export LENS_BUILD_DIR="$PWD/../optics/build-release"
 export LENS_SOURCE_DIR="$PWD/../optics"
 export IRIS_BUILD_DIR="$PWD/../optics/build-release"
 export IRIS_SOURCE_DIR="$PWD/../optics"
+export APERTURE_BUILD_DIR="$PWD/../optics/build-release"
+export APERTURE_SOURCE_DIR="$PWD/../optics"
 cargo build --release -p typio-daemon --bin typio
 cargo build --release -p typio-control --bin typioctl
 cargo build --release -p typio-settings

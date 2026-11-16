@@ -5,7 +5,7 @@ mod ui;
 
 use std::error::Error;
 
-use optics::platform::{Application, Config};
+use optics::app::{Application, Config};
 use ui::AppState;
 
 fn main() -> Result<(), Box<dyn Error>> {

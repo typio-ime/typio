@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Optics v0.0.80 alignment.** Moved the `optics` facade pin and CI
+  `OPTICS_PINNED_REF` to the `v0.0.80` release. The daemon and host platform
+  keep the `typography` feature; `typio-settings` moves from `platform` to
+  `app`, because Iris no longer owns the application entry point and the new
+  Aperture shell provides `Application`, `Config`, and `RunError` (ADR-0063).
+- **CPU canvases use the unified Flux factory.** Panel and tray-badge canvases
+  now pass a `flux_canvas_desc` with `FLUX_CANVAS_BACKEND_CPU` to
+  `flux_canvas_create`; the retired `flux_canvas_create_cpu*` factories and
+  supersampling options are gone. The Panel still renders entirely on the CPU
+  into `wl_shm`, clears its whole retained framebuffer each pass, and creates
+  no GPU object (ADR-0063, `[INV-PANEL-13]`).
+- **Glyph and canvas operations use single descriptors.** Text measurement and
+  drawing pass `glyph_measure_opts` and `glyph_draw_opts`; tray-badge outlines
+  move into `glyph_draw_opts.outline_color` / `outline_width`, replacing the
+  removed `glyph_draw_outlined` entry point. Panel fills wrap the existing
+  geometry and brush in `flux_canvas_draw_geometry_opts` (ADR-0063).
+- **Native rpath derivation includes Aperture.** The shared build helper and
+  `.cargo/optics-local.toml` add `APERTURE_BUILD_DIR`,
+  `APERTURE_SOURCE_DIR`, and `libs/aperture`, so `typio-settings` links and runs
+  against the sibling Meson tree without `LD_LIBRARY_PATH` (ADR-0063).
+- **Panel corner-antialiasing test locates the arc.** With v0.0.80's 1×
+  analytic CPU coverage, the test scans the rounded corner for partial pixels
+  instead of assuming a legacy edge pixel.
+
 ## [0.6.7] - 2026-11-12
 
 ### Changed

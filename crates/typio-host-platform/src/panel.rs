@@ -1,7 +1,7 @@
 //! Candidate panel — flux CPU (software) rendering + host-managed SHM buffer.
 //!
-//! flux's CPU canvas (`flux_canvas_create_cpu`) rasterises the panel background,
-//! selection highlight and text on the host — no Vulkan device, surface,
+//! flux's CPU-backed canvas (`flux_canvas_create` with the CPU backend)
+//! rasterises the panel background, selection highlight and text on the host — no Vulkan device, surface,
 //! swapchain or dma-buf. Text is shaped by glyph and drawn into the same
 //! canvas pass via the host-coverage glyph path (ADR-0019). The composited
 //! RGBA8 framebuffer flux returns from `flux_canvas_cpu_pixels` is byte-swapped
@@ -21,9 +21,9 @@ use std::ptr;
 use std::time::Instant;
 
 use flux_sys::{
-    flux_canvas, flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create_cpu,
-    flux_canvas_end, flux_canvas_release, flux_color_rgba, flux_error_info, flux_get_last_error,
-    flux_rect, flux_result,
+    flux_canvas, flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create, flux_canvas_end,
+    flux_canvas_release, flux_color_rgba, flux_error_info, flux_get_last_error, flux_rect,
+    flux_result,
 };
 use optics::canvas::sys as flux_sys;
 use wayland_client::protocol::wl_shm;
@@ -99,7 +99,11 @@ unsafe fn draw_rounded_background(
         ..Default::default()
     };
     brush.__bindgen_anon_1.solid = flux_sys::flux_brush_solid_data { color };
-    unsafe { flux_sys::flux_canvas_draw_geometry(canvas, &geometry, &brush) };
+    let opts = flux_sys::flux_canvas_draw_geometry_opts {
+        geom: &geometry,
+        brush: &brush,
+    };
+    unsafe { flux_sys::flux_canvas_draw_geometry(canvas, &opts) };
 }
 
 /// Framebuffer width quantum when exact cropping is available through viewporter.
@@ -284,17 +288,20 @@ impl FluxPanel {
                 self.canvas = ptr::null_mut();
             }
             let mut canvas: *mut flux_canvas = ptr::null_mut();
-            let r = flux_canvas_create_cpu(
-                self.width.max(1),
-                self.height.max(1),
-                self.scale.max(0.1),
-                &mut canvas,
-            );
+            let desc = flux_sys::flux_canvas_desc {
+                type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_DESC,
+                backend: flux_sys::flux_canvas_backend_kind::FLUX_CANVAS_BACKEND_CPU,
+                width: self.width.max(1),
+                height: self.height.max(1),
+                scale: self.scale.max(0.1),
+                ..Default::default()
+            };
+            let r = flux_canvas_create(&desc, &mut canvas);
             if !flux_result_is_ok(r) || canvas.is_null() {
                 tracing::warn!(
                     target: "typio.panel.cpu",
-                    error = %flux_last_error_string("flux_canvas_create_cpu"),
-                    "flux_canvas_create_cpu failed on resize"
+                    error = %flux_last_error_string("flux_canvas_create"),
+                    "flux_canvas_create failed on resize"
                 );
                 return false;
             }
@@ -1250,7 +1257,15 @@ mod tests {
         // SAFETY: a private CPU canvas, released before the test returns.
         unsafe {
             let mut canvas: *mut flux_canvas = ptr::null_mut();
-            let created = flux_canvas_create_cpu(256, 64, 1.0, &mut canvas);
+            let desc = flux_sys::flux_canvas_desc {
+                type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_DESC,
+                backend: flux_sys::flux_canvas_backend_kind::FLUX_CANVAS_BACKEND_CPU,
+                width: 256,
+                height: 64,
+                scale: 1.0,
+                ..Default::default()
+            };
+            let created = flux_canvas_create(&desc, &mut canvas);
             assert!(flux_result_is_ok(created) && !canvas.is_null());
 
             // Mirror the Panel's own body geometry: rect (1,1,w-2,h-2), r=8.
@@ -1298,11 +1313,19 @@ mod tests {
                 "panel body interior is not opaque (nothing was drawn)"
             );
 
-            // 3. The rounded edge is antialiased, not a hard clip.
-            let edge = alpha_at(canvas, 78, 20);
+            // 3. The rounded corner is antialiased, not a hard clip. Locate
+            //    partial coverage anywhere on the top-left arc instead of
+            //    pinning one pixel: the exact boundary pixel belongs to the
+            //    rasteriser's coverage convention, not to the Panel contract.
+            let arc_antialiased = (1..=9).any(|x| {
+                (1..=9).any(|y| {
+                    let alpha = alpha_at(canvas, x, y);
+                    alpha > 0 && alpha < 255
+                })
+            });
             assert!(
-                edge > 0 && edge < 255,
-                "right edge should be partially covered, got {edge}"
+                arc_antialiased,
+                "top-left corner arc has no partially covered pixels"
             );
 
             // 4. Nothing from the wider frame survives past the new body.

@@ -2,7 +2,8 @@
 //!
 //! Delegates to **glyph** (the optics C sibling: FreeType + HarfBuzz +
 //! Fontconfig + FriBidi, subpixel-positioned R8 coverage atlas). On a
-//! device-less CPU canvas (`flux_canvas_create_cpu`) the glyph run flows
+//! device-less CPU canvas (`flux_canvas_create` with the CPU backend) the
+//! glyph run flows
 //! through the host-coverage path (ADR-0019): glyph rasterises glyphs
 //! into a host R8 buffer and the CPU canvas samples coverage straight from
 //! it — no GPU image required.
@@ -11,8 +12,8 @@
 //! the canvas content-scale transform so glyphs rasterise crisply on HiDPI.
 
 use glyph_sys::{
-    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_family, glyph_measure, glyph_metrics,
-    glyph_release, glyph_set_default_family, glyph_style,
+    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_draw_opts, glyph_family, glyph_measure,
+    glyph_measure_opts, glyph_metrics, glyph_release, glyph_set_default_family, glyph_style,
 };
 use optics::canvas::sys as flux_sys;
 use optics::typography::sys as glyph_sys;
@@ -122,7 +123,12 @@ impl TextRaster {
             family: glyph_family::GLYPH_FAMILY_DEFAULT,
             italic: false,
         };
-        let m = unsafe { glyph_measure(self.raw, text.as_ptr() as *const i8, text.len(), &style) };
+        let opts = glyph_measure_opts {
+            utf8: text.as_ptr() as *const i8,
+            len: text.len(),
+            style: &style,
+        };
+        let m = unsafe { glyph_measure(self.raw, &opts) };
         m.into()
     }
 
@@ -151,18 +157,18 @@ impl TextRaster {
             family: glyph_family::GLYPH_FAMILY_DEFAULT,
             italic: false,
         };
-        unsafe {
-            glyph_draw(
-                self.raw,
-                canvas,
-                core::ptr::null_mut(),
-                x,
-                y,
-                text.as_ptr() as *const i8,
-                text.len(),
-                &style,
-            )
+        let opts = glyph_draw_opts {
+            canvas,
+            arena: core::ptr::null_mut(),
+            x,
+            y,
+            utf8: text.as_ptr() as *const i8,
+            len: text.len(),
+            style: &style,
+            outline_color: 0,
+            outline_width: 0.0,
         };
+        unsafe { glyph_draw(self.raw, &opts) };
     }
 }
 

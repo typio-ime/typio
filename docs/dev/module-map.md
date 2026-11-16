@@ -247,10 +247,10 @@ Coordinates for the CPU render and shared-memory present path
 
 | Concept | Current use |
 |---|---|
-| `flux_canvas_create_cpu` / `flux_canvas_cpu_begin` / `end` | CPU canvas lifecycle — fills and rounded-rects into a host framebuffer. |
+| `flux_canvas_create` (CPU backend) / `flux_canvas_begin` / `end` | CPU canvas lifecycle — fills and rounded-rects into a host framebuffer. |
 | `flux_canvas_cpu_pixels` | Direct pointer into the RGBA8 framebuffer (no bus, no fence). |
-| `flux_canvas_fill_rrect` | Background and selection-highlight fills. |
-| `flux_text_draw` | Shapes text and composites host-resident R8 glyph coverage into the CPU canvas. |
+| `flux_canvas_draw_geometry` | Background and selection-highlight rounded-rect fills (solid brush). |
+| `glyph_measure` / `glyph_draw` | Shapes text and composites host-resident R8 glyph coverage into the CPU canvas. |
 
 Do not reintroduce a Vulkan device, offscreen `flux_surface`, swapchain, dma-buf
 present, GPU readback, or a GPU glyph atlas into this path: the retired

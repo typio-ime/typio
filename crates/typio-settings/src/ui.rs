@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use optics::platform::{Align, Frame, LayoutOpts, TextBuf};
+use optics::app::{Align, Frame, LayoutOpts, TextBuf};
 use serde_json::json;
 
 use crate::events::{Event, EventWorker};

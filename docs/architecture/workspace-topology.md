@@ -124,10 +124,12 @@ clients only over TIP.
 | Cargo configuration | Default, or `.cargo/config.example.toml` | `.cargo/config.toml` copied from `.cargo/optics-local.toml` |
 
 The workspace pins the single `optics` facade crate to a tagged Optics release
-(tag `v0.0.79` in `[workspace.dependencies]` at the time of writing), with
+(tag `v0.0.80` in `[workspace.dependencies]` at the time of writing), with
 `default-features = false`. Each consumer enables only the layers it uses:
-`typography` for the daemon and host platform, and `platform` for the settings
-application. Raw FFI remains reachable through the facade's `canvas::sys` and
+`typography` for the daemon and host platform, and `app` for the settings
+application. The `app` feature pulls in the Aperture application shell together
+with the Lens UI, Iris platform, Glyph typography, and Flux canvas layers.
+Raw FFI remains reachable through the facade's `canvas::sys` and
 `typography::sys` re-exports, so no crate declares a granular Optics dependency
 of its own. The native `libflux` and `libglyph` have no Cargo-native build yet,
 so contributors compile the sibling Optics tree with Meson and point the `-sys`
@@ -145,12 +147,12 @@ export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
 `FLUX_BUILD_DIR` and `GLYPH_BUILD_DIR` select the in-tree libraries; the Typio
 build scripts derive those directories and bake an `-Wl,-rpath` into the
 binaries, so neither a system install nor an `LD_LIBRARY_PATH` entry is
-required in the development loop. The Iris and Lens
-bindings resolve through `IRIS_BUILD_DIR`, `IRIS_SOURCE_DIR`, `LENS_BUILD_DIR`,
-and `LENS_SOURCE_DIR`. Linking directly to the Meson tree is the supported
-development path; an installed prefix works when `FLUX_BUILD_DIR` is unset. CI
-builds Optics against an uninstalled prefix and therefore sets
-`LD_LIBRARY_PATH` explicitly.
+required in the development loop. The Iris, Lens, and Aperture bindings resolve
+through `IRIS_BUILD_DIR`, `IRIS_SOURCE_DIR`, `LENS_BUILD_DIR`,
+`LENS_SOURCE_DIR`, `APERTURE_BUILD_DIR`, and `APERTURE_SOURCE_DIR`. Linking
+directly to the Meson tree is the supported development path; an installed
+prefix works when `FLUX_BUILD_DIR` is unset. CI builds Optics against an
+uninstalled prefix and therefore sets `LD_LIBRARY_PATH` explicitly.
 
 Local cross-repository mode is a **linked Git worktree**: the primary worktree
 stays on `main` with the canonical graph, while a long-lived `dev` worktree

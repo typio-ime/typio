@@ -24,12 +24,13 @@ fn optics_native_rpaths() -> Vec<String> {
         "GLYPH_BUILD_DIR",
         "LENS_BUILD_DIR",
         "IRIS_BUILD_DIR",
+        "APERTURE_BUILD_DIR",
     ] {
         let Some(build_dir) = std::env::var_os(variable) else {
             continue;
         };
         let libs = std::path::PathBuf::from(build_dir).join("libs");
-        for library in ["flux", "glyph", "lens", "iris", "reticle"] {
+        for library in ["flux", "glyph", "lens", "iris", "aperture", "reticle"] {
             let directory = libs.join(library);
             if !directory.is_dir() {
                 continue;
@@ -58,6 +59,7 @@ fn rerun_on_optics_paths() {
         "GLYPH_BUILD_DIR",
         "LENS_BUILD_DIR",
         "IRIS_BUILD_DIR",
+        "APERTURE_BUILD_DIR",
     ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }

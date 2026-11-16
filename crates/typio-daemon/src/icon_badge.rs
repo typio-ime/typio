@@ -4,12 +4,12 @@
 //! the candidate panel.
 
 use flux_sys::{
-    flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create_cpu, flux_canvas_end,
+    flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create, flux_canvas_end,
     flux_canvas_release,
 };
 use glyph_sys::{
-    glyph_create, glyph_ctx, glyph_desc, glyph_draw_outlined, glyph_family, glyph_measure,
-    glyph_release, glyph_style,
+    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_draw_opts, glyph_family, glyph_measure,
+    glyph_measure_opts, glyph_release, glyph_style,
 };
 use optics::canvas::sys as flux_sys;
 use optics::typography::sys as glyph_sys;
@@ -26,10 +26,9 @@ pub struct BadgePixmap {
 /// Outline contour radius for the badge glyphs, in logical pixels.
 ///
 /// Preserves the previous appearance: the old hand-rolled ring drew the glyph
-/// nine times at ±1 px offsets. `glyph_draw_outlined` dilates over the same
-/// eight directions but normalises the diagonals to 0.707·width, so the
-/// requested width is the contour radius rather than growing by √2 at the
-/// corners.
+/// nine times at ±1 px offsets. `glyph_draw_opts` dilates over the same eight
+/// directions but normalises the diagonals to 0.707·width, so the requested
+/// width is the contour radius rather than growing by √2 at the corners.
 const BADGE_OUTLINE_WIDTH: f32 = 1.0;
 
 fn color_rgba(rgb: u32, a: u8) -> u32 {
@@ -92,7 +91,15 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         }
 
         let mut canvas = std::ptr::null_mut();
-        unsafe { flux_canvas_create_cpu(size, size, 1.0, &mut canvas) };
+        let desc = flux_sys::flux_canvas_desc {
+            type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_DESC,
+            backend: flux_sys::flux_canvas_backend_kind::FLUX_CANVAS_BACKEND_CPU,
+            width: size,
+            height: size,
+            scale: 1.0,
+            ..Default::default()
+        };
+        unsafe { flux_canvas_create(&desc, &mut canvas) };
         if canvas.is_null() {
             continue;
         }
@@ -109,31 +116,36 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         };
 
         unsafe {
-            let m = glyph_measure(text_ctx.0, text.as_ptr() as *const i8, text.len(), &style);
+            let measure_opts = glyph_measure_opts {
+                utf8: text.as_ptr() as *const i8,
+                len: text.len(),
+                style: &style,
+            };
+            let m = glyph_measure(text_ctx.0, &measure_opts);
 
             // Center the text
             let x = (size as f32 - m.width) / 2.0;
             let y = (size as f32 - m.height) / 2.0;
 
             let _ = flux_canvas_begin(canvas, std::ptr::null());
-            // Outline plus foreground in one call. glyph_draw_outlined dilates
-            // the glyph coverage over eight normalised directions *before*
-            // drawing the foreground pass, so the outline can never darken the
-            // glyph itself. That replaces the previous hand-rolled nine
-            // glyph_draw calls, which re-ran layout once per offset and used a
-            // ±1 px ring whose diagonals were not normalised.
-            glyph_draw_outlined(
-                text_ctx.0,
+            // Outline plus foreground in one call. The glyph draw descriptor
+            // dilates the glyph coverage over eight normalised directions
+            // *before* drawing the foreground pass, so the outline can never
+            // darken the glyph itself. That replaces the previous hand-rolled
+            // nine glyph_draw calls, which re-ran layout once per offset and
+            // used a ±1 px ring whose diagonals were not normalised.
+            let draw_opts = glyph_draw_opts {
                 canvas,
-                std::ptr::null_mut(),
+                arena: std::ptr::null_mut(),
                 x,
                 y,
-                text.as_ptr() as *const i8,
-                text.len(),
-                &style,
-                color_rgba(0x000000, 255),
-                BADGE_OUTLINE_WIDTH,
-            );
+                utf8: text.as_ptr() as *const i8,
+                len: text.len(),
+                style: &style,
+                outline_color: color_rgba(0x000000, 255),
+                outline_width: BADGE_OUTLINE_WIDTH,
+            };
+            glyph_draw(text_ctx.0, &draw_opts);
 
             flux_canvas_end(canvas);
 
