@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: e4304a56d1cbf89a3381b0ff0061da6a04f0cbf8
+  OPTICS_PINNED_REF: 35766d5cffb332fdc41d7bf52fc04bfb2d2158f5
 
 jobs:
   cargo-check-format-lint:
@@ -52,16 +52,9 @@ jobs:
 
       - name: Cargo clippy
         env:
-          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
-          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
-          LENS_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          APERTURE_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          APERTURE_SOURCE_DIR: ${{ github.workspace }}/../optics
+          OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          OPTICS_STATIC: "1"
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   cargo-test:
@@ -96,16 +89,9 @@ jobs:
 
       - name: Cargo test
         env:
-          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
-          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
-          LENS_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          LENS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          IRIS_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          IRIS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          APERTURE_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          APERTURE_SOURCE_DIR: ${{ github.workspace }}/../optics
+          OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          OPTICS_STATIC: "1"
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../optics/build
         run: |
           cargo build --workspace
@@ -155,20 +141,18 @@ jobs:
 
       - name: Build leak-sensitive test binaries
         env:
-          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
-          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
+          OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          OPTICS_STATIC: "1"
         run: |
           cargo test -p typio-daemon --lib --no-run
           cargo test -p typio-host-platform --lib --no-run
 
       - name: Valgrind (icon_badge / panel / text_raster)
         env:
-          FLUX_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          FLUX_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/flux
-          GLYPH_BUILD_DIR: ${{ github.workspace }}/../optics/build
-          GLYPH_SOURCE_DIR: ${{ github.workspace }}/../optics/libs/glyph
+          OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
+          OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
+          OPTICS_STATIC: "1"
           LD_LIBRARY_PATH: ${{ github.workspace }}/../optics/build
         run: |
           set -euo pipefail

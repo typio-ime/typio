@@ -118,41 +118,41 @@ clients only over TIP.
 
 | Concern | Canonical (primary worktree) | Local cross-repository worktree |
 |---|---|---|
-| Rust bindings | Tagged `optics` facade in `[workspace.dependencies]` | Sibling `../optics/bindings/crates/optics` through a Cargo `[patch]` table |
+| Rust bindings | Tagged `optics` facade in `[workspace.dependencies]` | Sibling `../optics/crates/optics` through a Cargo `[patch]` table |
 | Native libraries | `pkg-config` or the local Meson build tree | Sibling `../optics/build-release` |
 | `Cargo.lock` | Remote Git commits; tracked in Git | Local path dependencies; ignored by the commit hook |
 | Cargo configuration | Default, or `.cargo/config.example.toml` | `.cargo/config.toml` copied from `.cargo/optics-local.toml` |
 
 The workspace pins the single `optics` facade crate to a tagged Optics release
-(tag `v0.0.80` in `[workspace.dependencies]` at the time of writing), with
+(tag `v0.0.81` in `[workspace.dependencies]` at the time of writing), with
 `default-features = false`. Each consumer enables only the layers it uses:
 `typography` for the daemon and host platform, and `app` for the settings
 application. The `app` feature pulls in the Aperture application shell together
 with the Lens UI, Iris platform, Glyph typography, and Flux canvas layers.
 Raw FFI remains reachable through the facade's `canvas::sys` and
 `typography::sys` re-exports, so no crate declares a granular Optics dependency
-of its own. The native `libflux` and `libglyph` have no Cargo-native build yet,
-so contributors compile the sibling Optics tree with Meson and point the `-sys`
+of its own. The native Optics libraries have no Cargo-native build yet, so
+contributors compile the sibling Optics tree with Meson and point the `-sys`
 build scripts underneath the facade at it:
 
 ```bash
-meson setup ../optics/build -Dglyph=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
 meson compile -C ../optics/build
-export FLUX_BUILD_DIR="$PWD/../optics/build"
-export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
-export GLYPH_BUILD_DIR="$PWD/../optics/build"
-export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
+export OPTICS_BUILD_DIR="$PWD/../optics/build"
+export OPTICS_SOURCE_DIR="$PWD/../optics"
 ```
 
-`FLUX_BUILD_DIR` and `GLYPH_BUILD_DIR` select the in-tree libraries; the Typio
+`OPTICS_BUILD_DIR` (or per-library `*_BUILD_DIR` overrides) selects the in-tree
+libraries. When Optics static archives (`lib*.a`) are present and
+`OPTICS_DYNAMIC` is unset, the `-sys` crates link Optics statically while
+keeping system libraries dynamic, so Typio binaries require no build-tree rpath
+or runtime Optics shared libraries. When linking against shared Optics libraries
+(for example via `OPTICS_DYNAMIC=1` or a shared-only build tree), the Typio
 build scripts derive those directories and bake an `-Wl,-rpath` into the
-binaries, so neither a system install nor an `LD_LIBRARY_PATH` entry is
-required in the development loop. The Iris, Lens, and Aperture bindings resolve
-through `IRIS_BUILD_DIR`, `IRIS_SOURCE_DIR`, `LENS_BUILD_DIR`,
-`LENS_SOURCE_DIR`, `APERTURE_BUILD_DIR`, and `APERTURE_SOURCE_DIR`. Linking
-directly to the Meson tree is the supported development path; an installed
-prefix works when `FLUX_BUILD_DIR` is unset. CI builds Optics against an
-uninstalled prefix and therefore sets `LD_LIBRARY_PATH` explicitly.
+binaries so neither a system install nor an `LD_LIBRARY_PATH` entry is required
+in the development loop. Linking directly to the Meson tree is the supported
+development path; an installed prefix works when `OPTICS_BUILD_DIR` and the
+per-library `*_BUILD_DIR` variables are unset.
 
 Local cross-repository mode is a **linked Git worktree**: the primary worktree
 stays on `main` with the canonical graph, while a long-lived `dev` worktree

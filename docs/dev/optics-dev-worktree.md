@@ -14,10 +14,10 @@ worktrees sharing a single repository storage:
 |---|---|---|
 | Directory path | `../typio/` | `../typio-dev/` |
 | Active branch | `main` | `dev` |
-| Rust bindings | Tagged `optics` facade from Git | Sibling `../optics/bindings/crates/optics` via `[patch]` |
+| Rust bindings | Tagged `optics` facade from Git | Sibling `../optics/crates/optics` via `[patch]` |
 | `Cargo.lock` | Canonical, tagged, committed | Worktree-local, never committed |
 | Cargo config | `.cargo/config.toml` absent | Copied from `.cargo/optics-local.toml` |
-| Native libraries | System-installed `/usr/lib/lib*.so` | Sibling `../optics/build-release/` via `-rpath` |
+| Native libraries | System-installed `/usr/lib/lib*.{a,so}` | Sibling `../optics/build-release/` (static archives preferred; `-rpath` fallback for shared builds) |
 | Target cache | Primary `target/` | Worktree-local `target/` |
 
 ### The Foundational Principle: Truth on Main vs Local Illusion
@@ -105,11 +105,11 @@ without dirtying version control:
 
 ```toml
 [patch."https://github.com/ming2k/optics"]
-optics = { path = "../optics/bindings/crates/optics" }
+optics = { path = "../optics/crates/optics" }
 ```
 
 The facade's path dependencies resolve the rest of the unified
-`../optics/bindings/crates/` workspace. Patching only the facade is what keeps
+`../optics/crates/` workspace. Patching only the facade is what keeps
 the local graph identical in shape to the canonical one (one direct Optics
 dependency with feature-selected layers).
 
@@ -117,12 +117,14 @@ This configuration achieves two things:
 
 1. **Cargo Source Replacement**: It instructs Cargo to intercept the
    dependency on the remote `ming2k/optics` repository and redirect the
-   `optics` facade to `../optics/bindings/crates/optics`.
+   `optics` facade to `../optics/crates/optics`.
 2. **Native Discovery and Precedence**: Loading the facade's path-resolved
-   `*-sys` crates causes their `build.rs` scripts to run from disk. These scripts detect
-   `../optics/build-release/meson-uninstalled/`, prepend it to `PKG_CONFIG_PATH`,
-   and inject `-Wl,-rpath` so that uninstalled local C libraries take
-   absolute precedence over any system-installed versions.
+   `*-sys` crates causes their `build.rs` scripts to run from disk. Using
+   `OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` from `.cargo/config.toml`, these
+   scripts prepend `meson-uninstalled/` to `PKG_CONFIG_PATH`, prefer static
+   Optics archives (`lib*.a`) while keeping system libraries dynamic, and fall
+   back to dynamic linking with `-Wl,-rpath` when `OPTICS_DYNAMIC=1` or only
+   shared libraries exist.
 
 ### 3. Resolve the Local Dependency Graph
 
@@ -139,10 +141,10 @@ Verify that Cargo resolves the sibling paths instead of Git tags:
 ```bash
 # In projects/typio-dev/ (branch dev):
 cargo tree -i optics
-cargo tree -i lens-sys
+cargo tree -i optics-lens-sys
 ```
 
-Both trees must display paths pointing into `../optics/bindings/crates/`.
+Both trees must display paths pointing into `../optics/crates/`.
 
 ## Daily Development in Local Mode
 
@@ -271,7 +273,7 @@ GitHub and pins the authoritative remote Git SHA:
 cargo update -p optics
 ```
 
-Confirm that `cargo tree -i optics` and `cargo tree -i lens-sys` report the
+Confirm that `cargo tree -i optics` and `cargo tree -i optics-lens-sys` report the
 tagged Git source instead of local filesystem paths.
 
 ### Step 4: Validate and Commit Canonical State on Main
@@ -315,7 +317,7 @@ command to rewrite it into the local path-patched form:
 ```bash
 # In projects/typio-dev/ (development worktree, branch dev):
 cargo check -p typio-daemon
-cargo tree -i optics   # confirm ../optics/bindings/crates/ paths reappear
+cargo tree -i optics   # confirm ../optics/crates/ paths reappear
 ```
 
 If `dev` was previously pushed, force-update the remote branch after the

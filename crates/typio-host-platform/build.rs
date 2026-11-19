@@ -46,13 +46,13 @@ fn main() {
         }
     }
 
-    let rpaths = optics_native_rpaths();
-    enforce_optimized_flux_for_release(&rpaths);
+    let build_dirs = optics_build_dirs();
+    enforce_optimized_flux_for_release(&build_dirs);
 
     // The platform crate reaches Flux and Glyph through the `optics` facade,
     // so the `-sys` crates' `links` metadata is no longer visible here. Emit
-    // the build-tree rpaths explicitly so test harnesses load the libraries
-    // bindgen saw rather than a stale system install.
+    // the build-tree rpaths when Optics is linked dynamically so test harnesses
+    // load the libraries bindgen saw rather than a stale system install.
     emit_optics_rpaths();
 
     println!("cargo:rerun-if-changed=build.rs");
@@ -63,19 +63,19 @@ fn main() {
 /// Reject a Cargo release binary backed by a Meson `-O0` Flux build.
 ///
 /// The Rust profile does not affect native libraries selected through
-/// `FLUX_BUILD_DIR`. Walk upward from the rpaths derived from the
-/// `*_BUILD_DIR` variables; when they belong to a Meson build tree, use its
-/// introspection data as the authoritative optimization setting. Installed
-/// libraries have no Meson metadata nearby and remain the packager's
-/// responsibility.
-fn enforce_optimized_flux_for_release(rpaths: &[String]) {
+/// `OPTICS_BUILD_DIR` or `FLUX_BUILD_DIR`. Walk upward from the configured
+/// Meson build directories (regardless of static vs. dynamic linkage); when a
+/// tree carries Meson introspection data, treat it as the authoritative
+/// optimization setting. Installed libraries have no Meson metadata nearby and
+/// remain the packager's responsibility.
+fn enforce_optimized_flux_for_release(build_dirs: &[PathBuf]) {
     if env::var("PROFILE").as_deref() != Ok("release") {
         return;
     }
 
     let mut checked = HashSet::new();
-    for rpath in rpaths {
-        let Some(options_path) = find_meson_build_options(Path::new(rpath)) else {
+    for dir in build_dirs {
+        let Some(options_path) = find_meson_build_options(dir) else {
             continue;
         };
         if !checked.insert(options_path.clone()) {
@@ -110,7 +110,7 @@ fn enforce_optimized_flux_for_release(rpaths: &[String]) {
             panic!(
                 "Cargo release cannot link the unoptimized Flux build at {} \
                  (Meson buildtype={buildtype}, optimization=0). Configure a \
-                 release tree and point FLUX_BUILD_DIR at it, for example: \
+                 release tree and point OPTICS_BUILD_DIR (or FLUX_BUILD_DIR) at it, for example: \
                  meson setup ../optics/build-release ../optics -Dglyph=true \
                  --buildtype=release",
                 build_dir.display()

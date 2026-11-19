@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Optics v0.0.81 alignment and static Optics bundling.** Moved the `optics`
+  facade pin and CI `OPTICS_PINNED_REF` to `v0.0.81`, updated the local patch
+  path in `.cargo/optics-local.toml` to `../optics/crates/optics` (Optics
+  ADR-0169), and adopted Optics's unified `OPTICS_BUILD_DIR` /
+  `OPTICS_SOURCE_DIR` environment overrides with `OPTICS_STATIC=1` so Typio
+  bundles Optics archives statically by default. Typio build scripts now emit
+  build-tree rpaths (and `--disable-new-dtags` in `typio-settings`) only when
+  Optics is linked dynamically (`OPTICS_DYNAMIC=1` or shared-only trees), so
+  statically linked `typio` and `typio-settings` binaries carry no Optics
+  `DT_NEEDED` or build-tree rpath entries while release builds still reject
+  unoptimized `-O0` Flux trees (ADR-0064).
+- **Removed unused workspace dependencies.** Dropped the unused leaf-binary
+  entries (`typio-control`, `typio-daemon`, `typio-engine-check`) from
+  `[workspace.dependencies]` in `Cargo.toml` to eliminate Cargo manifest
+  warnings.
+
 ## [0.6.8] - 2026-11-16
 
 ### Changed

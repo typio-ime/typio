@@ -14,15 +14,11 @@ xtask = "run --package xtask --"
 # Optional compiler cache wrapper. Requires `sccache` in your PATH.
 # rustc-wrapper = "sccache"
 
-# Keep bare Cargo builds on the optimized native tree. Explicit shell
-# variables still take precedence, so contributor builds can select the
-# documented debugoptimized tree when needed.
+# Keep bare Cargo builds on the optimized native Optics tree with static Optics
+# bundling enabled. Explicit shell variables still take precedence, so
+# contributor builds can select a debugoptimized tree or `OPTICS_DYNAMIC=1`
+# when needed.
 [env]
-FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
-FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
-GLYPH_BUILD_DIR = { value = "../optics/build-release", relative = true }
-GLYPH_SOURCE_DIR = { value = "../optics/libs/glyph", relative = true }
-LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
-LENS_SOURCE_DIR = { value = "../optics", relative = true }
-IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }
-IRIS_SOURCE_DIR = { value = "../optics", relative = true }
+OPTICS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+OPTICS_SOURCE_DIR = { value = "../optics", relative = true }
+OPTICS_STATIC = "1"

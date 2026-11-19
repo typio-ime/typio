@@ -137,7 +137,7 @@ Path tracing under `typio.panel.perf` reports per-phase microsecond timings (`la
 Panel backgrounds and selection highlights use Flux geometry and solid brushes.
 Canvas and text contexts release their references through the current ownership
 APIs, including resize and early-return paths. The workspace and CI native pin
-select Optics v0.0.80; see [Workspace Topology](workspace-topology.md).
+select Optics v0.0.81; see [Workspace Topology](workspace-topology.md).
 
 ### 3.4 Back-pressure and convergence
 

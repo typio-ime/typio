@@ -26,9 +26,10 @@ The workspace members are declared in the root `Cargo.toml`.
 | `crates/xtask` | — | Cargo task helper: `cargo xtask install` and `cargo xtask uninstall`. |
 
 `crates/optics-rpaths.rs` is not a crate module. It is included by the daemon,
-host-platform, and settings build scripts to derive native Optics rpaths from
-the `*_BUILD_DIR` environment variables now that the `optics` facade hides the
-`-sys` crates' direct `links` metadata.
+host-platform, and settings build scripts to resolve configured Optics Meson
+build trees from `OPTICS_BUILD_DIR` (and per-library `*_BUILD_DIR` overrides)
+and emit native Optics rpaths when Optics is linked dynamically (omitting rpaths
+when static archives are linked).
 
 ## Crate: `typio-control`
 

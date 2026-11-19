@@ -8,22 +8,18 @@
 # lockfile in that worktree; the repository hook keeps the local lockfile out
 # of commits. Remove the generated file before promoting an Optics release.
 [patch."https://github.com/ming2k/optics"]
-# The facade's path dependencies resolve the rest of the unified bindings
-# workspace (`bindings/crates/*`) from the sibling checkout.
-optics = { path = "../optics/bindings/crates/optics" }
+# The facade's path dependencies resolve the rest of the unified Optics
+# workspace (`crates/*`) from the sibling checkout.
+optics = { path = "../optics/crates/optics" }
 
-# Override points for the native C libraries. By default, Meson builds into
-# `../optics/build-release`. When developing Optics alongside Typio, keep
-# this configuration active in your linked worktree so Cargo test runners and
-# binaries link directly against the sibling build tree.
+# Override points for the native Optics C libraries. Typio bundles Optics
+# statically (`OPTICS_STATIC = "1"`) while keeping system libraries dynamic, so
+# binaries carry no Optics shared-library dependencies or build-tree rpaths.
+# Point OPTICS_BUILD_DIR at a release Meson tree built with static archives
+# (`default_library=both` or `default_library=static`, e.g. `../optics/build-release`
+# or `../optics/build-static-release`). Override with `OPTICS_DYNAMIC=1` in the
+# shell if you explicitly need shared-library linking.
 [env]
-FLUX_BUILD_DIR = { value = "../optics/build-release", relative = true }
-FLUX_SOURCE_DIR = { value = "../optics/libs/flux", relative = true }
-GLYPH_BUILD_DIR = { value = "../optics/build-release", relative = true }
-GLYPH_SOURCE_DIR = { value = "../optics/libs/glyph", relative = true }
-LENS_BUILD_DIR = { value = "../optics/build-release", relative = true }
-LENS_SOURCE_DIR = { value = "../optics", relative = true }
-IRIS_BUILD_DIR = { value = "../optics/build-release", relative = true }
-IRIS_SOURCE_DIR = { value = "../optics", relative = true }
-APERTURE_BUILD_DIR = { value = "../optics/build-release", relative = true }
-APERTURE_SOURCE_DIR = { value = "../optics", relative = true }
+OPTICS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+OPTICS_SOURCE_DIR = { value = "../optics", relative = true }
+OPTICS_STATIC = "1"

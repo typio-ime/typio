@@ -44,16 +44,9 @@ meson setup ../optics/build-release ../optics \
   -Dglyph=true --buildtype=release   # one-time per optics checkout
 meson compile -C ../optics/build-release
 
-export FLUX_BUILD_DIR="$PWD/../optics/build-release"
-export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
-export GLYPH_BUILD_DIR="$PWD/../optics/build-release"
-export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
-export LENS_BUILD_DIR="$PWD/../optics/build-release"
-export LENS_SOURCE_DIR="$PWD/../optics"
-export IRIS_BUILD_DIR="$PWD/../optics/build-release"
-export IRIS_SOURCE_DIR="$PWD/../optics"
-export APERTURE_BUILD_DIR="$PWD/../optics/build-release"
-export APERTURE_SOURCE_DIR="$PWD/../optics"
+export OPTICS_BUILD_DIR="$PWD/../optics/build-release"
+export OPTICS_SOURCE_DIR="$PWD/../optics"
+export OPTICS_STATIC=1
 cargo build --release -p typio-daemon --bin typio
 cargo build --release -p typio-control --bin typioctl
 cargo build --release -p typio-settings

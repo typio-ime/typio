@@ -8,9 +8,9 @@ All commands in this document run from the Typio repository root
 unless a block says otherwise.
 
 [README.md](../../README.md#building) holds the canonical build contract for
-this repository: the native `flux` library is built from the sibling Optics
-checkout, and the Rust bindings locate it through `FLUX_BUILD_DIR` and
-`FLUX_SOURCE_DIR`. A development loop differs from that release recipe in two
+this repository: the native Optics libraries are built from the sibling Optics
+checkout, and the Rust bindings locate them through `OPTICS_BUILD_DIR` and
+`OPTICS_SOURCE_DIR`. A development loop differs from that release recipe in two
 ways only: the Optics tree is built `debugoptimized` into `../optics/build`, and
 the binaries under test are the debug ones.
 
@@ -19,10 +19,9 @@ the binaries under test are the debug ones.
 meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
-export FLUX_BUILD_DIR="$PWD/../optics/build"
-export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"
-export GLYPH_BUILD_DIR="$PWD/../optics/build"
-export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
+export OPTICS_BUILD_DIR="$PWD/../optics/build"
+export OPTICS_SOURCE_DIR="$PWD/../optics"
+export OPTICS_STATIC=1
 
 cargo build -p typio-daemon --bin typio
 cargo test -p typio-daemon
@@ -30,15 +29,19 @@ cargo test -p typio-daemon
 ```
 
 The Optics export variables must be present in every shell that runs `cargo
-build`, `test`, or `run`; the repository ships no committed copy of them. The
-`typio-settings` target additionally links the Aperture application shell and
-therefore reads `LENS_*`, `IRIS_*`, and `APERTURE_*` in addition to the
-`FLUX_*` and `GLYPH_*` variables.
+build`, `test`, or `run`; the repository ships no committed copy of them.
+`OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` cover every Optics layer (`flux`,
+`glyph`, `lens`, `iris`, and `aperture`), including `typio-settings`; per-library
+`FLUX_*` / `GLYPH_*` / `LENS_*` / `IRIS_*` / `APERTURE_*` variables remain
+supported as fine-grained overrides.
 
-Typio links `libflux` straight out of the `optics/flux` Meson build
-tree — there is no need to install flux system-wide, and no `LD_LIBRARY_PATH`
-is required (the Typio build scripts bake an `-Wl,-rpath` to the build tree
-derived from the `*_BUILD_DIR` variables). `typio-runtime`,
+Typio links Optics straight out of the sibling Meson build tree — there is no
+need to install Optics system-wide, and no `LD_LIBRARY_PATH` is required. When
+static Optics archives (`lib*.a`) are present and `OPTICS_DYNAMIC` is unset,
+Optics is linked statically into the Typio binaries (only OS/system libraries
+remain dynamic, with no build-tree rpath); when linking against shared Optics
+libraries (`OPTICS_DYNAMIC=1` or a shared-only build tree), the Typio build
+scripts bake `-Wl,-rpath` entries to the build tree. `typio-runtime`,
 `typio-engine-protocol`, `typio-engine-manifest`, `typio-engine-check`, `typio-client`,
 `typio-control`, and `typio-settings` are Cargo workspace members in this
 repository, so runtime, engine-contract, client, GUI, CLI, and daemon changes
@@ -81,7 +84,7 @@ projects/
     ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
     ├── libs/iris/, libs/lens/    # settings window and widget toolkit
     ├── libs/aperture/            # application shell binding Lens UI to an Iris window
-    └── bindings/crates/          # unified Cargo workspace: the `optics` facade plus layer crates
+    └── crates/                   # unified Cargo workspace: the `optics` facade plus `optics-*` layer crates
 ```
 
 Typio resolves its runtime, engine-protocol, manifest, vet, command-line, and
@@ -91,11 +94,11 @@ the single `optics` facade dependency.
 
 ## flux (C library)
 
-`flux-sys` does not vendor the C source; its build script locates `libflux`
+`optics-flux-sys` does not vendor the C source; its build script locates `libflux`
 through pkg-config. The contributor workflow builds flux in its own tree and
 points the build script at it, so no system install is needed.
 
-**In-tree build (default).** Build flux once, then point `flux-sys` at the
+**In-tree build (default).** Build flux once, then point `optics-flux-sys` at the
 build tree. `meson setup` is one-time per checkout; `meson compile` rebuilds
 on demand:
 
@@ -103,20 +106,20 @@ on demand:
 meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
-export FLUX_BUILD_DIR="$PWD/../optics/build"
-export FLUX_SOURCE_DIR="$PWD/../optics/libs/flux"   # optional: bindgen from this checkout
-export GLYPH_BUILD_DIR="$PWD/../optics/build"
-export GLYPH_SOURCE_DIR="$PWD/../optics/libs/glyph"
+export OPTICS_BUILD_DIR="$PWD/../optics/build"
+export OPTICS_SOURCE_DIR="$PWD/../optics"   # optional: bindgen from this checkout
 ```
 
-`flux-sys` prepends the build tree's `meson-uninstalled/` to
-`PKG_CONFIG_PATH`; Typio's build scripts then bake an `-Wl,-rpath` for the
-selected library directories, so binaries find the native stack at runtime
-with no `LD_LIBRARY_PATH` and no `meson install`. Keep the Optics export
-variables set in any shell that runs `cargo build`, `cargo test`, or the
-daemon; `FLUX_BUILD_DIR` is what selects the in-tree library. If Cargo
-reports an undefined `flux_*` symbol, rebuild optics (`meson compile -C
-../optics/build`) and re-run.
+The Optics `-sys` crates prepend the build tree's `meson-uninstalled/` to
+`PKG_CONFIG_PATH`. Static archives (`lib*.a`) are preferred automatically while
+system libraries stay dynamic; set `OPTICS_STATIC=1` to require static archives
+or `OPTICS_DYNAMIC=1` to force shared-library linking (for which Typio's build
+scripts bake `-Wl,-rpath` entries so binaries run without `LD_LIBRARY_PATH` or
+`meson install`). Keep the Optics export variables set in any shell that runs
+`cargo build`, `cargo test`, or the daemon; `OPTICS_BUILD_DIR` (or
+`FLUX_BUILD_DIR`) is what selects the in-tree library. If Cargo reports an
+undefined `flux_*` symbol, rebuild optics (`meson compile -C ../optics/build`)
+and re-run.
 
 The contributor build uses Meson's `debugoptimized` profile. The Panel is a
 CPU renderer, so an unoptimized (`buildtype=debug`) `libflux` can make normal
@@ -146,7 +149,9 @@ Build the release daemon:
 ```bash
 meson setup ../optics/build-release ../optics -Dglyph=true --buildtype=release
 meson compile -C ../optics/build-release
-export FLUX_BUILD_DIR="$PWD/../optics/build-release"
+export OPTICS_BUILD_DIR="$PWD/../optics/build-release"
+export OPTICS_SOURCE_DIR="$PWD/../optics"
+export OPTICS_STATIC=1
 cargo build --release -p typio-daemon --bin typio
 ```
 
@@ -164,17 +169,11 @@ cargo run -p typio-control --bin typioctl -- daemon status
 cargo run -p typio-control --bin typioctl -- engine list
 ```
 
-Build and run the graphical settings application. Point every layer of its
-Aperture, Iris, Lens, and Glyph stack at the sibling optics build tree so the
-`-sys` probes do not fall back to a stale system install:
+Build and run the graphical settings application. With `OPTICS_BUILD_DIR` and
+`OPTICS_SOURCE_DIR` exported, every layer of the Aperture, Iris, Lens, Glyph,
+and Flux stack resolves from the sibling optics build tree:
 
 ```bash
-export LENS_BUILD_DIR="$PWD/../optics/build"
-export LENS_SOURCE_DIR="$PWD/../optics"
-export IRIS_BUILD_DIR="$PWD/../optics/build"
-export IRIS_SOURCE_DIR="$PWD/../optics"
-export APERTURE_BUILD_DIR="$PWD/../optics/build"
-export APERTURE_SOURCE_DIR="$PWD/../optics"
 cargo run -p typio-settings
 ```
 

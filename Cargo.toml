@@ -54,7 +54,7 @@ xkbcommon = "0.9"
 # discovered by pkg-config. A linked development worktree can patch the facade
 # through .cargo/optics-local.toml without making a sibling checkout mandatory
 # for CI or downstream packagers.
-optics = { git = "https://github.com/ming2k/optics", tag = "v0.0.80", default-features = false }
+optics = { git = "https://github.com/ming2k/optics", tag = "v0.0.81", default-features = false }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"
@@ -67,9 +67,6 @@ serde_json = "1"
 typio-runtime = { path = "crates/typio-runtime" }
 typio-engine-manifest = { path = "crates/typio-engine-manifest" }
 typio-engine-protocol = { path = "crates/typio-engine-protocol" }
-typio-engine-check = { path = "crates/typio-engine-check" }
-typio-daemon = { path = "crates/typio-daemon" }
-typio-control = { path = "crates/typio-control" }
 typio-host-platform = { path = "crates/typio-host-platform" }
 typio-host-types = { path = "crates/typio-host-types" }
 typio-client = { path = "crates/typio-client" }
