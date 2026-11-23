@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Optics v0.0.83 explicit static linking.** Moved the `optics` facade pin and
+  CI `OPTICS_PINNED_REF` to `v0.0.83` and enabled its new `static` feature on
+  the workspace dependency. Optics's default Rust link mode is now
+  shared-preferred, so declaring `static` keeps the self-contained release
+  binaries from ADR-0064/ADR-0065 instead of silently acquiring a
+  `liboptics_*.so` runtime dependency. `OPTICS_STATIC=1` remains an equivalent
+  override and `OPTICS_DYNAMIC=1` still selects the shared build; the
+  conditional rpath emission and release `-O0` gfx guard are unchanged.
+  Recorded in ADR-0066.
+- **Tray registration no longer blocks daemon startup.** The tray's session-bus
+  connection now bounds every method round-trip (one second), so a
+  StatusNotifierWatcher that accepts `RegisterStatusNotifierItem` and never
+  replies can no longer stall `App::init` before the daemon binds its UDS
+  socket and connects to Wayland. The tray degrades to unregistered with a
+  warning instead.
+- **Optics v0.0.82 semantic module alignment.** Moved the `optics` facade pin
+  and CI `OPTICS_PINNED_REF` to `v0.0.82` and adopted Optics's semantic module
+  names (Optics ADR-0170/ADR-0172). The daemon and host platform now enable the
+  `text` facade feature and reach raw FFI through `optics::gfx::sys` and
+  `optics::text::sys`; canvas and text entry points follow the zero-stutter
+  `optics_gfx_*` / `optics_text_*` symbols (for example
+  `optics_gfx_canvas_create`, `optics_text_measure`). Native discovery maps the
+  `libs/<module>` subdirectories to `liboptics_<module>` stems and accepts
+  `OPTICS_<MODULE>_BUILD_DIR`, and the managed Meson setup passes `-Dtext=true`.
+  Typio's own vocabulary follows: `FluxPanel` is now `Panel` and the generated
+  `HAVE_FLUX` constant is `HAVE_OPTICS_GFX`. Static Optics bundling and the
+  release `-O0` gfx guard are unchanged. Recorded in ADR-0065.
 - **Optics v0.0.81 alignment and static Optics bundling.** Moved the `optics`
   facade pin and CI `OPTICS_PINNED_REF` to `v0.0.81`, updated the local patch
   path in `.cargo/optics-local.toml` to `../optics/crates/optics` (Optics

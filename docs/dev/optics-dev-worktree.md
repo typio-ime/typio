@@ -121,10 +121,11 @@ This configuration achieves two things:
 2. **Native Discovery and Precedence**: Loading the facade's path-resolved
    `*-sys` crates causes their `build.rs` scripts to run from disk. Using
    `OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` from `.cargo/config.toml`, these
-   scripts prepend `meson-uninstalled/` to `PKG_CONFIG_PATH`, prefer static
-   Optics archives (`lib*.a`) while keeping system libraries dynamic, and fall
-   back to dynamic linking with `-Wl,-rpath` when `OPTICS_DYNAMIC=1` or only
-   shared libraries exist.
+   scripts prepend `meson-uninstalled/` to `PKG_CONFIG_PATH`, link the
+   `liboptics_*.a` archives because the workspace enables Optics's `static`
+   feature while keeping system libraries dynamic, and fall back to dynamic
+   linking with `-Wl,-rpath` when `OPTICS_DYNAMIC=1` or only shared libraries
+   exist.
 
 ### 3. Resolve the Local Dependency Graph
 
@@ -141,7 +142,7 @@ Verify that Cargo resolves the sibling paths instead of Git tags:
 ```bash
 # In projects/typio-dev/ (branch dev):
 cargo tree -i optics
-cargo tree -i optics-lens-sys
+cargo tree -i optics-ui-sys
 ```
 
 Both trees must display paths pointing into `../optics/crates/`.
@@ -273,7 +274,7 @@ GitHub and pins the authoritative remote Git SHA:
 cargo update -p optics
 ```
 
-Confirm that `cargo tree -i optics` and `cargo tree -i optics-lens-sys` report the
+Confirm that `cargo tree -i optics` and `cargo tree -i optics-ui-sys` report the
 tagged Git source instead of local filesystem paths.
 
 ### Step 4: Validate and Commit Canonical State on Main

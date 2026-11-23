@@ -16,7 +16,7 @@ the binaries under test are the debug ones.
 
 ```bash
 # one-time per optics checkout:
-meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 export OPTICS_BUILD_DIR="$PWD/../optics/build"
@@ -30,18 +30,18 @@ cargo test -p typio-daemon
 
 The Optics export variables must be present in every shell that runs `cargo
 build`, `test`, or `run`; the repository ships no committed copy of them.
-`OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` cover every Optics layer (`flux`,
-`glyph`, `lens`, `iris`, and `aperture`), including `typio-settings`; per-library
-`FLUX_*` / `GLYPH_*` / `LENS_*` / `IRIS_*` / `APERTURE_*` variables remain
-supported as fine-grained overrides.
+`OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` cover every Optics layer (`gfx`,
+`text`, `ui`, `window`, and `app`), including `typio-settings`; per-library
+`OPTICS_GFX_*` / `OPTICS_TEXT_*` / `OPTICS_UI_*` / `OPTICS_WINDOW_*` /
+`OPTICS_APP_*` variables remain supported as fine-grained overrides.
 
-Typio links Optics straight out of the sibling Meson build tree — there is no
-need to install Optics system-wide, and no `LD_LIBRARY_PATH` is required. When
-static Optics archives (`lib*.a`) are present and `OPTICS_DYNAMIC` is unset,
-Optics is linked statically into the Typio binaries (only OS/system libraries
-remain dynamic, with no build-tree rpath); when linking against shared Optics
-libraries (`OPTICS_DYNAMIC=1` or a shared-only build tree), the Typio build
-scripts bake `-Wl,-rpath` entries to the build tree. `typio-runtime`,
+Typio's `optics` dependency enables Optics's `static` feature, so when the
+sibling build tree ships static archives (`lib*.a`) the Rust build scripts link
+them into the Typio binaries (only OS/system libraries remain dynamic, with no
+build-tree rpath). `OPTICS_STATIC=1` in the environment is an equivalent
+override; when linking against shared Optics libraries (`OPTICS_DYNAMIC=1` or a
+shared-only build tree), the Typio build scripts bake `-Wl,-rpath` entries to
+the build tree. `typio-runtime`,
 `typio-engine-protocol`, `typio-engine-manifest`, `typio-engine-check`, `typio-client`,
 `typio-control`, and `typio-settings` are Cargo workspace members in this
 repository, so runtime, engine-contract, client, GUI, CLI, and daemon changes
@@ -54,11 +54,11 @@ The shipping daemon is the Rust `typio` binary from `crates/typio-daemon`.
 Install these from your system package manager:
 
 - Rust 1.85+ and Cargo
-- Meson 1.0+, Ninja 1.10+, and `glslangValidator` to build `flux` from source
+- Meson 1.0+, Ninja 1.10+, and `glslangValidator` to build the Optics C libraries from source
 - C23 compiler and `pkg-config`
 - Wayland client libraries and `xkbcommon`
-- Vulkan headers (flux is Vulkan-rooted; the host uses only its CPU canvas, but
-  the headers are required to build libflux)
+- Vulkan headers (Optics `gfx` is Vulkan-rooted; the host uses only its CPU canvas, but
+  the headers are required to build liboptics_gfx)
 - FreeType, HarfBuzz, fontconfig
 - PipeWire's `pw-record` on the runtime PATH for voice capture
 
@@ -81,9 +81,9 @@ projects/
 │   ├── typio-engine-sherpa/      # Meson: sherpa-onnx voice input
 │   └── typio-engine-whisper/     # Meson: whisper.cpp voice input
 └── optics/
-    ├── libs/flux/                # C canvas library; build in-tree and point FLUX_BUILD_DIR at it
-    ├── libs/iris/, libs/lens/    # settings window and widget toolkit
-    ├── libs/aperture/            # application shell binding Lens UI to an Iris window
+    ├── libs/gfx/, libs/text/     # C canvas and text shaping libraries; build in-tree and point OPTICS_BUILD_DIR at it
+    ├── libs/window/, libs/ui/    # settings window and widget toolkit
+    ├── libs/app/                 # application shell binding UI to a window
     └── crates/                   # unified Cargo workspace: the `optics` facade plus `optics-*` layer crates
 ```
 
@@ -92,18 +92,18 @@ settings crates from local workspace paths. Native optics libraries are
 sibling dependencies found through pkg-config by the `-sys` crates underneath
 the single `optics` facade dependency.
 
-## flux (C library)
+## optics-gfx (C library)
 
-`optics-flux-sys` does not vendor the C source; its build script locates `libflux`
-through pkg-config. The contributor workflow builds flux in its own tree and
+`optics-gfx-sys` does not vendor the C source; its build script locates `liboptics_gfx`
+through pkg-config. The contributor workflow builds Optics in its own tree and
 points the build script at it, so no system install is needed.
 
-**In-tree build (default).** Build flux once, then point `optics-flux-sys` at the
+**In-tree build (default).** Build Optics once, then point `optics-gfx-sys` at the
 build tree. `meson setup` is one-time per checkout; `meson compile` rebuilds
 on demand:
 
 ```bash
-meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 export OPTICS_BUILD_DIR="$PWD/../optics/build"
@@ -117,12 +117,12 @@ or `OPTICS_DYNAMIC=1` to force shared-library linking (for which Typio's build
 scripts bake `-Wl,-rpath` entries so binaries run without `LD_LIBRARY_PATH` or
 `meson install`). Keep the Optics export variables set in any shell that runs
 `cargo build`, `cargo test`, or the daemon; `OPTICS_BUILD_DIR` (or
-`FLUX_BUILD_DIR`) is what selects the in-tree library. If Cargo reports an
-undefined `flux_*` symbol, rebuild optics (`meson compile -C ../optics/build`)
+`OPTICS_GFX_BUILD_DIR`) is what selects the in-tree library. If Cargo reports an
+undefined `optics_gfx_*` symbol, rebuild optics (`meson compile -C ../optics/build`)
 and re-run.
 
 The contributor build uses Meson's `debugoptimized` profile. The Panel is a
-CPU renderer, so an unoptimized (`buildtype=debug`) `libflux` can make normal
+CPU renderer, so an unoptimized (`buildtype=debug`) `liboptics_gfx` can make normal
 candidate navigation exceed a display-frame budget even when the Rust daemon
 uses Cargo's release profile. To upgrade an existing build tree, run:
 
@@ -131,9 +131,9 @@ meson configure ../optics/build --buildtype=debugoptimized
 meson compile -C ../optics/build
 ```
 
-**Installed (optional).** If you prefer a system-wide flux, `meson install`
-into a prefix on `PKG_CONFIG_PATH` and unset `FLUX_BUILD_DIR` (or set
-`FLUX_USE_INSTALLED=1`) so pkg-config resolves the installed `flux.pc`
+**Installed (optional).** If you prefer a system-wide Optics install, `meson install`
+into a prefix on `PKG_CONFIG_PATH` and unset `OPTICS_BUILD_DIR` (or set
+`OPTICS_GFX_USE_INSTALLED=1`) so pkg-config resolves the installed `optics-gfx.pc`
 instead of the build tree.
 
 ## Build Typio
@@ -147,7 +147,7 @@ cargo build -p typio-daemon --bin typio
 Build the release daemon:
 
 ```bash
-meson setup ../optics/build-release ../optics -Dglyph=true --buildtype=release
+meson setup ../optics/build-release ../optics -Dtext=true --buildtype=release
 meson compile -C ../optics/build-release
 export OPTICS_BUILD_DIR="$PWD/../optics/build-release"
 export OPTICS_SOURCE_DIR="$PWD/../optics"
@@ -170,8 +170,8 @@ cargo run -p typio-control --bin typioctl -- engine list
 ```
 
 Build and run the graphical settings application. With `OPTICS_BUILD_DIR` and
-`OPTICS_SOURCE_DIR` exported, every layer of the Aperture, Iris, Lens, Glyph,
-and Flux stack resolves from the sibling optics build tree:
+`OPTICS_SOURCE_DIR` exported, every layer of the `app`, `window`, `ui`, `text`,
+and `gfx` stack resolves from the sibling optics build tree:
 
 ```bash
 cargo run -p typio-settings
@@ -191,7 +191,7 @@ Cargo features:
 
 | Feature | Default | When to use it |
 |---|---:|---|
-| `wayland` | yes | Wayland input-method frontend, flux-backed Panel, and voice capture via PipeWire |
+| `wayland` | yes | Wayland input-method frontend, `optics::gfx`-backed Panel, and voice capture via PipeWire |
 | `systray` | yes | StatusNotifierItem tray over D-Bus via zbus |
 
 Disable default features only when isolating a non-Wayland Rust subsystem:

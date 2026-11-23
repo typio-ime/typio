@@ -34,7 +34,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::InputFacts;
 use crate::Modifiers;
-use crate::panel::FluxPanel;
+use crate::panel::Panel;
 use crate::panel_coordinator::PanelCoordinator;
 use crate::panel_present_gate::PresentationRecord;
 use crate::panel_scheduler::PanelScheduleState;
@@ -211,7 +211,7 @@ struct WaylandObjects {
 
 pub struct InputMethodState {
     wayland: Option<WaylandObjects>,
-    /// Last candidate composition snapshot successfully submitted to Flux.
+    /// Last candidate composition snapshot successfully submitted to the Panel.
     ///
     /// Lets the render path consume only the newest composition and skip
     /// duplicate presents after unrelated wakeups, while still allowing
@@ -618,7 +618,7 @@ impl InputMethodState {
         }
     }
 
-    /// Raw pointer to the popup wl_surface. Use this to create a FluxPanel on
+    /// Raw pointer to the popup wl_surface. Use this to create a Panel on
     /// the SAME surface so panel rendering and popup positioning share one
     /// wl_surface.
     pub fn popup_surface_raw_ptr(&self) -> *mut std::ffi::c_void {
@@ -857,14 +857,14 @@ fn refresh_panel_after_anchor_reset(
 pub struct InputMethodFrontend {
     // Drop order matters here. Rust drops fields in declaration order, so
     // the panel MUST be declared before the Wayland connection: the panel
-    // owns flux resources and attaches host-managed buffers to the popup
+    // owns Optics gfx resources and attaches host-managed buffers to the popup
     // wl_surface. If `conn` or `state` is dropped first, teardown can touch
     // a closed connection or freed proxy. Order:
-    //   1. panel     — releases flux surface/canvas/text/arena
+    //   1. panel     — releases the gfx canvas/text/arena resources
     //   2. state     — frees wl_surface / grab proxies
     //   3. queue     — releases event queue
     //   4. conn      — closes the display socket last
-    panel: Option<FluxPanel>,
+    panel: Option<Panel>,
     state: InputMethodState,
     queue: Option<EventQueue<InputMethodState>>,
     conn: Option<Connection>,
@@ -893,9 +893,9 @@ impl InputMethodFrontend {
         // Canvas and SHM buffers are allocated lazily from the first real
         // content extent. This avoids clearing and downsampling a speculative
         // 512×128 surface for every small indicator or candidate frame.
-        match unsafe { FluxPanel::new_from_surface(surface_ptr, viewport, shm, qh) } {
+        match unsafe { Panel::new_from_surface(surface_ptr, viewport, shm, qh) } {
             Ok(panel) => frontend.panel = Some(panel),
-            Err(e) => tracing::warn!(target: "typio.panel.host", "FluxPanel creation failed: {e}"),
+            Err(e) => tracing::warn!(target: "typio.panel.host", "Panel creation failed: {e}"),
         }
 
         Ok(frontend)
@@ -903,7 +903,7 @@ impl InputMethodFrontend {
 
     /// Shared connection setup. The CPU Panel is created by [`Self::connect`]
     /// after the protocol state is ready; tests use this helper directly to
-    /// exercise the state machine without creating flux resources.
+    /// exercise the state machine without creating Optics gfx resources.
     fn connect_internal() -> Result<Self, ConnectError> {
         let conn = Connection::connect_to_env().map_err(ConnectError::ConnectionFailed)?;
         let (globals, queue) =
@@ -1012,7 +1012,7 @@ impl InputMethodFrontend {
         }
 
         // Bind wl_shm for the CPU-rendered panel path. The pool creates
-        // ARGB8888 wl_buffers from anonymous shared memory; flux renders to a
+        // ARGB8888 wl_buffers from anonymous shared memory; `optics-gfx` renders to a
         // CPU canvas and the host attaches these buffers directly.
         let shm: Option<wl_shm::WlShm> = globals.bind(&qh, 1..=1, ()).ok();
         match &shm {
@@ -1030,7 +1030,7 @@ impl InputMethodFrontend {
         let popup_surface_obj = compositor.create_surface(&qh, ());
 
         // Attach a wp_viewport to the popup surface (if we have a
-        // viewporter). Cloned into FluxPanel later so it owns its own
+        // viewporter). Cloned into Panel later so it owns its own
         // reference; the original stays here for lifetime.
         let panel_viewport: Option<WpViewport> = viewporter
             .as_ref()
@@ -1155,7 +1155,7 @@ impl InputMethodFrontend {
     }
 
     /// Mutable access to the candidate panel, if one was created.
-    pub fn panel_mut(&mut self) -> Option<&mut FluxPanel> {
+    pub fn panel_mut(&mut self) -> Option<&mut Panel> {
         self.panel.as_mut()
     }
 

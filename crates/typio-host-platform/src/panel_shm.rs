@@ -1,6 +1,6 @@
 //! Host-managed SHM buffer pool for the candidate panel.
 //!
-//! flux renders to a CPU canvas (`flux_canvas_cpu_*`), and this module hands
+//! `optics-gfx` renders to a CPU canvas (`optics_gfx_canvas_*`), and this module hands
 //! the frame to the compositor via a `wl_shm` `wl_buffer`. The host owns the
 //! buffer lifecycle: `wl_buffer.release` is a normal event on the host's own
 //! queue, so a compositor that stops recycling buffers can at worst cause

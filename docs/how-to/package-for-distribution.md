@@ -8,12 +8,12 @@ Build the release binaries with the recipe in
 [README.md](../../README.md#building), using a `release`-type Optics build tree:
 the binary names and the `OPTICS_BUILD_DIR` / `OPTICS_SOURCE_DIR` /
 `OPTICS_STATIC` contract are defined there and are not repeated here.
-`OPTICS_BUILD_DIR` selects the same Optics tree for both `typio` (Flux and
-Glyph) and `typio-settings` (Aperture, Iris, and Lens). With `OPTICS_STATIC=1`
-(Typio's default against Optics's `default_library=both` or `static` builds),
-the Optics archives are bundled statically into the binaries and only system
-libraries remain dynamic; set `OPTICS_DYNAMIC=1` when packaging against shared
-system Optics libraries.
+`OPTICS_BUILD_DIR` selects the same Optics tree for both `typio` (`gfx` and
+`text`) and `typio-settings` (`app`, `window`, and `ui`). Typio's Cargo
+dependency enables Optics's `static` feature, and `OPTICS_STATIC=1` is an
+equivalent environment override, so the Optics archives are bundled statically
+into the binaries and only system libraries remain dynamic; set
+`OPTICS_DYNAMIC=1` when packaging against shared system Optics libraries.
 
 **Expected outcome:** `target/release/typio`, `target/release/typioctl`, and
 `target/release/typio-settings` exist.
@@ -62,11 +62,12 @@ The daemon requires:
 - D-Bus runtime support for StatusNotifierItem tray integration
 - `pw-record` (PipeWire) at runtime for voice capture when voice support is used
 - FreeType, HarfBuzz, FriBidi, and fontconfig support libraries for candidate-panel
-  text shaping (consumed by `TextRaster` via `optics::typography`)
-- Vulkan loader (`libvulkan`) required by the Flux runtime
-- Shared `libflux`, `libglyph`, `liblens`, `libiris`, and `libaperture` from
-  the packaged Optics build only when built with dynamic Optics linking
-  (`OPTICS_DYNAMIC=1`); static Optics builds embed those archives directly
+  text shaping (consumed by `TextRaster` via `optics::text`)
+- Vulkan loader (`libvulkan`) required by the Optics `gfx` runtime
+- Shared `liboptics_gfx`, `liboptics_text`, `liboptics_ui`, `liboptics_window`,
+  and `liboptics_app` from the packaged Optics build only when built with
+  dynamic Optics linking (`OPTICS_DYNAMIC=1`); static Optics builds embed those
+  archives directly
 
 ## Engine Packages
 
@@ -135,7 +136,7 @@ logs. For the decision background, see
 
 ## Packaging Checklist
 
-- [ ] `flux` / `libflux` is packaged or declared as a dependency.
+- [ ] `liboptics_gfx` is packaged or declared as a dependency.
 - [ ] At least one engine package is packaged or declared as a dependency.
 - [ ] `cargo xtask install --destdir` produces a clean file list.
 - [ ] The systemd user unit path matches the distribution's `<libdir>`.

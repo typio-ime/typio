@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Wayland/Flux platform integration for the Typio daemon"
+description = "Wayland/Optics platform integration for the Typio daemon"
 links = "typio_host_platform"
 
 [dependencies]
@@ -14,7 +14,7 @@ wayland-client = { workspace = true }
 wayland-scanner = { workspace = true }
 wayland-backend = { workspace = true }
 wayland-sys = { workspace = true }
-optics = { workspace = true, features = ["typography"] }
+optics = { workspace = true, features = ["text"] }
 xkbcommon = { workspace = true }
 nix.workspace = true
 libc.workspace = true

@@ -8,7 +8,7 @@ touches accurate.
 ## Build and test
 
 Follow [Developer Setup](docs/dev/setup.md) for the native prerequisites and
-the current build commands — including the sibling `optics`/`flux` build that
+the current build commands — including the sibling `optics` build that
 the daemon links against. [Testing](docs/dev/testing.md) lists the workspace
 test suites and their commands. Do not copy those commands into other files:
 the setup and testing guides are their single source.

@@ -14,7 +14,7 @@ The workspace members are declared in the root `Cargo.toml`.
 | Crate | Binary | Responsibility |
 |---|---|---|
 | `crates/typio-daemon` | `typio` | Wayland input-method daemon: session and focus handling, keyboard policy, candidate Panel driving, tray surface, voice plumbing, and the TIP UDS server. |
-| `crates/typio-host-platform` | — | Wayland and Flux platform integration: surfaces, input, SHM presentation, and text rasterisation. |
+| `crates/typio-host-platform` | — | Wayland and Optics platform integration: surfaces, input, SHM presentation, and text rasterisation. |
 | `crates/typio-host-types` | — | Platform-neutral host state and policy types shared by the daemon and the platform layer. |
 | `crates/typio-runtime` | — | Headless input-method state machine and engine-scheduling runtime; built as an `rlib` and embedded by the daemon. |
 | `crates/typio-client` | — | Shared Rust client for the TIP Unix-socket protocol: framing, request/response calls, and event subscriptions. |
@@ -29,7 +29,7 @@ The workspace members are declared in the root `Cargo.toml`.
 host-platform, and settings build scripts to resolve configured Optics Meson
 build trees from `OPTICS_BUILD_DIR` (and per-library `*_BUILD_DIR` overrides)
 and emit native Optics rpaths when Optics is linked dynamically (omitting rpaths
-when static archives are linked).
+when the workspace's `static` feature links the archives).
 
 ## Crate: `typio-control`
 
@@ -76,7 +76,7 @@ Coordinates for the user-visible candidate Panel lifecycle
 | Preedit/panel sync plan and positioned-UI timeout | `crates/typio-daemon/src/text_ui_state.rs` |
 | Focus effects pipeline (clear_preedit, focus_out, reset) | `crates/typio-daemon/src/session_glue.rs`, `crates/typio-daemon/src/focus_controller.rs` |
 | Candidate flush from the reactor step | `crates/typio-daemon/src/app/panel_driver.rs` |
-| Offscreen flux render + SHM attach | `crates/typio-host-platform/src/panel.rs`, `crates/typio-host-platform/src/panel_shm.rs` |
+| Offscreen `optics::gfx` render + SHM attach | `crates/typio-host-platform/src/panel.rs`, `crates/typio-host-platform/src/panel_shm.rs` |
 
 The coordinator and the scheduler moved out of the daemon crate: the panel
 schedule state machine today has exactly two states, `Idle` and `Dirty`
@@ -239,21 +239,21 @@ Coordinates for the CPU render and shared-memory present path
 
 | Component | File | Responsibility |
 |---|---|---|
-| `FluxPanel` | `crates/typio-host-platform/src/panel.rs` | Layout cache, extent policy, CPU canvas lifecycle, `draw_candidates`, `draw_status_banner`, `present_shm`, `hide`, `reset_shm_pool`, `set_scale`, `set_font_config` |
-| `TextRaster` | `crates/typio-host-platform/src/text_raster.rs` | One `flux_text*` context; `measure` and `draw` into the canvas via the host-coverage glyph path; family-class selection |
+| `Panel` | `crates/typio-host-platform/src/panel.rs` | Layout cache, extent policy, CPU canvas lifecycle, `draw_candidates`, `draw_status_banner`, `present_shm`, `hide`, `reset_shm_pool`, `set_scale`, `set_font_config` |
+| `TextRaster` | `crates/typio-host-platform/src/text_raster.rs` | One `optics_text_ctx*` context; `measure` and `draw` into the canvas via the host-coverage glyph path; family-class selection |
 | `ShmBufferPool` / `ShmBuffer` | `crates/typio-host-platform/src/panel_shm.rs` | Fixed-capacity (`DEFAULT_CAP = 3`) pool, non-blocking `acquire`, per-buffer `BufferReleaseState`, `reset` |
 | Popup surface | `crates/typio-host-platform/src/input_method.rs` | Creates and owns the input-popup `wl_surface` |
 
-### Flux API Surface Actually Used
+### Optics API Surface Actually Used
 
 | Concept | Current use |
 |---|---|
-| `flux_canvas_create` (CPU backend) / `flux_canvas_begin` / `end` | CPU canvas lifecycle — fills and rounded-rects into a host framebuffer. |
-| `flux_canvas_cpu_pixels` | Direct pointer into the RGBA8 framebuffer (no bus, no fence). |
-| `flux_canvas_draw_geometry` | Background and selection-highlight rounded-rect fills (solid brush). |
-| `glyph_measure` / `glyph_draw` | Shapes text and composites host-resident R8 glyph coverage into the CPU canvas. |
+| `optics_gfx_canvas_create` (CPU backend) / `optics_gfx_canvas_begin` / `end` | CPU canvas lifecycle — fills and rounded-rects into a host framebuffer. |
+| `optics_gfx_canvas_cpu_pixels` | Direct pointer into the RGBA8 framebuffer (no bus, no fence). |
+| `optics_gfx_canvas_draw_geometry` | Background and selection-highlight rounded-rect fills (solid brush). |
+| `optics_text_measure` / `optics_text_draw` | Shapes text and composites host-resident R8 glyph coverage into the CPU canvas. |
 
-Do not reintroduce a Vulkan device, offscreen `flux_surface`, swapchain, dma-buf
+Do not reintroduce a Vulkan device, offscreen `optics_gfx_surface`, swapchain, dma-buf
 present, GPU readback, or a GPU glyph atlas into this path: the retired
 mechanisms and their reasons are tabulated in the
 [Panel Rendering Blueprint](../architecture/panel-rendering.md).
@@ -546,7 +546,7 @@ Coordinates for the Panel's policy layer and its render layer
 
 | Responsibility | Source |
 |---|---|
-| Layout cache, extent policy, CPU canvas, `draw_candidates`, `draw_status_banner`, `present_shm` | `crates/typio-host-platform/src/panel.rs` (`FluxPanel`) |
+| Layout cache, extent policy, CPU canvas, `draw_candidates`, `draw_status_banner`, `present_shm` | `crates/typio-host-platform/src/panel.rs` (`Panel`) |
 | Shared-memory pool and per-buffer release state | `crates/typio-host-platform/src/panel_shm.rs` (`ShmBufferPool`, `ShmBuffer`, `BufferReleaseState`) |
 | Text measurement and rasterisation | `crates/typio-host-platform/src/text_raster.rs` (`TextRaster`) |
 | Popup surface creation and ownership | `crates/typio-host-platform/src/input_method.rs` |
@@ -593,7 +593,7 @@ Coordinates for the idle loop, its deadlines, and the bounded-work budgets
 | Panel acquire and present | non-blocking `wl_shm` acquire in `crates/typio-host-platform/src/panel.rs` |
 
 Build profiles are not a runtime coordinate: the contributor build uses Meson's
-`debugoptimized` profile for the flux family and Cargo for Rust, and shipping
+`debugoptimized` profile for the `optics::gfx` family and Cargo for Rust, and shipping
 builds use `release`. See [Developer Setup](setup.md). Measurement tooling is
 `powertop`, whose per-process wakeups-per-second row is the metric — it is not
 otherwise documented in this repository.

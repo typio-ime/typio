@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: 35766d5cffb332fdc41d7bf52fc04bfb2d2158f5
+  OPTICS_PINNED_REF: 646952c558fd612acb1935d11fdb12c62d2323de
 
 jobs:
   cargo-check-format-lint:
@@ -42,7 +42,7 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../optics/build \
-            --prefix="$HOME/.local" -Dglyph=true --buildtype=debugoptimized
+            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Cargo fmt
@@ -84,7 +84,7 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../optics/build \
-            --prefix="$HOME/.local" -Dglyph=true --buildtype=debugoptimized
+            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Cargo test
@@ -136,7 +136,7 @@ jobs:
       - name: Build optics
         run: |
           meson setup ${{ github.workspace }}/../optics/build \
-            --prefix="$HOME/.local" -Dglyph=true --buildtype=debugoptimized
+            --prefix="$HOME/.local" -Dtext=true --buildtype=debugoptimized
           meson compile -C ${{ github.workspace }}/../optics/build
 
       - name: Build leak-sensitive test binaries
@@ -161,7 +161,7 @@ jobs:
           # fontconfig's process-lifetime pattern cache is an upstream leak
           # (same suppression rationale as optics' lsan.supp) — not ours.
           # Run the FFI-heavy suites under full leak checking; a definite
-          # leak in flux/glyph lifecycle handling fails the gate.
+          # leak in gfx/text lifecycle handling fails the gate.
           for t in "icon_badge" "text_raster" "panel::"; do
             valgrind --leak-check=full --show-leak-kinds=definite \
               --errors-for-leak-kinds=definite --error-exitcode=9 \

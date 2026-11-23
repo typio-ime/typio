@@ -1,10 +1,10 @@
 //! Build script for typio-host-platform.
 //!
-//! Emits rpath link arguments for the flux family so panel and text-rendering
+//! Emits rpath link arguments for the Optics module family so panel and text-rendering
 //! test harnesses resolve the same shared libraries bindgen saw.
 //!
 //! Owns platform-native prerequisites and rpath propagation for the Wayland /
-//! Flux integration crate itself, including its test binaries.
+//! Optics integration crate itself, including its test binaries.
 
 use std::collections::HashSet;
 use std::env;
@@ -25,7 +25,7 @@ fn main() {
             let status = Command::new("meson")
                 .arg("setup")
                 .arg(&build_dir)
-                .arg("-Dglyph=true")
+                .arg("-Dtext=true")
                 .current_dir(&optics_dir)
                 .status()
                 .expect("Failed to run meson setup");
@@ -47,9 +47,9 @@ fn main() {
     }
 
     let build_dirs = optics_build_dirs();
-    enforce_optimized_flux_for_release(&build_dirs);
+    enforce_optimized_gfx_for_release(&build_dirs);
 
-    // The platform crate reaches Flux and Glyph through the `optics` facade,
+    // The platform crate reaches Optics `gfx` and `text` through the `optics` facade,
     // so the `-sys` crates' `links` metadata is no longer visible here. Emit
     // the build-tree rpaths when Optics is linked dynamically so test harnesses
     // load the libraries bindgen saw rather than a stale system install.
@@ -60,15 +60,15 @@ fn main() {
     rerun_on_optics_paths();
 }
 
-/// Reject a Cargo release binary backed by a Meson `-O0` Flux build.
+/// Reject a Cargo release binary backed by an unoptimized Meson Optics `gfx` build.
 ///
 /// The Rust profile does not affect native libraries selected through
-/// `OPTICS_BUILD_DIR` or `FLUX_BUILD_DIR`. Walk upward from the configured
+/// `OPTICS_BUILD_DIR` or `OPTICS_GFX_BUILD_DIR`. Walk upward from the configured
 /// Meson build directories (regardless of static vs. dynamic linkage); when a
 /// tree carries Meson introspection data, treat it as the authoritative
 /// optimization setting. Installed libraries have no Meson metadata nearby and
 /// remain the packager's responsibility.
-fn enforce_optimized_flux_for_release(build_dirs: &[PathBuf]) {
+fn enforce_optimized_gfx_for_release(build_dirs: &[PathBuf]) {
     if env::var("PROFILE").as_deref() != Ok("release") {
         return;
     }
@@ -85,19 +85,19 @@ fn enforce_optimized_flux_for_release(build_dirs: &[PathBuf]) {
 
         let contents = fs::read_to_string(&options_path).unwrap_or_else(|error| {
             panic!(
-                "failed to read Flux Meson build options at {}: {error}",
+                "failed to read Optics gfx Meson build options at {}: {error}",
                 options_path.display()
             )
         });
         let options: serde_json::Value = serde_json::from_str(&contents).unwrap_or_else(|error| {
             panic!(
-                "failed to parse Flux Meson build options at {}: {error}",
+                "failed to parse Optics gfx Meson build options at {}: {error}",
                 options_path.display()
             )
         });
         let optimization = meson_string_option(&options, "optimization").unwrap_or_else(|| {
             panic!(
-                "Flux Meson build options at {} do not report optimization",
+                "Optics gfx Meson build options at {} do not report optimization",
                 options_path.display()
             )
         });
@@ -108,10 +108,10 @@ fn enforce_optimized_flux_for_release(build_dirs: &[PathBuf]) {
                 .and_then(Path::parent)
                 .unwrap_or(&options_path);
             panic!(
-                "Cargo release cannot link the unoptimized Flux build at {} \
+                "Cargo release cannot link the unoptimized Optics gfx build at {} \
                  (Meson buildtype={buildtype}, optimization=0). Configure a \
-                 release tree and point OPTICS_BUILD_DIR (or FLUX_BUILD_DIR) at it, for example: \
-                 meson setup ../optics/build-release ../optics -Dglyph=true \
+                 release tree and point OPTICS_BUILD_DIR (or OPTICS_GFX_BUILD_DIR) at it, for example: \
+                 meson setup ../optics/build-release ../optics -Dtext=true \
                  --buildtype=release",
                 build_dir.display()
             );

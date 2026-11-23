@@ -7,16 +7,16 @@ presentation, font loading, theme resolution, and cache invalidation.
 
 ## CPU render and SHM present pipeline
 
-The Panel renders entirely on the CPU — flux's software canvas for fills and
-flux-text for glyphs (FreeType/HarfBuzz/Fontconfig via flux-text-sys) — and
+The Panel renders entirely on the CPU — `optics::gfx`'s software canvas for fills and
+`optics::text` for glyphs (FreeType/HarfBuzz/Fontconfig via `optics-text-sys`) — and
 attaches the result to its
 `zwp_input_popup_surface_v2` `wl_surface` through host-managed `wl_shm`
 buffers. There is no Vulkan device, surface, swapchain, dma-buf, or GPU readback
 in the panel path; see [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
 
-`FluxPanel` (`crates/typio-host-platform/src/panel.rs`) drives the render pipeline:
+`Panel` (`crates/typio-host-platform/src/panel.rs`) drives the render pipeline:
 
-- `FluxPanel::new_from_surface()` creates the text rasteriser and records the
+- `Panel::new_from_surface()` creates the text rasteriser and records the
   Wayland/SHM resources; the **CPU canvas** and buffers are allocated lazily
   from real content.
 - `draw_candidates()` / `draw_status_banner()` size the framebuffer in
@@ -25,18 +25,18 @@ in the panel path; see [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md).
   image to the exact logical Panel size
   ([ADR-0044](../adr/0044-bounded-panel-rendering.md)).
 - After reserving a free SHM buffer, the draw methods record one frame:
-  `flux_canvas_cpu_begin` → `flux_canvas_fill_rrect` (background + highlight)
+  `optics_gfx_canvas_begin` → `optics_gfx_canvas_draw_geometry` (background + highlight)
   → `TextRaster::draw` composites glyphs into the framebuffer →
-  `flux_canvas_cpu_end`.
+  `optics_gfx_canvas_end`.
 - `present_shm()` resolves supersampling, byte-swaps the framebuffer (RGBA8 →
   ARGB8888) into the reserved SHM buffer, sets
   `wl_surface.set_buffer_scale`, attaches the `wl_buffer`, damages the full
   buffer, and commits the popup surface.
 
-Text is shaped and rasterised by flux-text (via `flux-text-sys`:
+Text is shaped and rasterised by `optics-text` (via `optics-text-sys`:
 FreeType/HarfBuzz/fontconfig) directly into the premultiplied RGBA8 framebuffer.
 Solid fills (background,
-border, selection) use premultiplied RGBA via `flux_color_rgba_premul`. There is
+border, selection) use RGBA via `optics_gfx_color_rgba`. There is
 **no shared GPU glyph atlas** in the CPU-canvas path; the retired coverage-texture
 model ([ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md)) belonged to
 the Vulkan renderer and is no longer in effect.
@@ -64,22 +64,22 @@ on-screen highlight is briefly behind.
 ## Font selection and sizing
 
 The candidate panel renders text on the CPU via `TextRaster`
-(`crates/typio-host-platform/src/text_raster.rs`): a thin FFI wrapper over **flux-text**
-(`flux-text-sys`: FreeType + HarfBuzz + Fontconfig + FriBidi), exposing
-`flux_text_create` / `flux_text_measure` / `flux_text_draw`. Tray language
+(`crates/typio-host-platform/src/text_raster.rs`): a thin FFI wrapper over **`optics-text`**
+(`optics-text-sys`: FreeType + HarfBuzz + Fontconfig + FriBidi), exposing
+`optics_text_create` / `optics_text_measure` / `optics_text_draw`. Tray language
 badges (`icon_badge.rs`, behind `feature = "systray"`) use the same stack, so
 the workspace has exactly one text backend.
 
 ### Family selection
 
-Font selection is delegated to flux-text's fontconfig backend. The configured
+Font selection is delegated to `optics-text`'s fontconfig backend. The configured
 family class (`display.font_family`) selects which fontconfig preference list is
 consulted first — `default`, `sans`, `serif`, or `mono` — and fontconfig then
 resolves per-codepoint fallback (e.g. a Latin class family meeting a CJK
 character) through the desktop's `fonts.conf`.
 
 A class, rather than an arbitrary family name, is the real capability boundary:
-flux-text exposes `flux_text_set_default_family` with those four values and no
+`optics-text` exposes `optics_text_set_default_family` with those four values and no
 free-form family selector. `TextRaster::set_preferred_family` applies the class
 to the live text context, so a change takes effect on the next measured or
 drawn run after config reload.
@@ -90,17 +90,17 @@ drawn run after config reload.
 and banner sizes via `PanelFontConfig` (`crates/typio-daemon/src/app/font_config.rs`),
 converted to logical pixels at 96/72 px/pt. The HiDPI scale is applied
 separately at draw time. `PanelFontConfig` is snapshotted at startup and on every
-config reload, then pushed onto the panel via `FluxPanel::set_font_config`.
+config reload, then pushed onto the panel via `Panel::set_font_config`.
 
 ---
 
 ## Font and glyph caches
 
-`TextRaster` holds a single `flux_text*` context; face and glyph caches live
-inside flux-text (FreeType/HarfBuzz/fontconfig), so the Rust wrapper keeps none.
+`TextRaster` holds a single `optics_text_ctx*` context; face and glyph caches live
+inside `optics-text` (FreeType/HarfBuzz/fontconfig), so the Rust wrapper keeps none.
 `set_preferred_family` is a no-op (see above).
 
-Glyphs are rasterised on demand by flux-text into the panel's premultiplied
+Glyphs are rasterised on demand by `optics-text` into the panel's premultiplied
 RGBA8 framebuffer each frame via the host-coverage path (ADR-0019) — there is no
 shared GPU glyph atlas in the CPU-canvas path (contrast the retired
 [ADR-0011](../adr/0011-colour-independent-coverage-glyphs.md) coverage-texture

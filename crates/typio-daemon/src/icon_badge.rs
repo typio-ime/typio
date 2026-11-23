@@ -1,18 +1,19 @@
 //! CPU rasteriser for language text badges into SNI ARGB32 pixmaps.
 //!
-//! Uses the shared glyph and flux-canvas stack, the same text backend as
-//! the candidate panel.
+//! Uses the shared `optics::text` and `optics::gfx` CPU-canvas stack, the same
+//! text backend as the candidate panel.
 
-use flux_sys::{
-    flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create, flux_canvas_end,
-    flux_canvas_release,
+use gfx_sys::{
+    optics_gfx_canvas_begin, optics_gfx_canvas_cpu_pixels, optics_gfx_canvas_create,
+    optics_gfx_canvas_end, optics_gfx_canvas_release,
 };
-use glyph_sys::{
-    glyph_create, glyph_ctx, glyph_desc, glyph_draw, glyph_draw_opts, glyph_family, glyph_measure,
-    glyph_measure_opts, glyph_release, glyph_style,
+use optics::gfx::sys as gfx_sys;
+use optics::text::sys as text_sys;
+use text_sys::{
+    optics_text_create, optics_text_ctx, optics_text_desc, optics_text_draw, optics_text_draw_opts,
+    optics_text_family, optics_text_measure, optics_text_measure_opts, optics_text_release,
+    optics_text_style,
 };
-use optics::canvas::sys as flux_sys;
-use optics::typography::sys as glyph_sys;
 
 /// One rasterised badge bitmap at a single size. `argb` is `width*height`
 /// pixels, 4 bytes each, big-endian ARGB32 (SNI byte order: `[A, R, G, B]`).
@@ -26,9 +27,10 @@ pub struct BadgePixmap {
 /// Outline contour radius for the badge glyphs, in logical pixels.
 ///
 /// Preserves the previous appearance: the old hand-rolled ring drew the glyph
-/// nine times at ±1 px offsets. `glyph_draw_opts` dilates over the same eight
-/// directions but normalises the diagonals to 0.707·width, so the requested
-/// width is the contour radius rather than growing by √2 at the corners.
+/// nine times at ±1 px offsets. `optics_text_draw_opts` dilates over the same
+/// eight directions but normalises the diagonals to 0.707·width, so the
+/// requested width is the contour radius rather than growing by √2 at the
+/// corners.
 const BADGE_OUTLINE_WIDTH: f32 = 1.0;
 
 fn color_rgba(rgb: u32, a: u8) -> u32 {
@@ -38,32 +40,32 @@ fn color_rgba(rgb: u32, a: u8) -> u32 {
     u32::from_le_bytes([r, g, b, a])
 }
 
-/// Owns the per-call `glyph_ctx` context and releases it on every exit path.
+/// Owns the per-call `optics_text_ctx` context and releases it on every exit path.
 ///
-/// A `glyph_ctx` owns a 16 MiB host-coverage atlas plus the FreeType /
+/// An `optics_text_ctx` owns a 16 MiB host-coverage atlas plus the FreeType /
 /// HarfBuzz / fontconfig backend, so a context that escapes `render` is a
 /// multi-megabyte leak. `render`'s early returns (empty result when a size
-/// produces no visible coverage) previously skipped `glyph_release`
+/// produces no visible coverage) previously skipped `optics_text_release`
 /// entirely; because an empty pixmap set also defeats `Tray::set_badge`'s
 /// `had_badge` dedup, every tray refresh (each 中/EN mode toggle, engine or
 /// language switch) re-ran `render` and leaked another context.
-struct TextContext(*mut glyph_ctx);
+struct TextContext(*mut optics_text_ctx);
 
 impl Drop for TextContext {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { glyph_release(self.0) };
+            unsafe { optics_text_release(self.0) };
         }
     }
 }
 
 /// RAII guard for the per-size CPU canvas inside `render`.
-struct CanvasGuard(*mut flux_sys::flux_canvas);
+struct CanvasGuard(*mut gfx_sys::optics_gfx_canvas);
 
 impl Drop for CanvasGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { flux_canvas_release(self.0) };
+            unsafe { optics_gfx_canvas_release(self.0) };
         }
     }
 }
@@ -73,12 +75,12 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         return Vec::new();
     }
 
-    let desc = glyph_desc {
+    let desc = optics_text_desc {
         device: std::ptr::null_mut(),
         scale: 1.0,
     };
     let mut raw = std::ptr::null_mut();
-    unsafe { glyph_create(&desc, &mut raw) };
+    unsafe { optics_text_create(&desc, &mut raw) };
     if raw.is_null() {
         return Vec::new();
     }
@@ -91,15 +93,15 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         }
 
         let mut canvas = std::ptr::null_mut();
-        let desc = flux_sys::flux_canvas_desc {
-            type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_DESC,
-            backend: flux_sys::flux_canvas_backend_kind::FLUX_CANVAS_BACKEND_CPU,
+        let desc = gfx_sys::optics_gfx_canvas_desc {
+            type_: gfx_sys::optics_gfx_struct_type::OPTICS_GFX_TYPE_CANVAS_DESC,
+            backend: gfx_sys::optics_gfx_canvas_backend_kind::OPTICS_GFX_CANVAS_BACKEND_CPU,
             width: size,
             height: size,
             scale: 1.0,
             ..Default::default()
         };
-        unsafe { flux_canvas_create(&desc, &mut canvas) };
+        unsafe { optics_gfx_canvas_create(&desc, &mut canvas) };
         if canvas.is_null() {
             continue;
         }
@@ -107,34 +109,34 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
         // allocation failure path between create and the manual destroy.
         let _canvas_guard = CanvasGuard(canvas);
 
-        let style = glyph_style {
+        let style = optics_text_style {
             size_px: size as f32 * 0.75, // Scale to fit
             weight: 0.0,
             color: color_rgba(fg_rgb, 255),
-            family: glyph_family::GLYPH_FAMILY_DEFAULT,
+            family: optics_text_family::OPTICS_TEXT_FAMILY_DEFAULT,
             italic: false,
         };
 
         unsafe {
-            let measure_opts = glyph_measure_opts {
+            let measure_opts = optics_text_measure_opts {
                 utf8: text.as_ptr() as *const i8,
                 len: text.len(),
                 style: &style,
             };
-            let m = glyph_measure(text_ctx.0, &measure_opts);
+            let m = optics_text_measure(text_ctx.0, &measure_opts);
 
             // Center the text
             let x = (size as f32 - m.width) / 2.0;
             let y = (size as f32 - m.height) / 2.0;
 
-            let _ = flux_canvas_begin(canvas, std::ptr::null());
-            // Outline plus foreground in one call. The glyph draw descriptor
+            let _ = optics_gfx_canvas_begin(canvas, std::ptr::null());
+            // Outline plus foreground in one call. The text draw descriptor
             // dilates the glyph coverage over eight normalised directions
             // *before* drawing the foreground pass, so the outline can never
             // darken the glyph itself. That replaces the previous hand-rolled
-            // nine glyph_draw calls, which re-ran layout once per offset and
-            // used a ±1 px ring whose diagonals were not normalised.
-            let draw_opts = glyph_draw_opts {
+            // nine draw calls, which re-ran layout once per offset and used a
+            // ±1 px ring whose diagonals were not normalised.
+            let draw_opts = optics_text_draw_opts {
                 canvas,
                 arena: std::ptr::null_mut(),
                 x,
@@ -145,14 +147,14 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
                 outline_color: color_rgba(0x000000, 255),
                 outline_width: BADGE_OUTLINE_WIDTH,
             };
-            glyph_draw(text_ctx.0, &draw_opts);
+            optics_text_draw(text_ctx.0, &draw_opts);
 
-            flux_canvas_end(canvas);
+            optics_gfx_canvas_end(canvas);
 
             let mut w = 0;
             let mut h = 0;
             let mut stride = 0;
-            let px = flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride);
+            let px = optics_gfx_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride);
 
             if !px.is_null() && w > 0 && h > 0 {
                 // Convert from RGBA8 (premultiplied) to ARGB32 big-endian
@@ -196,7 +198,7 @@ pub fn render(text: &str, sizes: &[u32], fg_rgb: u32) -> Vec<BadgePixmap> {
     if out.len() != sizes.len() {
         // Partial coverage: the caller treats an incomplete ladder as "no
         // badge" (icon fallback). The TextContext guard above releases the
-        // glyph context on this early return — this path used to leak it.
+        // text context on this early return — this path used to leak it.
         return Vec::new();
     }
 
@@ -217,10 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_ladder_releases_glyph_context() {
+    fn partial_ladder_releases_text_context() {
         // A size-0 entry produces no pixmap, so `out.len() != sizes.len()`
         // and render returns early via the partial-coverage path. That path
-        // used to skip `glyph_release`, leaking the glyph context
+        // used to skip `optics_text_release`, leaking the text context
         // (16 MiB host-coverage atlas + FreeType/HarfBuzz/fontconfig backend)
         // on every tray refresh while no badge pixmap dedup was active.
         // Run it repeatedly: under valgrind/LSAN the old code reports a

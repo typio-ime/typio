@@ -29,17 +29,16 @@ Run these from the repository root.
 
 Build the native renderer dependency before the first run; see
 [Developer Setup](setup.md). Without it, `cargo test` fails to link the
-`flux`-backed crates rather than failing a test.
+`optics::gfx`-backed crates rather than failing a test.
 
 ## 2. Environment and Fixture Matrix
 
 | Variable | Needed by | Value in a local tree |
 | :--- | :--- | :--- |
-| `FLUX_BUILD_DIR` | Daemon and Panel crates linking the native flux library | The sibling Meson build tree, e.g. `$PWD/../optics/build` |
-| `FLUX_SOURCE_DIR` | Bindings generated from flux headers | The sibling flux source, e.g. `$PWD/../optics/libs/flux` |
-| `LENS_BUILD_DIR`, `LENS_SOURCE_DIR` | Settings application (Lens UI toolkit) | The sibling Optics build tree and source root |
-| `IRIS_BUILD_DIR`, `IRIS_SOURCE_DIR` | Settings application (Iris windowing) | The sibling Optics build tree and source root |
-| `LD_LIBRARY_PATH` | Crates that load a built shared library at test time | Must include `target/debug` and the Optics build tree |
+| `OPTICS_BUILD_DIR` | All crates linking the native Optics libraries (`gfx`, `text`, `ui`, `window`, `app`) | The sibling Meson build tree, e.g. `$PWD/../optics/build` |
+| `OPTICS_SOURCE_DIR` | Bindings generated from Optics headers | The sibling Optics source root, e.g. `$PWD/../optics` |
+| `OPTICS_STATIC` | Static archive bundling (`1` to require `liboptics_*.a`) | `1` (default in `.cargo/optics-local.toml` and CI) |
+| `LD_LIBRARY_PATH` | Dynamic Optics builds (`OPTICS_DYNAMIC=1`) loading shared libraries at test time | Must include `target/debug` and the Optics build tree |
 | `RUST_LOG` | Tracing output only | Optional; never required for a test to pass |
 | `TYPIO_ENGINE_PATH`, `--engine-dir` | Manual runs and development only | Optional; the shipped default is the system engine directory |
 
@@ -62,7 +61,7 @@ run without a display.
 
 Every job runs on `ubuntu-24.04` and builds a pinned Optics revision
 (`OPTICS_PINNED_REF` at workflow level) before touching Cargo, because the
-native flux library is a link-time dependency.
+native Optics `gfx` library is a link-time dependency.
 
 | Job | Gate | Blocks a pull request |
 | :--- | :--- | :--- |

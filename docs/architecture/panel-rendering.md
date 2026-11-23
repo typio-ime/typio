@@ -17,7 +17,7 @@ The subsystem is split along the seam ADR-0005 made load-bearing — platform-fr
 | :--- | :--- | :--- |
 | Frontend policy | Who may show the Panel, anchor readiness, anchor probe, when a dirty snapshot is flushed | Wayland focus and input-method facts |
 | Pure decision helpers | Schedule state, presentation de-duplication, preedit/panel sync plan, anchor generation bookkeeping | None; unit-testable without a display server |
-| Render + present | Content to geometry to pixels, `wl_shm` buffer reservation and attach | Wayland surface, `wl_shm`, flux CPU canvas, flux-text |
+| Render + present | Content to geometry to pixels, `wl_shm` buffer reservation and attach | Wayland surface, `wl_shm`, `optics::gfx` CPU canvas, `optics::text` |
 
 The boundary stops in four places:
 
@@ -29,11 +29,11 @@ The boundary stops in four places:
 The persistent-object model of ADR-0014 (exactly four process-lifetime objects) still governs, but its realisation changed with the move to CPU rendering: `RenderDevice` no longer exists because the CPU canvas has no device, and `PanelSurface` is no longer a separate object. The process-persistent objects today are:
 
 1. the popup `wl_surface`, created and owned by the platform frontend (`crates/typio-host-platform/src/input_method.rs`);
-2. `FluxPanel` (`crates/typio-host-platform/src/panel.rs`) — canvas, quantized extent, layout cache, and the panel font config;
-3. the single `TextRaster` inside `FluxPanel` (`crates/typio-host-platform/src/text_raster.rs`) — one flux-text context;
+2. `Panel` (`crates/typio-host-platform/src/panel.rs`) — canvas, quantized extent, layout cache, and the panel font config;
+3. the single `TextRaster` inside `Panel` (`crates/typio-host-platform/src/text_raster.rs`) — one `optics::text` context;
 4. `ShmBufferPool` (`crates/typio-host-platform/src/panel_shm.rs`) — the fixed triple-buffered `wl_shm` pool.
 
-Everything else is a value: `flux_canvas`, the per-candidate `TextMetrics` layout, the quantized extent, and the SHM framebuffer contents. The multi-zone vocabulary survives as two draw entry points: `FluxPanel::draw_candidates` (Candidate Zone) and `FluxPanel::draw_status_banner` (Status Zone). Status content is a single label string; there is no generic content model type in the tree today.
+Everything else is a value: `optics_gfx_canvas`, the per-candidate `TextMetrics` layout, the quantized extent, and the SHM framebuffer contents. The multi-zone vocabulary survives as two draw entry points: `Panel::draw_candidates` (Candidate Zone) and `Panel::draw_status_banner` (Status Zone). Status content is a single label string; there is no generic content model type in the tree today.
 
 ## 2. Invariants & Non-Negotiable Rules
 
@@ -49,8 +49,8 @@ Everything else is a value: `flux_canvas`, the per-candidate `TextMetrics` layou
 - **`[INV-PANEL-10]` Extent is quantized, hysteretic, and capped.** With `wp_viewporter` the framebuffer is quantized to 64 px (width) and 32 px (height), grows to the required quantized size, and shrinks only when current content needs no more than half of an axis (`retained_extent`); without a viewport the extent is exact.
 - **`[INV-PANEL-11]` The Panel extent is hard-capped at 16384 × 4096 logical pixels.** Candidate pages beyond the cap render a fitting prefix plus a `⋯` overflow marker and at least one candidate stays visible; over-long banner labels truncate with `…`. Both branches are trust boundaries against buggy or hostile engines.
 - **`[INV-PANEL-12]` A skipped frame never changes logical state.** Back-pressure keeps the schedule state `Dirty` and retries only the newest coalesced snapshot; committed text and selection are unaffected by any number of dropped frames.
-- **`[INV-PANEL-13]` No GPU object exists in the Panel path.** No Vulkan device, `flux_surface`, swapchain, dma-buf, GPU readback, or GPU glyph texture may be introduced; fills come from `flux_canvas_create` with `FLUX_CANVAS_BACKEND_CPU` and text from the glyph host-coverage path, and the only present mechanism is `wl_shm` with `attach`/`damage_buffer`/`commit`.
-- **`[INV-PANEL-14]` Every Panel pass clears its framebuffer.** The pass is opened through `begin_panel_pass` with a transparent `clear_color` and `clear_extent: true`, never with a null descriptor, because a null descriptor selects `flux`'s *load* path and `ensure_canvas` keeps one canvas alive across resizes. The explicit clear-extent flag states that the whole destination is new rather than leaving it to be inferred from an empty damage set, matching the v0.0.75+ Flux damage vocabulary (ADR-0061). The canvas extent is the retained (quantized) size, which is usually larger than the `content_w - 2` body actually drawn, so without a clear the previous frame survives outside the new body and its transparent 8 px corner arcs blend over the new body's corners — a square-looking right edge, plus vertical remnants once the panel gets shorter. The clear colour is transparent so the arcs reach the compositor. Covered by `shrinking_panel_keeps_rounded_corners`.
+- **`[INV-PANEL-13]` No GPU object exists in the Panel path.** No Vulkan device, `optics_gfx_surface`, swapchain, dma-buf, GPU readback, or GPU glyph texture may be introduced; fills come from `optics_gfx_canvas_create` with `OPTICS_GFX_CANVAS_BACKEND_CPU` and text from the `optics::text` host-coverage path, and the only present mechanism is `wl_shm` with `attach`/`damage_buffer`/`commit`.
+- **`[INV-PANEL-14]` Every Panel pass clears its framebuffer.** The pass is opened through `begin_panel_pass` with a transparent `clear_color` and `clear_extent: true`, never with a null descriptor, because a null descriptor selects the canvas backend's *load* path and `ensure_canvas` keeps one canvas alive across resizes. The explicit clear-extent flag states that the whole destination is new rather than leaving it to be inferred from an empty damage set, matching the v0.0.75+ `optics::gfx` damage vocabulary (ADR-0061). The canvas extent is the retained (quantized) size, which is usually larger than the `content_w - 2` body actually drawn, so without a clear the previous frame survives outside the new body and its transparent 8 px corner arcs blend over the new body's corners — a square-looking right edge, plus vertical remnants once the panel gets shorter. The clear colour is transparent so the arcs reach the compositor. Covered by `shrinking_panel_keeps_rounded_corners`.
 
 ## 3. Component Architecture & Data Flow
 
@@ -97,8 +97,8 @@ reactor step              ->  flush_candidate_panel()
 
 | Component | File | Responsibility |
 | :--- | :--- | :--- |
-| `FluxPanel` | `crates/typio-host-platform/src/panel.rs` | layout cache, extent policy, CPU canvas lifecycle, `draw_candidates`, `draw_status_banner`, `present_shm`, `hide`, `reset_shm_pool`, `set_scale`, `set_font_config` |
-| `TextRaster` | `crates/typio-host-platform/src/text_raster.rs` | one `flux_text*` context; `measure` and `draw` into the canvas via the host-coverage glyph path; family-class selection |
+| `Panel` | `crates/typio-host-platform/src/panel.rs` | layout cache, extent policy, CPU canvas lifecycle, `draw_candidates`, `draw_status_banner`, `present_shm`, `hide`, `reset_shm_pool`, `set_scale`, `set_font_config` |
+| `TextRaster` | `crates/typio-host-platform/src/text_raster.rs` | one `optics_text_ctx*` context; `measure` and `draw` into the canvas via the host-coverage glyph path; family-class selection |
 | `ShmBufferPool` / `ShmBuffer` | `crates/typio-host-platform/src/panel_shm.rs` | fixed-capacity (`DEFAULT_CAP = 3`) pool, non-blocking `acquire`, per-buffer `BufferReleaseState`, `reset` |
 | Buffers and canvas | — | RGB(A) data only; no draw commands survive a frame |
 
@@ -123,27 +123,27 @@ Full-frame repaint is the model: each frame clears, fills the background rounded
 draw_candidates(candidates, selected, composition_seq)
   1. ensure_candidate_size()      layout + quantized extent + viewport update
   2. acquire_shm_buffer()         Busy -> return false, stay Dirty (no render work)
-  3. ensure_canvas()              lazy flux_canvas_create (CPU backend) at the retained extent
+  3. ensure_canvas()              lazy optics_gfx_canvas_create (CPU backend) at the retained extent
   4. begin_panel_pass()           clears to transparent ([INV-PANEL-14])
        fill_rrect (background), fill_rrect (selection), TextRaster::draw (per run)
-     flux_canvas_end
+     optics_gfx_canvas_end
   5. present_shm(buffer_index)
-       flux_canvas_cpu_pixels -> byte-swap RGBA8 -> ARGB8888 straight into the buffer
+       optics_gfx_canvas_cpu_pixels -> byte-swap RGBA8 -> ARGB8888 straight into the buffer
        mark_busy(), set_buffer_scale, attach + damage_buffer + commit
 ```
 
 Path tracing under `typio.panel.perf` reports per-phase microsecond timings (`layout_us`, `acquire_us`, `draw_us`, `present_us`), and `typio.panel.shm` reports pool exhaustion and allocation failures.
 
-Panel backgrounds and selection highlights use Flux geometry and solid brushes.
+Panel backgrounds and selection highlights use `optics::gfx` geometry and solid brushes.
 Canvas and text contexts release their references through the current ownership
 APIs, including resize and early-return paths. The workspace and CI native pin
-select Optics v0.0.81; see [Workspace Topology](workspace-topology.md).
+select Optics v0.0.83; see [Workspace Topology](workspace-topology.md).
 
 ### 3.4 Back-pressure and convergence
 
 The compositor's only back-pressure signal on this path is `wl_buffer.release`. `ShmBufferPool::acquire` returns `ShmAcquireError::Busy` when every buffer is held; the Panel then renders nothing, keeps `Dirty`, and a later `wl_buffer` release or input event retries the **newest** composition snapshot. Because `mark_busy` is written into the buffer's own user-data at `create_buffer` time, a release can never clear the wrong buffer's flag.
 
-`FluxPanel::reset_shm_pool` clears every cached buffer after a hard lifecycle boundary (grab destroy / resume), covering compositors that lose or indefinitely delay `wl_buffer.release` for buffers in flight across suspend. Without that reset a permanently busy pool would drop every later candidate frame.
+`Panel::reset_shm_pool` clears every cached buffer after a hard lifecycle boundary (grab destroy / resume), covering compositors that lose or indefinitely delay `wl_buffer.release` for buffers in flight across suspend. Without that reset a permanently busy pool would drop every later candidate frame.
 
 ### 3.5 Retired mechanisms — do not reintroduce
 
@@ -177,7 +177,7 @@ The compositor's only back-pressure signal on this path is `wl_buffer.release`. 
 | [ADR-0022: Panel retry result owned by update](../adr/0022-panel-retry-result-owned-by-update.md) | Retry is the result of one update, not durable surface state |
 | [ADR-0023: Panel Scheduler State Machine](../adr/0023-panel-scheduler-state-machine.md) | Explicit schedule state instead of a boolean; only the event loop may flush the Panel |
 | [ADR-0036: Soft Present Gate for the Candidate Panel](../adr/0036-soft-present-gate-for-candidate-panel.md) | Frame callbacks are pacing hygiene, never a hard lock (superseded by ADR-0040) |
-| [ADR-0040: CPU Canvas Render with Host-Managed SHM Buffers](../adr/0040-cpu-canvas-render-shm-buffers.md) | CPU canvas plus flux-text, `wl_shm` as the only present path, per-buffer release tracking, and the hard extent cap |
+| [ADR-0040: CPU Canvas Render with Host-Managed SHM Buffers](../adr/0040-cpu-canvas-render-shm-buffers.md) | CPU canvas plus `optics::text`, `wl_shm` as the only present path, per-buffer release tracking, and the hard extent cap |
 | [ADR-0044: Bounded Panel Rendering Before SHM Presentation](../adr/0044-bounded-panel-rendering.md) | Reserve-before-render, quantized extent with hysteresis shrink, and latest-snapshot convergence on back-pressure |
 | [ADR-0050: Panel typeface family is a family class](../adr/0050-panel-typeface-family-class.md) | `display.font_family` is a supported family class (`default`/`sans`/`serif`/`mono`), not an arbitrary family name; every accepted value changes rendering |
 
@@ -185,6 +185,6 @@ The compositor's only back-pressure signal on this path is `wl_buffer.release`. 
 
 - [Panel Architecture](../explanation/panel-architecture.md) — why ownership arbitration sits before rendering
 - [Candidate Panel Behavior](../explanation/candidate-panel-behavior.md) — user-visible Panel lifecycle
-- [Frontend Graphics](../explanation/frontend-graphics.md) — render pipeline and Flux dependency boundary
+- [Frontend Graphics](../explanation/frontend-graphics.md) — render pipeline and `optics::gfx` dependency boundary
 - [Panel Appearance](../dev/panel-appearance.md) — appearance, font, theme, and cache notes
 - [Glossary](../reference/glossary.md) — Panel, owner, and anchor terms

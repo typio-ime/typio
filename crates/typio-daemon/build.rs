@@ -20,7 +20,7 @@ fn main() {
             let status = Command::new("meson")
                 .arg("setup")
                 .arg(&build_dir)
-                .arg("-Dglyph=true")
+                .arg("-Dtext=true")
                 .current_dir(&optics_dir)
                 .status()
                 .expect("Failed to run meson setup");
@@ -79,13 +79,13 @@ fn main() {
         .to_string_lossy()
         .into_owned();
 
-    // Feature toggles. Flux tracks wayland.
+    // Feature toggles. Optics gfx tracks wayland.
     let enable_wayland = env::var("CARGO_FEATURE_WAYLAND").is_ok();
     let enable_systray = env::var("CARGO_FEATURE_SYSTRAY").is_ok();
     let enable_voice = env::var("CARGO_FEATURE_VOICE").is_ok();
-    let have_flux = enable_wayland;
+    let have_gfx = enable_wayland;
 
-    // The daemon reaches Flux and Glyph through the `optics` facade, so the
+    // The daemon reaches Optics `gfx` and `text` through the `optics` facade, so the
     // `-sys` crates' `links` metadata is no longer visible here. Re-derive the
     // Meson build-tree rpaths from the same variables the bindings consume, so
     // the daemon and its test harnesses load the libraries bindgen saw rather
@@ -119,8 +119,8 @@ fn main() {
         if enable_voice { "1" } else { "0" }
     );
     println!(
-        "cargo:rustc-env=HAVE_FLUX={}",
-        if have_flux { "1" } else { "0" }
+        "cargo:rustc-env=HAVE_OPTICS_GFX={}",
+        if have_gfx { "1" } else { "0" }
     );
 
     // Generate a Rust module with the same values for convenient `use`.
@@ -143,7 +143,7 @@ fn main() {
          pub const HAVE_WAYLAND: bool = {wayland};\n\
          pub const HAVE_SYSTRAY: bool = {systray};\n\
          pub const HAVE_VOICE: bool = {voice};\n\
-         pub const HAVE_FLUX: bool = {flux};\n",
+         pub const HAVE_OPTICS_GFX: bool = {gfx};\n",
         version = version,
         major = major,
         minor = minor,
@@ -160,7 +160,7 @@ fn main() {
         wayland = enable_wayland,
         systray = enable_systray,
         voice = enable_voice,
-        flux = have_flux,
+        gfx = have_gfx,
     );
     std::fs::write(out_dir.join("build_info.rs"), build_info).unwrap();
 

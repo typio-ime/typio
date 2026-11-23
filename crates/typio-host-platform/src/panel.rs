@@ -1,15 +1,15 @@
-//! Candidate panel — flux CPU (software) rendering + host-managed SHM buffer.
+//! Candidate panel — Optics gfx CPU (software) rendering + host-managed SHM buffer.
 //!
-//! flux's CPU-backed canvas (`flux_canvas_create` with the CPU backend)
+//! `optics::gfx`'s CPU-backed canvas (`optics_gfx_canvas_create` with the CPU backend)
 //! rasterises the panel background, selection highlight and text on the host — no Vulkan device, surface,
-//! swapchain or dma-buf. Text is shaped by glyph and drawn into the same
+//! swapchain or dma-buf. Text is shaped by `optics::text` and drawn into the same
 //! canvas pass via the host-coverage glyph path (ADR-0019). The composited
-//! RGBA8 framebuffer flux returns from `flux_canvas_cpu_pixels` is byte-swapped
+//! RGBA8 framebuffer returned from `optics_gfx_canvas_cpu_pixels` is byte-swapped
 //! into a host-owned `wl_shm` `wl_buffer` (RGBA→ARGB8888) and attached to the
 //! popup `wl_surface`.
 //!
 //! ```text
-//! flux CPU canvas (bg + highlight + text)  →  flux_canvas_cpu_pixels (RGBA8 premul)
+//! optics gfx CPU canvas (bg + highlight + text)  →  optics_gfx_canvas_cpu_pixels (RGBA8 premul)
 //!   → present_shm: RGBA→ARGB8888 (byte-swap) straight into a free ShmBuffer
 //!     → wl_surface.attach + damage + commit (raw FFI, returns instantly)
 //! ```
@@ -20,12 +20,13 @@ use std::hash::{Hash, Hasher};
 use std::ptr;
 use std::time::Instant;
 
-use flux_sys::{
-    flux_canvas, flux_canvas_begin, flux_canvas_cpu_pixels, flux_canvas_create, flux_canvas_end,
-    flux_canvas_release, flux_color_rgba, flux_error_info, flux_get_last_error, flux_rect,
-    flux_result,
+use gfx_sys::{
+    optics_gfx_canvas, optics_gfx_canvas_begin, optics_gfx_canvas_cpu_pixels,
+    optics_gfx_canvas_create, optics_gfx_canvas_end, optics_gfx_canvas_release,
+    optics_gfx_color_rgba, optics_gfx_error_info, optics_gfx_get_last_error, optics_gfx_rect,
+    optics_gfx_result,
 };
-use optics::canvas::sys as flux_sys;
+use optics::gfx::sys as gfx_sys;
 use wayland_client::protocol::wl_shm;
 use wayland_client::{Proxy, QueueHandle};
 use wayland_sys::{
@@ -39,7 +40,7 @@ use crate::text_raster::{TextMetrics, TextRaster};
 
 /// Open a Panel CPU pass that *clears* to transparent.
 ///
-/// The pass must clear, not merely load. `flux_canvas_begin(canvas, NULL)`
+/// The pass must clear, not merely load. `optics_gfx_canvas_begin(canvas, NULL)`
 /// selects the "load" path: the CPU backend leaves the existing float
 /// framebuffer untouched, and `ensure_canvas` keeps one canvas alive across
 /// resizes, so whatever was drawn last frame survives into this one.
@@ -59,51 +60,51 @@ use crate::text_raster::{TextMetrics, TextRaster};
 ///
 /// # Safety
 /// `canvas` must be a live CPU canvas that is not already recording.
-unsafe fn begin_panel_pass(canvas: *mut flux_canvas) -> bool {
+unsafe fn begin_panel_pass(canvas: *mut optics_gfx_canvas) -> bool {
     // SAFETY: the caller guarantees a live, non-recording CPU canvas; the
-    // colour is a value type and `pass` outlives the `flux_canvas_begin` call.
+    // colour is a value type and `pass` outlives the `optics_gfx_canvas_begin` call.
     unsafe {
-        let clear = flux_color_rgba(0, 0, 0, 0);
-        let pass = flux_sys::flux_canvas_pass_desc {
-            type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_PASS_DESC,
+        let clear = optics_gfx_color_rgba(0, 0, 0, 0);
+        let pass = gfx_sys::optics_gfx_canvas_pass_desc {
+            type_: gfx_sys::optics_gfx_struct_type::OPTICS_GFX_TYPE_CANVAS_PASS_DESC,
             clear_color: &clear,
             // The Panel repaints its whole extent on every composition change.
-            // Flux's v0.0.75+ damage vocabulary distinguishes "the whole
+            // Optics's v0.0.75+ damage vocabulary distinguishes "the whole
             // destination is new" (`clear_extent`) from an empty damage set,
             // so state the intent instead of relying on the inference.
             clear_extent: true,
             ..Default::default()
         };
-        flux_result_is_ok(flux_canvas_begin(canvas, &pass))
+        gfx_result_is_ok(optics_gfx_canvas_begin(canvas, &pass))
     }
 }
 
-/// Draw a filled rounded rectangle through Flux's geometry/brush API.
+/// Draw a filled rounded rectangle through Optics gfx's geometry/brush API.
 ///
 /// # Safety
 /// `canvas` must be live with an open CPU pass.
 unsafe fn draw_rounded_background(
-    canvas: *mut flux_canvas,
-    rect: flux_rect,
+    canvas: *mut optics_gfx_canvas,
+    rect: optics_gfx_rect,
     radius: f32,
-    color: flux_sys::flux_color,
+    color: gfx_sys::optics_gfx_color,
 ) {
-    let mut geometry = flux_sys::flux_geometry {
-        kind: flux_sys::flux_geom_kind::FLUX_GEOM_RRECT,
+    let mut geometry = gfx_sys::optics_gfx_geometry {
+        kind: gfx_sys::optics_gfx_geom_kind::OPTICS_GFX_GEOM_RRECT,
         ..Default::default()
     };
-    geometry.__bindgen_anon_1.rrect = flux_sys::flux_geom_rrect_data { rect, radius };
-    let mut brush = flux_sys::flux_brush {
-        kind: flux_sys::flux_brush_kind::FLUX_BRUSH_SOLID,
+    geometry.__bindgen_anon_1.rrect = gfx_sys::optics_gfx_geom_rrect_data { rect, radius };
+    let mut brush = gfx_sys::optics_gfx_brush {
+        kind: gfx_sys::optics_gfx_brush_kind::OPTICS_GFX_BRUSH_SOLID,
         opacity: 1.0,
         ..Default::default()
     };
-    brush.__bindgen_anon_1.solid = flux_sys::flux_brush_solid_data { color };
-    let opts = flux_sys::flux_canvas_draw_geometry_opts {
+    brush.__bindgen_anon_1.solid = gfx_sys::optics_gfx_brush_solid_data { color };
+    let opts = gfx_sys::optics_gfx_canvas_draw_geometry_opts {
         geom: &geometry,
         brush: &brush,
     };
-    unsafe { flux_sys::flux_canvas_draw_geometry(canvas, &opts) };
+    unsafe { gfx_sys::optics_gfx_canvas_draw_geometry(canvas, &opts) };
 }
 
 /// Framebuffer width quantum when exact cropping is available through viewporter.
@@ -166,9 +167,9 @@ impl LayoutCacheKey {
     }
 }
 
-/// A candidate panel backed by flux software rendering and Wayland SHM.
-pub struct FluxPanel {
-    canvas: *mut flux_canvas,
+/// A candidate panel backed by Optics gfx software rendering and Wayland SHM.
+pub struct Panel {
+    canvas: *mut optics_gfx_canvas,
     canvas_w: u32,
     canvas_h: u32,
     canvas_scale: f32,
@@ -199,8 +200,8 @@ pub struct FluxPanel {
     banner_truncated: bool,
 }
 
-impl FluxPanel {
-    /// Create a panel that renders on the CPU via flux and presents through a
+impl Panel {
+    /// Create a panel that renders on the CPU via `optics::gfx` and presents through a
     /// host-managed `wl_shm` buffer on `wl_surface`.
     ///
     /// # Safety
@@ -284,24 +285,24 @@ impl FluxPanel {
         }
         unsafe {
             if !self.canvas.is_null() {
-                flux_canvas_release(self.canvas);
+                optics_gfx_canvas_release(self.canvas);
                 self.canvas = ptr::null_mut();
             }
-            let mut canvas: *mut flux_canvas = ptr::null_mut();
-            let desc = flux_sys::flux_canvas_desc {
-                type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_DESC,
-                backend: flux_sys::flux_canvas_backend_kind::FLUX_CANVAS_BACKEND_CPU,
+            let mut canvas: *mut optics_gfx_canvas = ptr::null_mut();
+            let desc = gfx_sys::optics_gfx_canvas_desc {
+                type_: gfx_sys::optics_gfx_struct_type::OPTICS_GFX_TYPE_CANVAS_DESC,
+                backend: gfx_sys::optics_gfx_canvas_backend_kind::OPTICS_GFX_CANVAS_BACKEND_CPU,
                 width: self.width.max(1),
                 height: self.height.max(1),
                 scale: self.scale.max(0.1),
                 ..Default::default()
             };
-            let r = flux_canvas_create(&desc, &mut canvas);
-            if !flux_result_is_ok(r) || canvas.is_null() {
+            let r = optics_gfx_canvas_create(&desc, &mut canvas);
+            if !gfx_result_is_ok(r) || canvas.is_null() {
                 tracing::warn!(
                     target: "typio.panel.cpu",
-                    error = %flux_last_error_string("flux_canvas_create"),
-                    "flux_canvas_create failed on resize"
+                    error = %gfx_last_error_string("optics_gfx_canvas_create"),
+                    "optics_gfx_canvas_create failed on resize"
                 );
                 return false;
             }
@@ -316,15 +317,15 @@ impl FluxPanel {
     /// Draw the opaque rounded-rect panel body over the content rect (logical).
     ///
     /// # Safety
-    /// `self.canvas` must be a live CPU canvas currently inside a
-    /// `flux_canvas_begin` / `flux_canvas_end` pair.
+    /// `self.canvas` must be a live CPU canvas currently inside an
+    /// `optics_gfx_canvas_begin` / `optics_gfx_canvas_end` pair.
     unsafe fn draw_panel_background(&mut self) {
         let w = self.content_w_logical as f32 - 2.0;
         let h = self.content_h_logical as f32 - 2.0;
         if w <= 0.0 || h <= 0.0 {
             return;
         }
-        let rect = flux_rect {
+        let rect = optics_gfx_rect {
             x: 1.0,
             y: 1.0,
             w,
@@ -333,7 +334,7 @@ impl FluxPanel {
         // SAFETY: the caller guarantees `self.canvas` is live and the CPU pass
         // is open; the colour is a value type.
         unsafe {
-            let bg = flux_color_rgba(28, 28, 32, 255);
+            let bg = optics_gfx_color_rgba(28, 28, 32, 255);
             draw_rounded_background(self.canvas, rect, 8.0, bg);
         }
     }
@@ -385,8 +386,8 @@ impl FluxPanel {
 
         let draw_start = trace_perf.then(Instant::now);
 
-        // ── flux CPU pass: background + highlight + text (logical coords) ──
-        // Text draws inside the pass via glyph's host-coverage path
+        // ── optics-gfx CPU pass: background + highlight + text (logical coords) ──
+        // Text draws inside the pass via the text layer's host-coverage path
         // (ADR-0019); the canvas content-scale transform maps logical quads
         // onto physical pixels, so text uses logical coords like the fills.
         unsafe {
@@ -403,10 +404,10 @@ impl FluxPanel {
                 let iw =
                     CANDIDATE_ITEM_X_PADDING * 2.0 + num_m.width + CANDIDATE_NUMBER_GAP + m.width;
                 if i == selected {
-                    let hi = flux_color_rgba(56, 84, 160, 255);
+                    let hi = optics_gfx_color_rgba(56, 84, 160, 255);
                     draw_rounded_background(
                         self.canvas,
-                        flux_rect {
+                        optics_gfx_rect {
                             x: cx,
                             y,
                             w: iw,
@@ -468,7 +469,7 @@ impl FluxPanel {
                     NUMBER_COLOR,
                 );
             }
-            flux_canvas_end(self.canvas);
+            optics_gfx_canvas_end(self.canvas);
         }
         let draw_us = draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
@@ -689,7 +690,7 @@ impl FluxPanel {
 
         let read_start = trace_perf.then(Instant::now);
         let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
-        let px = unsafe { flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride) };
+        let px = unsafe { optics_gfx_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride) };
         if px.is_null() {
             return false;
         }
@@ -697,7 +698,7 @@ impl FluxPanel {
 
         let swap_start = trace_perf.then(Instant::now);
         unsafe {
-            // Read the flux canvas framebuffer straight off the canvas and
+            // Read the optics-gfx canvas framebuffer straight off the canvas and
             // byte-swap premultiplied RGBA8 → Wayland ARGB8888 (LE B,G,R,A)
             // in a single pass into the SHM backing store — no intermediate copy.
             let src_len = (h as usize) * (stride as usize);
@@ -787,7 +788,7 @@ impl FluxPanel {
                 TEXT_COLOR,
             );
 
-            flux_canvas_end(self.canvas);
+            optics_gfx_canvas_end(self.canvas);
         }
 
         self.present_shm(buffer_index)
@@ -913,11 +914,11 @@ impl ViewportMapping {
     }
 }
 
-impl Drop for FluxPanel {
+impl Drop for Panel {
     fn drop(&mut self) {
         unsafe {
             if !self.canvas.is_null() {
-                flux_canvas_release(self.canvas);
+                optics_gfx_canvas_release(self.canvas);
                 self.canvas = ptr::null_mut();
             }
         }
@@ -1034,21 +1035,21 @@ unsafe fn wl_surface_attach_commit(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/// True iff a flux call reported success.
+/// True iff an `optics_gfx` call reported success.
 ///
-/// `flux_result` is a real `#[repr(u32)]` C enum in the bindings, so it is
+/// `optics_gfx_result` is a real `#[repr(u32)]` C enum in the bindings, so it is
 /// compared directly. The previous helper was generic over `T` and recovered
 /// the discriminant with `transmute_copy`, which silently reinterpreted the
 /// first four bytes of whatever it was handed — unsound for any argument that
-/// was not `flux_result`, and invisible to the type checker when a call site
+/// was not `optics_gfx_result`, and invisible to the type checker when a call site
 /// changed.
-fn flux_result_is_ok(r: flux_result) -> bool {
-    r == flux_result::FLUX_OK
+fn gfx_result_is_ok(r: optics_gfx_result) -> bool {
+    r == optics_gfx_result::OPTICS_GFX_OK
 }
 
-fn flux_last_error_string(function: &str) -> String {
-    let mut info: flux_error_info = unsafe { std::mem::zeroed() };
-    unsafe { flux_get_last_error(&mut info) };
+fn gfx_last_error_string(function: &str) -> String {
+    let mut info: optics_gfx_error_info = unsafe { std::mem::zeroed() };
+    unsafe { optics_gfx_get_last_error(&mut info) };
     let msg = if info.message.is_null() {
         "(no message)".to_string()
     } else {
@@ -1192,7 +1193,7 @@ mod tests {
 
     #[test]
     fn unavailable_shm_skips_canvas_allocation_and_draw() {
-        let mut panel = FluxPanel {
+        let mut panel = Panel {
             canvas: ptr::null_mut(),
             canvas_w: 0,
             canvas_h: 0,
@@ -1221,8 +1222,8 @@ mod tests {
     }
 
     #[test]
-    fn flux_last_error_string_is_readable() {
-        let s = flux_last_error_string("test_function");
+    fn gfx_last_error_string_is_readable() {
+        let s = gfx_last_error_string("test_function");
         assert!(s.contains("test_function"));
     }
 
@@ -1230,9 +1231,9 @@ mod tests {
     ///
     /// # Safety
     /// `canvas` must be a live CPU canvas already ended for this frame.
-    unsafe fn alpha_at(canvas: *mut flux_canvas, x: u32, y: u32) -> u8 {
+    unsafe fn alpha_at(canvas: *mut optics_gfx_canvas, x: u32, y: u32) -> u8 {
         let (mut w, mut h, mut stride) = (0u32, 0u32, 0u32);
-        let px = unsafe { flux_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride) };
+        let px = unsafe { optics_gfx_canvas_cpu_pixels(canvas, &mut w, &mut h, &mut stride) };
         if px.is_null() || x >= w || y >= h {
             return 0;
         }
@@ -1256,33 +1257,33 @@ mod tests {
     fn shrinking_panel_keeps_rounded_corners() {
         // SAFETY: a private CPU canvas, released before the test returns.
         unsafe {
-            let mut canvas: *mut flux_canvas = ptr::null_mut();
-            let desc = flux_sys::flux_canvas_desc {
-                type_: flux_sys::flux_struct_type::FLUX_TYPE_CANVAS_DESC,
-                backend: flux_sys::flux_canvas_backend_kind::FLUX_CANVAS_BACKEND_CPU,
+            let mut canvas: *mut optics_gfx_canvas = ptr::null_mut();
+            let desc = gfx_sys::optics_gfx_canvas_desc {
+                type_: gfx_sys::optics_gfx_struct_type::OPTICS_GFX_TYPE_CANVAS_DESC,
+                backend: gfx_sys::optics_gfx_canvas_backend_kind::OPTICS_GFX_CANVAS_BACKEND_CPU,
                 width: 256,
                 height: 64,
                 scale: 1.0,
                 ..Default::default()
             };
-            let created = flux_canvas_create(&desc, &mut canvas);
-            assert!(flux_result_is_ok(created) && !canvas.is_null());
+            let created = optics_gfx_canvas_create(&desc, &mut canvas);
+            assert!(gfx_result_is_ok(created) && !canvas.is_null());
 
             // Mirror the Panel's own body geometry: rect (1,1,w-2,h-2), r=8.
             let draw_body = |w: f32, h: f32| {
                 assert!(begin_panel_pass(canvas));
                 draw_rounded_background(
                     canvas,
-                    flux_rect {
+                    optics_gfx_rect {
                         x: 1.0,
                         y: 1.0,
                         w: w - 2.0,
                         h: h - 2.0,
                     },
                     8.0,
-                    flux_color_rgba(28, 28, 32, 255),
+                    optics_gfx_color_rgba(28, 28, 32, 255),
                 );
-                assert!(flux_result_is_ok(flux_canvas_end(canvas)));
+                assert!(gfx_result_is_ok(optics_gfx_canvas_end(canvas)));
             };
 
             // A wide page fills most of the retained buffer...
@@ -1335,7 +1336,7 @@ mod tests {
                 "{stale} px of the previous frame leaked past the body"
             );
 
-            flux_canvas_release(canvas);
+            optics_gfx_canvas_release(canvas);
         }
     }
 }

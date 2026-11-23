@@ -14,28 +14,29 @@
 /// Build-tree environment variables inspected by the Optics `-sys` crates.
 const OPTICS_BUILD_DIR_VARS: &[&str] = &[
     "OPTICS_BUILD_DIR",
-    "FLUX_BUILD_DIR",
-    "GLYPH_BUILD_DIR",
-    "LENS_BUILD_DIR",
-    "IRIS_BUILD_DIR",
-    "APERTURE_BUILD_DIR",
-    "RETICLE_BUILD_DIR",
+    "OPTICS_GFX_BUILD_DIR",
+    "OPTICS_TEXT_BUILD_DIR",
+    "OPTICS_UI_BUILD_DIR",
+    "OPTICS_WINDOW_BUILD_DIR",
+    "OPTICS_APP_BUILD_DIR",
+    "OPTICS_SVG_BUILD_DIR",
 ];
 
-/// Per-library build-dir override variables in precedence order.
-const OPTICS_LIBRARY_BUILD_VARS: &[(&str, &[&str])] = &[
-    ("flux", &["FLUX_BUILD_DIR", "OPTICS_BUILD_DIR"]),
-    ("glyph", &["GLYPH_BUILD_DIR", "OPTICS_BUILD_DIR"]),
-    ("lens", &["LENS_BUILD_DIR", "OPTICS_BUILD_DIR"]),
-    ("iris", &["IRIS_BUILD_DIR", "OPTICS_BUILD_DIR"]),
-    ("aperture", &["APERTURE_BUILD_DIR", "OPTICS_BUILD_DIR"]),
+/// Per-library `(meson_subdir, lib_stem, override_vars)` tuples in precedence order.
+const OPTICS_LIBRARY_BUILD_VARS: &[(&str, &str, &[&str])] = &[
+    ("gfx", "optics_gfx", &["OPTICS_GFX_BUILD_DIR", "OPTICS_BUILD_DIR"]),
+    ("text", "optics_text", &["OPTICS_TEXT_BUILD_DIR", "OPTICS_BUILD_DIR"]),
+    ("ui", "optics_ui", &["OPTICS_UI_BUILD_DIR", "OPTICS_BUILD_DIR"]),
+    ("window", "optics_window", &["OPTICS_WINDOW_BUILD_DIR", "OPTICS_BUILD_DIR"]),
+    ("app", "optics_app", &["OPTICS_APP_BUILD_DIR", "OPTICS_BUILD_DIR"]),
     (
-        "reticle",
+        "svg",
+        "optics_svg",
         &[
-            "RETICLE_BUILD_DIR",
+            "OPTICS_SVG_BUILD_DIR",
             "OPTICS_BUILD_DIR",
-            "LENS_BUILD_DIR",
-            "APERTURE_BUILD_DIR",
+            "OPTICS_UI_BUILD_DIR",
+            "OPTICS_APP_BUILD_DIR",
         ],
     ),
 ];
@@ -97,12 +98,12 @@ fn optics_native_rpaths() -> Vec<String> {
     let mut paths = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for &(library, variables) in OPTICS_LIBRARY_BUILD_VARS {
+    for &(subdir, lib_stem, variables) in OPTICS_LIBRARY_BUILD_VARS {
         let Some(build_dir) = variables.iter().find_map(std::env::var_os) else {
             continue;
         };
         let build_dir = std::path::PathBuf::from(build_dir);
-        let directory = build_dir.join("libs").join(library);
+        let directory = build_dir.join("libs").join(subdir);
         let candidate = if directory.is_dir() {
             directory
         } else if build_dir.is_dir() {
@@ -111,8 +112,8 @@ fn optics_native_rpaths() -> Vec<String> {
             continue;
         };
 
-        let has_static = optics_has_static_archive(&candidate, library, &target_os);
-        let has_shared = optics_has_shared_library(&candidate, library, &target_os);
+        let has_static = optics_has_static_archive(&candidate, lib_stem, &target_os);
+        let has_shared = optics_has_shared_library(&candidate, lib_stem, &target_os);
         let use_static = !force_dynamic && has_static;
         if use_static || !has_shared {
             continue;

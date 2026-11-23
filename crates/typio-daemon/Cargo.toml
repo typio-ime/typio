@@ -34,7 +34,7 @@ zbus = { workspace = true, optional = true }
 libc.workspace = true
 xkbcommon = { workspace = true, optional = true }
 
-optics = { workspace = true, optional = true, features = ["typography"] }
+optics = { workspace = true, optional = true, features = ["text"] }
 wayland-sys = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-log.workspace = true

@@ -11,7 +11,7 @@ way ([INV-CORE-01](standards/invariants.md)).
 | Page | Covers |
 | :--- | :--- |
 | [Engineering Standards](standards/README.md) | Central standards suite: architecture, invariants, ADRs, RFCs, taxonomy, workflow |
-| [Developer Setup](setup.md) | Native prerequisites, the sibling `optics`/`flux` build, workspace builds, running the daemon locally |
+| [Developer Setup](setup.md) | Native prerequisites, the sibling `optics` build, workspace builds, running the daemon locally |
 | [Module Map](module-map.md) | Crates, modules, and ownership — where implementation coordinates live |
 | [Testing](testing.md) | Workspace test suites, per-crate coverage, environment matrix, CI gates |
 | [Acceptance](acceptance.md) | Real user journeys from a cold start, and the acceptance scenario matrix |

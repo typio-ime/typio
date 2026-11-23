@@ -54,7 +54,7 @@ xkbcommon = "0.9"
 # discovered by pkg-config. A linked development worktree can patch the facade
 # through .cargo/optics-local.toml without making a sibling checkout mandatory
 # for CI or downstream packagers.
-optics = { git = "https://github.com/ming2k/optics", tag = "v0.0.81", default-features = false }
+optics = { git = "https://github.com/ming2k/optics", tag = "v0.0.83", default-features = false, features = ["static"] }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"

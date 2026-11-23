@@ -8,7 +8,7 @@ looks delayed, skips frames, or catches up in bursts.
 ```text
 key → engine → latest CompositionState
     → Panel driver (DIRTY convergence + presentation deduplication)
-    → flux CPU canvas + TextRaster
+    → `optics::gfx` CPU canvas + TextRaster
     → host-owned wl_shm buffer → Wayland compositor
 ```
 
@@ -28,9 +28,9 @@ builds reject a Meson tree that reports optimization level zero, but an older
 daemon can keep an unoptimized library mapped after the build tree is replaced:
 
 ```bash
-meson configure "${FLUX_BUILD_DIR:-../optics/build-release}" | rg "buildtype|optimization"
+meson configure "${OPTICS_BUILD_DIR:-../optics/build-release}" | rg "buildtype|optimization"
 pid="$(pgrep -o typio)"
-rg '/optics/.*/libflux' "/proc/$pid/maps"
+rg '/optics/.*/liboptics_gfx' "/proc/$pid/maps"
 ```
 
 Use `buildtype=release` for the trace. [How to Package for

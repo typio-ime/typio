@@ -520,7 +520,7 @@ impl App {
             } else {
                 tracing::warn!(
                     target: "typio.startup",
-                    "tray did not register (no org.kde.StatusNotifierWatcher on the session bus?)"
+                    "tray did not register (no org.kde.StatusNotifierWatcher on the session bus, or it did not answer within the timeout)"
                 );
             }
             install_tray_action_handler(&tray, self.event_tx.clone());

@@ -1,7 +1,7 @@
-//! Wayland/Flux platform integration for the Typio daemon.
+//! Wayland/Optics platform integration for the Typio daemon.
 //!
 //! This crate owns the effectful compositor-facing pieces: protocol bindings,
-//! the input-method frontend, SHM-backed panel presentation, and Flux text
+//! the input-method frontend, SHM-backed panel presentation, and `optics::text`
 //! rendering. Platform-neutral policy lives in `typio-host-types`.
 
 pub mod input_method;

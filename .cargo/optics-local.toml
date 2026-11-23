@@ -12,9 +12,11 @@
 # workspace (`crates/*`) from the sibling checkout.
 optics = { path = "../optics/crates/optics" }
 
-# Override points for the native Optics C libraries. Typio bundles Optics
-# statically (`OPTICS_STATIC = "1"`) while keeping system libraries dynamic, so
-# binaries carry no Optics shared-library dependencies or build-tree rpaths.
+# Override points for the native Optics C libraries. The workspace dependency
+# requests a static Optics link through the facade's `static` feature; the
+# environment override below states the same intent explicitly and lets a shell
+# switch modes without editing Cargo.toml (OPTICS_DYNAMIC=1 forces shared
+# linking).
 # Point OPTICS_BUILD_DIR at a release Meson tree built with static archives
 # (`default_library=both` or `default_library=static`, e.g. `../optics/build-release`
 # or `../optics/build-static-release`). Override with `OPTICS_DYNAMIC=1` in the

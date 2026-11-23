@@ -69,7 +69,7 @@ discovered on the build host.
 | Crate | Produced binary | Responsibility |
 |---|---|---|
 | `crates/typio-daemon` | `typio` | Wayland input-method daemon: session and focus handling, keyboard policy, candidate panel driving, tray surface, voice plumbing, and the TIP UDS server |
-| `crates/typio-host-platform` | — | Wayland and Flux platform integration: surfaces, input, SHM presentation, text rasterisation |
+| `crates/typio-host-platform` | — | Wayland and Optics platform integration: surfaces, input, SHM presentation, text rasterisation |
 | `crates/typio-host-types` | — | Platform-neutral host state and policy types shared by the daemon and the platform layer |
 | `crates/typio-runtime` | — | Headless input-method state machine and engine-scheduling runtime; built as an `rlib` and embedded by the daemon |
 | `crates/typio-client` | — | Shared Rust client for TIP: framing, request/response calls, event subscriptions |
@@ -103,14 +103,14 @@ flowchart BT
 
 | Rule | Enforcement |
 |---|---|
-| The runtime is platform-neutral | `typio-runtime` depends on `typio-engine-protocol`, TOML/serde, `libc`, `log`, and `nix` — no Wayland, Flux, Iris, or Lens crate appears in its manifest |
+| The runtime is platform-neutral | `typio-runtime` depends on `typio-engine-protocol`, TOML/serde, `libc`, `log`, and `nix` — no Wayland, `optics::gfx`, `optics::window`, or `optics::ui` crate appears in its manifest |
 | Host policy types are shareable | `typio-host-types` depends only on `bitflags` and `tracing` |
 | The protocol is the engine boundary | `typio-engine-protocol` has no workspace dependencies; the daemon, the manifest crate, and the conformance tool all consume it, and an engine worker may not link `typio-runtime` |
 | Clients are TIP-only | `typio-client` depends on `serde_json` alone; `typio-control` depends on `typio-client`, `clap`, and `serde_json`; `typio-settings` depends on `typio-client` plus the Optics bindings |
 | The platform layer never owns policy | `typio-host-platform` depends on `typio-host-types`, not on `typio-runtime` |
 | Engine discovery is host-owned | The daemon's loader crate registers engines into the runtime through its public registry API; the runtime carries no search path |
 
-The daemon binary wires the two halves: it owns the Wayland/Flux platform layer
+The daemon binary wires the two halves: it owns the Wayland/Optics platform layer
 and the TIP server, embeds the runtime as an `rlib`, and exposes runtime state to
 clients only over TIP.
 
@@ -124,33 +124,32 @@ clients only over TIP.
 | Cargo configuration | Default, or `.cargo/config.example.toml` | `.cargo/config.toml` copied from `.cargo/optics-local.toml` |
 
 The workspace pins the single `optics` facade crate to a tagged Optics release
-(tag `v0.0.81` in `[workspace.dependencies]` at the time of writing), with
+(tag `v0.0.83` in `[workspace.dependencies]` at the time of writing), with
 `default-features = false`. Each consumer enables only the layers it uses:
-`typography` for the daemon and host platform, and `app` for the settings
-application. The `app` feature pulls in the Aperture application shell together
-with the Lens UI, Iris platform, Glyph typography, and Flux canvas layers.
-Raw FFI remains reachable through the facade's `canvas::sys` and
-`typography::sys` re-exports, so no crate declares a granular Optics dependency
+`text` for the daemon and host platform, and `app` for the settings
+application. The `app` feature pulls in the `optics::app` application shell
+together with the `optics::ui`, `optics::window`, `optics::text`, and
+`optics::gfx` layers. Raw FFI remains reachable through the facade's `gfx::sys`
+and `text::sys` re-exports, so no crate declares a granular Optics dependency
 of its own. The native Optics libraries have no Cargo-native build yet, so
 contributors compile the sibling Optics tree with Meson and point the `-sys`
 build scripts underneath the facade at it:
 
 ```bash
-meson setup ../optics/build ../optics -Dglyph=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
 meson compile -C ../optics/build
 export OPTICS_BUILD_DIR="$PWD/../optics/build"
 export OPTICS_SOURCE_DIR="$PWD/../optics"
 ```
 
 `OPTICS_BUILD_DIR` (or per-library `*_BUILD_DIR` overrides) selects the in-tree
-libraries. When Optics static archives (`lib*.a`) are present and
-`OPTICS_DYNAMIC` is unset, the `-sys` crates link Optics statically while
-keeping system libraries dynamic, so Typio binaries require no build-tree rpath
-or runtime Optics shared libraries. When linking against shared Optics libraries
-(for example via `OPTICS_DYNAMIC=1` or a shared-only build tree), the Typio
-build scripts derive those directories and bake an `-Wl,-rpath` into the
-binaries so neither a system install nor an `LD_LIBRARY_PATH` entry is required
-in the development loop. Linking directly to the Meson tree is the supported
+libraries. Typio enables Optics's `static` feature, so when archives (`lib*.a`)
+are present the `-sys` crates link Optics statically while keeping system
+libraries dynamic, and Typio binaries require no build-tree rpath or runtime
+Optics shared libraries. When linking against shared Optics libraries (via
+`OPTICS_DYNAMIC=1` or a shared-only build tree), the Typio build scripts derive
+those directories and bake an `-Wl,-rpath` into the binaries so neither a system
+install nor an `LD_LIBRARY_PATH` entry is required in the development loop. Linking directly to the Meson tree is the supported
 development path; an installed prefix works when `OPTICS_BUILD_DIR` and the
 per-library `*_BUILD_DIR` variables are unset.
 
@@ -205,7 +204,7 @@ than restates.
   members, so protocol changes to them land atomically with the daemon.
 - **The bilingual C/Rust build.** This repository ships no `meson.build`; the
   daemon and clients build with Cargo, and the only Meson build in the developer
-  loop is the sibling Optics tree that provides `libflux`.
+  loop is the sibling Optics tree that provides `liboptics_gfx`.
 
 ## 4. Historical Lineage & Founding ADRs
 

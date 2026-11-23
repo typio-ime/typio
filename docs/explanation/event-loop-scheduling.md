@@ -80,7 +80,7 @@ key routing path.
 
 ### CPU Frame
 
-The candidate Panel renders on the CPU (flux software canvas plus CPU text
+The candidate Panel renders on the CPU (`optics::gfx` software canvas plus CPU text
 rasterisation) into a premultiplied RGBA8 framebuffer; there is no GPU
 frame to acquire ([ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md)), so
 frame setup cannot block the loop.
@@ -95,7 +95,7 @@ the next dirty reactor step instead of blocking on compositor release
 
 ### Text Rasterisation
 
-Glyphs are shaped and rasterised by flux-text directly into the panel
+Glyphs are shaped and rasterised by `optics::text` directly into the panel
 framebuffer each frame; measurement results are cached, so
 repeated candidate pages reuse the measured layout. There is no shared GPU
 glyph texture and no per-text-run upload in the CPU-canvas path.

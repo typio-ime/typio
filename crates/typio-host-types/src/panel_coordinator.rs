@@ -5,7 +5,7 @@
 //! compositor has provided a usable cursor anchor, and when to give up waiting
 //! for one.
 //!
-//! Rendering itself stays in [`crate::panel::FluxPanel`]; this coordinator
+//! Rendering itself stays in `typio-host-platform`'s `Panel`; this coordinator
 //! only decides *when* rendering should happen and how to handle the anchor
 //! probe / caret fallback.
 

@@ -205,7 +205,7 @@ Reference](../reference/cli.md).
 
 Coordinates: `crates/typio-settings/src/main.rs`, `model.rs` (TIP-derived
 model), `events.rs` (subscription worker), `platform_config.rs` (the atomic
-`platform.toml` editor), `ui.rs` (Lens/Flux interface).
+`platform.toml` editor), `ui.rs` (Optics UI/gfx interface).
 
 ### 3.7 Language as the switch unit
 

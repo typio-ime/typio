@@ -25,7 +25,7 @@
 //!
 //! ## What this module does NOT own
 //!
-//! - The popup surface itself — `PanelCoordinator` plus `FluxPanel` own it.
+//! - The popup surface itself — `PanelCoordinator` plus `Panel` own it.
 //! - The anchor probe and timeout — `PanelCoordinator`.
 //! - The auto-hide timerfd — the event loop in `app.rs`.
 //!

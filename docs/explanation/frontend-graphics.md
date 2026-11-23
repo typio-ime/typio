@@ -5,8 +5,8 @@ engine/mode indicators, and voice status share the same input-popup
 surface; the active producer is selected by the Panel Coordinator before
 rendering starts.
 
-Rendering uses flux's **software (CPU) canvas** plus
-flux-text's CPU text rasterisation; there is no GPU device and no
+Rendering uses `optics::gfx`'s **software (CPU) canvas** plus
+`optics::text`'s CPU text rasterisation; there is no GPU device and no
 window-system integration in the Panel path. A frame moves through these
 stages in order:
 
@@ -42,7 +42,7 @@ support. The reasoning runs from the present path backward:
   there is no atlas to size, compact, or reclaim.
 
 GPU rendering remains the right tool for components with a different
-profile: the settings GUI renders through the GPU stack (Iris/Lens/Flux).
+profile: the settings GUI renders through the GPU stack (`optics::window` / `optics::ui` / `optics::gfx`).
 [ADR-0040](../adr/0040-cpu-canvas-render-shm-buffers.md) records the
 full decision, including the conditions under which the Panel would move
 to the GPU.
@@ -65,11 +65,11 @@ ever consults ownership state.
 
 ### Render
 
-The platform panel owns the flux CPU canvas and the text rasteriser:
+The platform panel owns the `optics::gfx` CPU canvas and the text rasteriser:
 
-- the flux **CPU canvas** fills the panel background and selection
+- the `optics::gfx` **CPU canvas** fills the panel background and selection
   highlight into a premultiplied RGBA8 framebuffer on the host;
-- **flux-text** CPU text shaping and rasterisation shapes glyphs from
+- **`optics::text`** CPU text shaping and rasterisation shapes glyphs from
   host-resident coverage and composites them directly into that same RGBA8
   framebuffer, with the host resolving faces through fontconfig and exposing a
   family-class selector rather than individual faces;
@@ -105,27 +105,27 @@ banner labels truncate with `…`. The engine supplies the candidate strings, so
 this bound is a trust boundary against buggy or hostile engines, not a
 cosmetic preference.
 
-## Flux Dependency Boundary
+## Optics Dependency Boundary
 
-The host's graphics dependencies are flux's **CPU canvas** and flux-text's
-host-resident R8 coverage path. It does **not** depend on flux's GPU device,
+The host's graphics dependencies are `optics::gfx`'s **CPU canvas** and `optics::text`'s
+host-resident R8 coverage path. It does **not** depend on `optics::gfx`'s GPU device,
 surface, swapchain, or GPU readback APIs. The parts the host actually uses are:
 
 - the CPU canvas lifecycle — create the canvas, begin and end one frame, and
   obtain a direct pointer into the RGBA8 framebuffer with no transfer bus and no
   fence;
 - rounded-rectangle fills for the panel background and the selection highlight;
-- the flux-text draw entry point, which shapes text and composites host-resident
+- the `optics::text` draw entry point, which shapes text and composites host-resident
   R8 glyph coverage into the CPU canvas.
 
-Text is drawn by **flux-text** through the host's text rasteriser; glyphs
-composite into the flux framebuffer directly. The tray badge uses the same
-flux-text CPU stack; no pure-Rust shaping libraries
+Text is drawn by **`optics::text`** through the host's text rasteriser; glyphs
+composite into the `optics::gfx` framebuffer directly. The tray badge uses the same
+`optics::text` CPU stack; no pure-Rust shaping libraries
 (`rustybuzz`/`fontdb`/`ab_glyph`) remain in the workspace.
 
 Porting to another canvas backend would require replacing the panel's canvas
 fill calls and the text compositing step. Ownership policy, anchor handling, key
-routing, and engine state do not depend on flux.
+routing, and engine state do not depend on Optics.
 
 ## Input Correctness
 

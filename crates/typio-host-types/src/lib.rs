@@ -37,7 +37,7 @@ bitflags::bitflags! {
 
 /// Typeface family class for the panel text.
 ///
-/// This is the real capability boundary of the text stack: glyph resolves
+/// This is the real capability boundary of the text stack: `optics::text` resolves
 /// faces through fontconfig and exposes a *family class* selector, not a
 /// free-form family name. Modelling the setting as a class keeps the
 /// user-facing option honest — every accepted value actually changes the

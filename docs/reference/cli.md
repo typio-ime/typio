@@ -20,7 +20,7 @@
 | `-h`, `--help` | None | Print command-line help and exit. |
 | `--version` | None | Print version information and exit. |
 
-`typio-settings` accepts `-v`/`--verbose` to log raw Iris platform input and
+`typio-settings` accepts `-v`/`--verbose` to log raw `optics::window` input and
 `-h`/`--help` to print usage. Its schema-backed pages require a running daemon;
 the Appearance page edits `platform.toml` directly and remains available while
 the daemon is stopped.

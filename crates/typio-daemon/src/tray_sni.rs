@@ -15,10 +15,14 @@
 //! scaffolding whose runtime behaviour needs a live StatusNotifierWatcher
 //! (waybar / KDE / GNOME shell).
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use zbus::{
-    blocking::Connection,
+    blocking::{Connection, connection::Builder as ConnectionBuilder},
     interface,
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
@@ -28,6 +32,14 @@ use crate::tray_menu;
 pub use crate::tray_menu_ids::{MenuAction, decode_menu_click};
 
 pub use zbus;
+
+/// Deadline for one tray D-Bus round-trip (name claim + SNI registration).
+///
+/// A local watcher answers in microseconds, so one second is generous. The
+/// bound exists because [`Tray::register`] runs on the main thread during
+/// `App::init`: a watcher that accepts the call and never replies must not
+/// stall the daemon before it binds its control socket or connects to Wayland.
+const TRAY_METHOD_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Actions that can originate from the tray surface (menu clicks or SNI
 /// activation gestures). The controller wires the callback.
@@ -84,7 +96,7 @@ pub struct TrayState {
     /// `badge_pixmaps.is_empty()`, so a badge whose text renders to nothing
     /// (missing glyph coverage, degraded glyph backend) is not
     /// re-rendered on every tray refresh — each re-render is a full
-    /// glyph context lifecycle (16 MiB host-coverage atlas + FreeType /
+    /// text context lifecycle (16 MiB host-coverage atlas + FreeType /
     /// HarfBuzz / fontconfig backend).
     pub badge_attempted_text: Option<String>,
     pub menu_revision: u32,
@@ -452,7 +464,7 @@ pub struct Tray {
     state: Arc<Mutex<TrayState>>,
     connection: Option<Connection>,
     service_name: String,
-    registered: bool,
+    registered: AtomicBool,
 }
 
 impl Tray {
@@ -460,7 +472,14 @@ impl Tray {
     /// interfaces. Registration is deferred to [`Tray::register`].
     pub fn new() -> Self {
         let state = Arc::new(Mutex::new(TrayState::default()));
-        let connection = Connection::session().ok();
+        // Bound every round-trip on this connection. The tray is optional
+        // chrome, but `register` runs during `App::init` on the main thread,
+        // so a wedged StatusNotifierWatcher (one that accepts the call and
+        // never replies) must not keep the daemon from binding its control
+        // socket or connecting to Wayland.
+        let connection = ConnectionBuilder::session()
+            .ok()
+            .and_then(|builder| builder.method_timeout(TRAY_METHOD_TIMEOUT).build().ok());
         if let Some(conn) = &connection {
             let _ = conn.object_server().at(
                 "/StatusNotifierItem",
@@ -476,12 +495,12 @@ impl Tray {
             state,
             connection,
             service_name,
-            registered: false,
+            registered: AtomicBool::new(false),
         }
     }
 
     pub fn is_registered(&self) -> bool {
-        self.registered
+        self.registered.load(Ordering::Relaxed)
     }
 
     /// D-Bus unique service name this tray advertises to the SNI watcher.
@@ -510,8 +529,9 @@ impl Tray {
             "RegisterStatusNotifierItem",
             &(&self.service_name),
         );
-        self.registered = res.is_ok();
-        self.registered
+        let registered = res.is_ok();
+        self.registered.store(registered, Ordering::Relaxed);
+        registered
     }
 
     /// `typio_tray_set_status`.
@@ -570,7 +590,7 @@ impl Tray {
                 // Dedup on the attempted text, not on the pixmaps: an empty
                 // render (no glyph coverage at some size) must still count
                 // as "already tried", otherwise every tray refresh re-runs
-                // the whole glyph rasterisation pipeline.
+                // the whole text rasterisation pipeline.
                 if s.badge_attempted_text.as_deref() == Some(t) {
                     return;
                 }

@@ -12,7 +12,7 @@ Typio organizes its Cargo workspace into concentric layers ([ADR-0038](../../adr
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │ Layer 4: Executables & Entrypoints                                             │
 │   ├── crates/typio-daemon        (Wayland input-method daemon host)            │
-│   ├── crates/typio-settings      (Optics Iris graphical settings application)  │
+│   ├── crates/typio-settings      (Optics app/window/ui settings GUI)           │
 │   ├── crates/typio-control       (typioctl CLI client for TIP socket)          │
 │   ├── crates/typio-engine-check  (Black-box engine conformance probe tool)    │
 │   └── crates/xtask               (Workspace build & release automation)        │
@@ -20,7 +20,7 @@ Typio organizes its Cargo workspace into concentric layers ([ADR-0038](../../adr
                                        │
 ┌──────────────────────────────────────▼─────────────────────────────────────────┐
 │ Layer 3: Platform Integration & Control Surface                                │
-│   ├── crates/typio-host-platform (Wayland FFI, Flux CPU canvas, SHM pool)      │
+│   ├── crates/typio-host-platform (Wayland FFI, Optics gfx canvas, SHM pool)    │
 │   └── crates/typio-client        (Shared TIP Unix domain socket client)        │
 └──────────────────────────────────────┬─────────────────────────────────────────┘
                                        │
@@ -56,7 +56,7 @@ Typio organizes its Cargo workspace into concentric layers ([ADR-0038](../../adr
 
 ### 2.4 CPU Canvas & SHM Buffer Boundary
 - **Red-Line**: The Panel presentation path must NEVER create GPU contexts, Vulkan swapchains, or GPU-resident textures ([ADR-0040](../../adr/0040-cpu-canvas-render-shm-buffers.md), [ADR-0053](../../adr/0053-optics-v0.0.62-adoption-boundary.md)).
-- **Enforcement**: The candidate popup renders exclusively via `flux_canvas_create` with the CPU backend onto memory-mapped `wl_shm` pool buffers (`[INV-PANEL-13]`). Ink rasterization is 100% CPU-bound, guaranteeing instant response and zero GPU driver context stalls.
+- **Enforcement**: The candidate popup renders exclusively via `optics_gfx_canvas_create` with the CPU backend onto memory-mapped `wl_shm` pool buffers (`[INV-PANEL-13]`). Ink rasterization is 100% CPU-bound, guaranteeing instant response and zero GPU driver context stalls.
 
 ---
 
