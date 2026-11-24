@@ -86,15 +86,28 @@ fn optics_has_shared_library(dir: &std::path::Path, library: &str, target_os: &s
     dir.join(name).exists()
 }
 
+fn optics_env_enabled(var: &str) -> bool {
+    let Some(value) = std::env::var_os(var) else {
+        return false;
+    };
+    if value.is_empty() || value == "0" {
+        return false;
+    }
+    !value
+        .to_str()
+        .is_some_and(|text| text.eq_ignore_ascii_case("false"))
+}
+
 /// Return the distinct native-library directories that require a runtime rpath.
 ///
-/// Mirrors the Optics `-sys` crates' linkage selection: static archives win
-/// whenever present unless `OPTICS_DYNAMIC` is set, so statically linked
-/// binaries receive an empty rpath list. Installed-prefix builds leave the
-/// variables unset and also return an empty list.
+/// Mirrors the Optics `-sys` crates' linkage selection: the workspace enables
+/// Optics's `static` feature, so binaries link `liboptics_*.a` and emit no
+/// rpaths unless `OPTICS_DYNAMIC` is enabled (treating unset, `""`, `"0"`, and
+/// `"false"` as disabled so `OPTICS_DYNAMIC=0` cancels `.cargo/config.toml`).
 fn optics_native_rpaths() -> Vec<String> {
     let target_os = optics_target_os();
-    let force_dynamic = std::env::var_os("OPTICS_DYNAMIC").is_some();
+    let force_dynamic =
+        optics_env_enabled("OPTICS_DYNAMIC") || optics_env_enabled("PKG_CONFIG_ALL_DYNAMIC");
     let mut paths = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -131,7 +144,14 @@ fn optics_native_rpaths() -> Vec<String> {
 /// Emit the rpaths as linker arguments for the calling build script.
 #[allow(dead_code)]
 fn emit_optics_rpaths() {
-    for directory in optics_native_rpaths() {
+    let rpaths = optics_native_rpaths();
+    if rpaths.is_empty() {
+        return;
+    }
+    if optics_target_os() != "macos" {
+        println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
+    }
+    for directory in rpaths {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{directory}");
     }
 }

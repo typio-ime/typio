@@ -17,7 +17,7 @@ way ([INV-CORE-01](standards/invariants.md)).
 | [Acceptance](acceptance.md) | Real user journeys from a cold start, and the acceptance scenario matrix |
 | [Code Style](code-style.md) | Language versions, formatting, doc comments, and design preferences |
 | [Panel Appearance](panel-appearance.md) | Panel render pipeline, fonts, theme resolution, cache invalidation |
-| [Optics Dev Worktree](optics-dev-worktree.md) | Developing against a live Optics worktree and promoting an Optics release |
+| [Local Optics Development](optics-local-development.md) | Developing against a local Optics checkout (via linked worktree) and promoting an Optics release |
 
 ## Related
 

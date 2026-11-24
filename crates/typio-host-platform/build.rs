@@ -10,42 +10,10 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 include!("../optics-rpaths.rs");
 
 fn main() {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let project_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let optics_dir = project_root.join("optics");
-
-    if optics_dir.exists() {
-        let build_dir = optics_dir.join("build");
-        if !build_dir.exists() {
-            let status = Command::new("meson")
-                .arg("setup")
-                .arg(&build_dir)
-                .arg("-Dtext=true")
-                .current_dir(&optics_dir)
-                .status()
-                .expect("Failed to run meson setup");
-            if !status.success() {
-                panic!("meson setup failed");
-            }
-        }
-
-        let status = Command::new("meson")
-            .arg("compile")
-            .arg("-C")
-            .arg(&build_dir)
-            .current_dir(&optics_dir)
-            .status()
-            .expect("Failed to run meson compile");
-        if !status.success() {
-            panic!("meson compile failed");
-        }
-    }
-
     let build_dirs = optics_build_dirs();
     enforce_optimized_gfx_for_release(&build_dirs);
 

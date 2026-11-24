@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.10] - 2026-11-25
+
+### Changed
+
+- **Optics v0.0.86 alignment and dual-mode dev workflow.** Bumped the `optics`
+  facade pin in `Cargo.toml` and `OPTICS_PINNED_REF` in CI to `v0.0.86`
+  (`d84a8b33`), keeping `features = ["static"]` on canonical/production builds
+  while switching `.cargo/optics-local.toml` to `OPTICS_DYNAMIC = "1"` for fast
+  shared-library iteration in linked dev worktrees (with `OPTICS_DYNAMIC=0`
+  disabling the override on demand). Renamed the contributor guide to
+  `docs/dev/optics-local-development.md` and strengthened CI's static-link gate
+  to verify zero `liboptics_*.so` `NEEDED` entries and zero `RPATH`/`RUNPATH`
+  tags on `typio` and `typio-settings`.
+- **Build script cleanup.** Removed obsolete in-tree `optics/` Meson auto-build
+  blocks from `typio-daemon` and `typio-host-platform` build scripts and
+  deduplicated `typio-settings`'s rpath emission onto `crates/optics-rpaths.rs`.
+
+### Fixed
+
+- **Safe `xtask` installation and uninstallation.** Fixed `cargo xtask uninstall`
+  so it removes only Typio-installed icon files (pruning empty parent
+  directories) instead of deleting the shared `share/icons/hicolor` directory,
+  properly removes the rendered `typio.service` unit, supports `--destdir`, and
+  fails fast in `install` before mutating the destination tree when required
+  build artifacts are missing.
+
 ## [0.6.9] - 2026-11-23
 
 ### Changed

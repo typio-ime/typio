@@ -165,5 +165,5 @@ Run before tagging a release:
 ## See also
 
 - [Testing](testing.md) — automated suites and their environment matrix
-- [Optics Dev Worktree](optics-dev-worktree.md) — building against a live Optics worktree
+- [Local Optics Development](optics-local-development.md) — building against a local Optics checkout
 - [Interface Stability](../reference/stability.md) — what a release is allowed to change

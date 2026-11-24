@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_PINNED_REF: 646952c558fd612acb1935d11fdb12c62d2323de
+  OPTICS_PINNED_REF: d84a8b33e0897f10b104280fb9f42d8888b6557d
 
 jobs:
   cargo-check-format-lint:
@@ -54,7 +54,6 @@ jobs:
         env:
           OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          OPTICS_STATIC: "1"
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   cargo-test:
@@ -91,11 +90,27 @@ jobs:
         env:
           OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          OPTICS_STATIC: "1"
-          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug:${{ github.workspace }}/../optics/build
         run: |
           cargo build --workspace
           cargo test --workspace
+
+      - name: Verify binaries link Optics statically
+        run: |
+          for bin in typio typio-settings; do
+            path="target/debug/$bin"
+            test -x "$path"
+            needed=$(readelf -d -- "$path" | sed -n \
+              's/.*(NEEDED).*Shared library: \[\(liboptics_\(gfx\|ui\|scene\|svg\|text\|window\|material\|app\)\.so[^]]*\)\]/\1/p')
+            if [ -n "$needed" ]; then
+              echo "ERROR: $path dynamically links Optics: $needed" >&2
+              exit 1
+            fi
+            rpath=$(readelf -d -- "$path" | grep -E '\((RPATH|RUNPATH)\)' || true)
+            if [ -n "$rpath" ]; then
+              echo "ERROR: $path carries a build-tree rpath: $rpath" >&2
+              exit 1
+            fi
+          done
 
   cargo-audit:
     name: RustSec audit
@@ -143,7 +158,6 @@ jobs:
         env:
           OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          OPTICS_STATIC: "1"
         run: |
           cargo test -p typio-daemon --lib --no-run
           cargo test -p typio-host-platform --lib --no-run
@@ -152,8 +166,6 @@ jobs:
         env:
           OPTICS_BUILD_DIR: ${{ github.workspace }}/../optics/build
           OPTICS_SOURCE_DIR: ${{ github.workspace }}/../optics
-          OPTICS_STATIC: "1"
-          LD_LIBRARY_PATH: ${{ github.workspace }}/../optics/build
         run: |
           set -euo pipefail
           BIN_HOST=$(ls -t target/debug/deps/typio_daemon-* | grep -v '\.d$' | head -1)

@@ -49,12 +49,14 @@ xkbcommon = "0.9"
 
 # optics (rendering engine and UI stack) Rust bindings.
 # External consumers depend on the single `optics` facade crate; per-crate
-# features select only the layers a binary uses. The canonical build resolves
-# the facade from the tagged optics monorepo and links the C libraries
-# discovered by pkg-config. A linked development worktree can patch the facade
-# through .cargo/optics-local.toml without making a sibling checkout mandatory
-# for CI or downstream packagers.
-optics = { git = "https://github.com/ming2k/optics", tag = "v0.0.83", default-features = false, features = ["static"] }
+# features select only the layers a binary uses. Canonical and production builds
+# statically link Optics archives by default via `features = ["static"]`. A
+# linked development worktree copies .cargo/optics-local.toml to
+# .cargo/config.toml, which patches the facade to ../optics/crates/optics and
+# sets `[env] OPTICS_DYNAMIC = "1"` for fast shared-library iteration;
+# downstream packagers that prefer shared system libraries can set
+# `OPTICS_DYNAMIC=1` in the build environment.
+optics = { git = "https://github.com/ming2k/optics", tag = "v0.0.86", default-features = false, features = ["static"] }
 wayland-sys = "0.31"
 tracing = "0.1"
 tracing-log = "0.2"

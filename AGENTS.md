@@ -61,6 +61,6 @@ Do not guess repository rules or rely on stale assumptions. Consult authoritativ
 - Architectural Blueprints: [`docs/architecture/index.md`](docs/architecture/index.md)
 - Architectural Decision Records: [`docs/adr/index.md`](docs/adr/index.md)
 - Developer Setup: [`docs/dev/setup.md`](docs/dev/setup.md)
-- Optics Dev Worktree Workflow: [`docs/dev/optics-dev-worktree.md`](docs/dev/optics-dev-worktree.md)
+- Local Optics Development: [`docs/dev/optics-local-development.md`](docs/dev/optics-local-development.md)
 - Source Module Map: [`docs/dev/module-map.md`](docs/dev/module-map.md)
 - Testing & Acceptance: [`docs/dev/testing.md`](docs/dev/testing.md), [`docs/dev/acceptance.md`](docs/dev/acceptance.md)

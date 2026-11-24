@@ -161,8 +161,8 @@ hooks with `git config core.hooksPath .githooks`. The hook refuses to commit a
 `Cargo.lock` that reflects local paths, and refuses a release-shaped version bump
 while local mode is active. Promoting an Optics release — moving the facade
 tag, moving `OPTICS_PINNED_REF` in the CI workflow, and regenerating the
-canonical lockfile — is specified in [Typio and Optics Cross-Repository
-Development](../dev/optics-dev-worktree.md); the product release process
+canonical lockfile — is specified in [Local Optics
+Development](../dev/optics-local-development.md); the product release process
 itself belongs to [Engineering Workflow](../dev/standards/workflow.md).
 
 ### 3.4 CI topology
@@ -227,6 +227,6 @@ record status is tracked in the [ADR Index](../adr/index.md).
 
 - [Module Map](../dev/module-map.md) — per-crate source coordinates
 - [Developer Setup](../dev/setup.md) — prerequisites, feature flags, and build commands
-- [Optics Development Worktree Workflow](../dev/optics-dev-worktree.md) — worktree setup, dependency modes, and pin promotion
+- [Local Optics Development](../dev/optics-local-development.md) — local Optics setup, dependency modes, and pin promotion
 - [Interface Stability Reference](../reference/stability.md) — the tier of each externally consumable interface
 - [Engine Runtime](engine-runtime.md) and [Control Plane and Clients](control-and-clients.md) — the subsystems these crates implement

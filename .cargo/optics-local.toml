@@ -1,4 +1,5 @@
-# Local-only source patches for cross-repository development.
+# Local-only source patches and dynamic-linking override for cross-repository
+# development.
 #
 # Enable this file only in a linked Typio worktree:
 #   cp .cargo/optics-local.toml .cargo/config.toml
@@ -12,16 +13,11 @@
 # workspace (`crates/*`) from the sibling checkout.
 optics = { path = "../optics/crates/optics" }
 
-# Override points for the native Optics C libraries. The workspace dependency
-# requests a static Optics link through the facade's `static` feature; the
-# environment override below states the same intent explicitly and lets a shell
-# switch modes without editing Cargo.toml (OPTICS_DYNAMIC=1 forces shared
-# linking).
-# Point OPTICS_BUILD_DIR at a release Meson tree built with static archives
-# (`default_library=both` or `default_library=static`, e.g. `../optics/build-release`
-# or `../optics/build-static-release`). Override with `OPTICS_DYNAMIC=1` in the
-# shell if you explicitly need shared-library linking.
+# Override the workspace's default `static` Optics feature during local
+# iteration so C and shader changes in `../optics/build` take effect via rpath
+# without relinking Rust. Pass `OPTICS_DYNAMIC=0` in the shell to verify the
+# production static link on demand.
 [env]
-OPTICS_BUILD_DIR = { value = "../optics/build-release", relative = true }
+OPTICS_BUILD_DIR = { value = "../optics/build", relative = true }
 OPTICS_SOURCE_DIR = { value = "../optics", relative = true }
-OPTICS_STATIC = "1"
+OPTICS_DYNAMIC = "1"

@@ -51,7 +51,7 @@ Typio depends on the companion C engine **Optics** for UI and rendering:
 - **Primary Worktree (`main`)**: Uses canonical Optics Git dependencies pinned to release tags in `Cargo.toml`. Every commit on `main` must build independently with `cargo check --locked --workspace`.
 - **Development Worktree (`dev`)**: Uses local path overrides from `.cargo/optics-local.toml` copied to `.cargo/config.toml`. Uncommitted lockfiles remain strictly isolated to the worktree via `.githooks/pre-commit`.
 
-Detailed worktree setup and promotion protocols are documented in [`docs/dev/optics-dev-worktree.md`](../optics-dev-worktree.md).
+Detailed local Optics development and promotion protocols are documented in [`docs/dev/optics-local-development.md`](../optics-local-development.md).
 
 ---
 

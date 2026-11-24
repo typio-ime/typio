@@ -16,12 +16,12 @@ the binaries under test are the debug ones.
 
 ```bash
 # one-time per optics checkout:
-meson setup ../optics/build ../optics -Dtext=true --buildtype=debugoptimized
+meson setup ../optics/build ../optics -Dtests=false --buildtype=debugoptimized
 meson compile -C ../optics/build
 
 export OPTICS_BUILD_DIR="$PWD/../optics/build"
 export OPTICS_SOURCE_DIR="$PWD/../optics"
-export OPTICS_STATIC=1
+export OPTICS_DYNAMIC=1   # fast shared-library dev iteration (set automatically by .cargo/optics-local.toml)
 
 cargo build -p typio-daemon --bin typio
 cargo test -p typio-daemon
@@ -29,19 +29,20 @@ cargo test -p typio-daemon
 ```
 
 The Optics export variables must be present in every shell that runs `cargo
-build`, `test`, or `run`; the repository ships no committed copy of them.
-`OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` cover every Optics layer (`gfx`,
-`text`, `ui`, `window`, and `app`), including `typio-settings`; per-library
-`OPTICS_GFX_*` / `OPTICS_TEXT_*` / `OPTICS_UI_*` / `OPTICS_WINDOW_*` /
-`OPTICS_APP_*` variables remain supported as fine-grained overrides.
+build`, `test`, or `run` (or configured via `.cargo/optics-local.toml` in a
+linked `typio-dev` worktree). `OPTICS_BUILD_DIR` and `OPTICS_SOURCE_DIR` cover
+every Optics layer (`gfx`, `text`, `ui`, `window`, and `app`), including
+`typio-settings`; per-library `OPTICS_GFX_*` / `OPTICS_TEXT_*` / `OPTICS_UI_*` /
+`OPTICS_WINDOW_*` / `OPTICS_APP_*` variables remain supported as fine-grained
+overrides.
 
-Typio's `optics` dependency enables Optics's `static` feature, so when the
-sibling build tree ships static archives (`lib*.a`) the Rust build scripts link
-them into the Typio binaries (only OS/system libraries remain dynamic, with no
-build-tree rpath). `OPTICS_STATIC=1` in the environment is an equivalent
-override; when linking against shared Optics libraries (`OPTICS_DYNAMIC=1` or a
-shared-only build tree), the Typio build scripts bake `-Wl,-rpath` entries to
-the build tree. `typio-runtime`,
+Typio's `optics` dependency enables Optics's `static` feature by default, so
+canonical and release builds embed `liboptics_*.a` archives into the Typio
+binaries (only OS/system libraries remain dynamic, with no build-tree rpath).
+During local development, setting `OPTICS_DYNAMIC=1` (as `.cargo/optics-local.toml`
+does in `typio-dev`) links shared `liboptics_*.so` libraries with `-Wl,-rpath`
+so C and shader edits take effect without relinking Rust; pass
+`OPTICS_DYNAMIC=0` to verify the production static link on demand. `typio-runtime`,
 `typio-engine-protocol`, `typio-engine-manifest`, `typio-engine-check`, `typio-client`,
 `typio-control`, and `typio-settings` are Cargo workspace members in this
 repository, so runtime, engine-contract, client, GUI, CLI, and daemon changes

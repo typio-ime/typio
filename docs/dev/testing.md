@@ -37,7 +37,7 @@ Build the native renderer dependency before the first run; see
 | :--- | :--- | :--- |
 | `OPTICS_BUILD_DIR` | All crates linking the native Optics libraries (`gfx`, `text`, `ui`, `window`, `app`) | The sibling Meson build tree, e.g. `$PWD/../optics/build` |
 | `OPTICS_SOURCE_DIR` | Bindings generated from Optics headers | The sibling Optics source root, e.g. `$PWD/../optics` |
-| `OPTICS_STATIC` | Static archive bundling (`1` to require `liboptics_*.a`) | `1` (default in `.cargo/optics-local.toml` and CI) |
+| `OPTICS_STATIC` | Static archive bundling (`1` to require `liboptics_*.a`; enabled by default via Cargo `static` feature) | Unset (default static in `main` and CI; set `OPTICS_DYNAMIC=1` in `typio-dev`) |
 | `LD_LIBRARY_PATH` | Dynamic Optics builds (`OPTICS_DYNAMIC=1`) loading shared libraries at test time | Must include `target/debug` and the Optics build tree |
 | `RUST_LOG` | Tracing output only | Optional; never required for a test to pass |
 | `TYPIO_ENGINE_PATH`, `--engine-dir` | Manual runs and development only | Optional; the shipped default is the system engine directory |
@@ -122,4 +122,4 @@ can be reduced to a helper or a state model.
 
 - [Acceptance](acceptance.md) — user journeys verified by hand before a release
 - [Developer Setup](setup.md) — native prerequisites and the Optics build tree
-- [Optics Dev Worktree](optics-dev-worktree.md) — testing against a local Optics worktree
+- [Local Optics Development](optics-local-development.md) — developing and testing against a local Optics checkout
